@@ -422,17 +422,8 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
             batch_keys.add(data_key)
     search_metric_names = ('batch_requests', 'batch_cache_hits', 'native_batch_starts',
                            'canonicalized_duplicates', 'configuration_key',
-                           'effective_population_size', 'rtr_window_size', 'coarse_rejections', 'last_fallbacks')
+                           'effective_population_size', 'coarse_rejections', 'last_fallbacks')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
-    frozen_population = (state or {}).get('ga') or {}
-    for name in ('effective_population_size', 'rtr_window_size'):
-        if name in frozen_population:
-            search_metrics.setdefault(name, frozen_population[name])
-    if summary.get('retest'):
-        search_metrics['retest_budget'] = summary['retest']
-    elif (state or {}).get('formal_search') and state.get('ga', {}).get('finalists'):
-        from population_training import retest_budget
-        search_metrics['retest_budget'] = retest_budget(state['ga'], state['formal_search']['config'])
     initialization = result.get('rule_initialization') or (state or {}).get('rule_initialization')
     if initialization:
         search_metrics['rule_initialization_identity'] = (initialization['behavior_identity'] + ':' +
@@ -792,6 +783,8 @@ def _seed_programs(starts, snapshot, *, character, targets, configuration_key,
     target_masks = None
     added, decisions = [], []
     for row in snapshot:
+        if len(added) >= 4:
+            break
         if (not isinstance(row, dict) or row.get('class_name') != character.class_name
                 or row.get('spec') != character.spec
                 or decode(row.get('configuration_key')) != configuration_key):
@@ -1147,7 +1140,7 @@ def _prepare_formal_publication(store, result=None):
     if result is not None:
         fields['search'] = {name: value for name, value in result['search'].items()
                             if name in ('candidate_count', 'unique_candidates', 'rounds', 'partial_round',
-                                        'stop_reason', 'effective_population_size', 'rtr_window_size',
+                                        'stop_reason', 'effective_population_size',
                                         'coarse_rejections', 'last_fallbacks')}
     state['formal_champion_publication_intent'] = dict(record=record,
         expected_version=incumbent['version'] if incumbent else 0, expected_incumbent=incumbent, result_fields=fields)
@@ -1272,7 +1265,12 @@ def _assemble_formal_starts(state, starts, *, character, configuration_key, capa
         starts, state['seed_selected_snapshot'], character=character,
         targets=simulation_config['target_count'], configuration_key=configuration_key,
         capabilities=capabilities, runtime=runtime)
-    state['training_champion_adaptation'] = None
+    champion = state['training_champion_snapshot']
+    state['starts'], adaptations = _seed_programs(
+        state['starts'], [champion] if champion.get('status') == 'selected' else [],
+        character=character, targets=simulation_config['target_count'], configuration_key=configuration_key,
+        capabilities=capabilities, runtime=runtime)
+    state['training_champion_adaptation'] = adaptations[0] if adaptations else None
     from program import canonicalize_search_program
     sources = {}
     for index, program in enumerate(starts):
@@ -1281,7 +1279,8 @@ def _assemble_formal_starts(state, starts, *, character, configuration_key, capa
         except (TypeError, ValueError, KeyError):
             continue  # 原优化器仍逐条记录无效起点，来源标记不改变失败语义。
         sources.setdefault(key, []).append(dict(source_kind='native', index=index))
-    for kind, decisions in [('seed_selected', state['seed_adaptations'])]:
+    for kind, decisions in [('seed_selected', state['seed_adaptations']),
+                            ('training_champion', adaptations)]:
         for decision in decisions:
             if decision['status'] in ('accepted', 'duplicate'):
                 sources.setdefault(decision['behavior_identity'], []).append(dict(
@@ -1464,14 +1463,19 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     target_count=simulation_config['target_count'], scene=simulation_config.get('scene'), burst=state.get('burst'))
                 from engine import configuration_key as scope_key
                 configuration_key = scope_key(native, simulation_config['scene'])
-                from seed_training import shared_scope, selected_contract_version
+                from seed_training import shared_scope, training_champion, selected_contract_version
                 from result_store import read_records
                 # 原生快照绑定英雄后才冻结共享成果；恢复不得沿用旧的宽范围快照。
                 if state.get('seed_configuration_key') != configuration_key:
                     state['seed_selected_snapshot'] = read_records('seed_selected', shared_scope(configuration_key))
-                    selected_contract_version(state['seed_selected_snapshot'])
-                    state['training_champion_snapshot'] = dict(source_kind='training_champion',
-                        status='not_applicable', reason='新正式任务仅消费训练快照和历史正式冠军')
+                    contract = selected_contract_version(state['seed_selected_snapshot'])
+                    state['training_champion_snapshot'] = (dict(source_kind='training_champion',
+                        status='not_applicable', reason='v2四条已包含正常冠军及稳定代表') if contract == 2 else training_champion(
+                        character.class_name, character.spec, simulation_config, engines=identities,
+                        input_interval_ms=config['input_interval_ms'], use_burst=use_burst,
+                        configuration_key=configuration_key,
+                        burst_identity=(dict(spec_id=definition['spec_id'],
+                                             definition_id=definition['definition_id']) if definition else None)))
                     state['seed_configuration_key'] = configuration_key
                     store.save()
                 if 'formal_champion_snapshot' not in state:
@@ -1484,8 +1488,6 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     store.save()
                 _assemble_formal_starts(state, starts, character=character, configuration_key=configuration_key,
                     capabilities=capabilities, runtime=runtime, use_burst=use_burst)
-                from behavior import context_for
-                state['behavior_context'] = context_for(reference_report, character, capabilities)
                 if not state['starts']:
                     raise TaskError('当前爆发排除条件下没有有效搜索起点')
                 if not config['diagnostic_logging']:
@@ -1875,10 +1877,6 @@ def _require_current_formal_resume(state):
         raise TaskError('旧任务含已移除搜索开关，身份不兼容，不能续跑；请创建新任务，原成果仍可读取')
     from simulation_config import reject_removed_search_settings
     reject_removed_search_settings(config or {})
-    from formal_search import VERSION
-    if ((state.get('formal_search') and state['formal_search'].get('version') != VERSION)
-            or 'rtr_window_ratio' not in (config or {})):
-        raise TaskError('旧正式未完成任务算法身份不兼容，不能混接RTR；原完整成果仍可读取，请创建新任务')
 
 
 def _resume_task(output_root, **kwargs):
@@ -2152,7 +2150,7 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         from formal_search import contract_for
         frozen = search['formal_search']
         if (not isinstance(frozen, dict) or type(frozen.get('version')) is not int
-                or frozen.get('version') not in (1, 2, 3)
+                or frozen.get('version') not in (1, 2)
                 or frozen != contract_for(decode(saved['config']), version=frozen.get('version'))):
             raise TaskError('正式遗传搜索成果版本或冻结评分契约不符，不能按新语义读取')
     if pointer.get('formal_champion_publication'):
@@ -2219,8 +2217,6 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
             cfg = search['formal_search']['config']
             task_result['search_result']['retest'] = dict(scenario='nominal', batches=cfg['retest_batches'],
                                                         requested_iterations=cfg['retest_iterations'])
-            if search.get('retest_budget'):
-                task_result['search_result']['retest'].update(search['retest_budget'])
     if saved['validation_summary']:
         task_result['validation'] = decode(saved['validation_summary'])
 

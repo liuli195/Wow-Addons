@@ -34,7 +34,7 @@ SELECTED_SCHEMA = dict(configuration_key='JSON', candidate_id='VARCHAR', conditi
 SELECTED_V2_SCHEMA = dict(SELECTED_SCHEMA, contract_version='UBIGINT', evaluation='JSON')
 RETEST_SEEDS = (20261008, 20261009, 20261010)
 TRAINING_VERSION = 'seed-training-v2'
-PREPARATION_VERSION = 'seed-preparation-v2'
+PREPARATION_VERSION = 'seed-preparation-v1'
 PREPARED_SCHEMA = dict(CANDIDATE_SCHEMA, kind='VARCHAR', config_key='VARCHAR',
     version='VARCHAR', program_revision='VARCHAR', status='VARCHAR', reason='VARCHAR',
     initial_program='JSON', behavior_id='VARCHAR', adaptation='JSON', context='JSON',
@@ -671,17 +671,13 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
                                                  burst_context=burst_context, rule_snapshot=inputs['rule_snapshot'])
         reference_key = digest(dict(condition=semantic_condition(current_input, semantic_versions()),
                                     purpose='seed_reference'))
-        native_report = json.loads((setup / 'reference/native.json').read_text(encoding='utf-8'))
-        from behavior import context_for
-        behavior_context = context_for(native_report, actual_character, capabilities)
         result_store.write_batch(reference_key, dict(batch_key=reference_key, run_id=config_key,
             purpose='seed_reference', dps=native['dps'], samples=native['samples'],
-            report=native_report),
+            report=json.loads((setup / 'reference/native.json').read_text(encoding='utf-8'))),
             diagnostic_logging=config['diagnostic_logging'], runtime=runtime)
         (setup / 'reference/native.json').unlink()
         context = dict(native=native, all_capabilities=all_capabilities, capabilities=capabilities,
-                       burst=burst_context, configuration_key=scope_key, representations={},
-                       behavior_context=behavior_context)
+                       burst=burst_context, configuration_key=scope_key, representations={})
     if context:
         from engine import ROOT
         from task import _rule_hashes
@@ -878,31 +874,17 @@ def check_training(template=None, *, use_burst=True, training_config=None):
     config = load_training_config() if training_config is None else training_config
     return dict(status='ready', **templates[0], templates=templates, groups=groups,
         engines=engines, use_burst=use_burst, training_config=config,
-        final_requested_iterations_per_group=config['top_k'] * config['retest_batches'] * config['retest_iterations'])
+        final_requested_iterations_per_group=config['top_k'] * 5 * config['retest_batches'] * config['retest_iterations'])
 
 
 def selected_contract_version(rows):
     """缺版本是旧成果，不从TRAINING_VERSION或程序来源猜新契约。"""
     versions = {row.get('contract_version') if row.get('contract_version') is not None else 1 for row in rows}
-    if any(type(version) is not int or version not in (1, 2, 3) for version in versions) or len(versions) > 1:
+    if any(type(version) is not int or version not in (1, 2) for version in versions) or len(versions) > 1:
         raise ValueError('不支持的训练成果契约版本')
     version = next(iter(versions), 1)
     if version == 2 and len(rows) != 4:
         raise ValueError('v2训练成果必须是完整四条')
-    if version == 3:
-        try:
-            evaluations = [decode(row.get('evaluation')) for row in rows]
-        except ValueError as error:
-            raise ValueError('v3训练成果发布人数校验失败：evaluation不是有效JSON对象') from error
-        if any(not isinstance(evaluation, dict) for evaluation in evaluations):
-            raise ValueError('v3训练成果发布人数校验失败：evaluation必须为对象')
-        publication = evaluations[0].get('publication')
-        if (not isinstance(publication, dict) or set(publication) != {'count', 'top_k', 'min_publish'}
-                or any(type(value) is not int for value in publication.values())
-                or not 1 <= publication['min_publish'] <= len(rows) == publication['count'] <= publication['top_k']
-                or any(evaluation.get('publication') != publication for evaluation in evaluations)
-                or len({row.get('candidate_id') for row in rows}) != len(rows)):
-            raise ValueError('v3训练成果发布人数或完整性不符')
     return version
 
 
@@ -1146,8 +1128,8 @@ def main(argv=None):
                     if args.command == 'run':
                         for row, targets in jobs:
                             config = configs[(str(Path(row['template']).resolve()), targets)]
-                            batches = config['top_k'] * config['retest_batches']
-                            print(f"{Path(row['template']).name}/{targets}：正常场景复测最多"
+                            batches = config['top_k'] * 5 * config['retest_batches']
+                            print(f"{Path(row['template']).name}/{targets}：五场景复测最多"
                                   f"{config['top_k']}候选、{batches}请求批、"
                                   f"{batches * config['retest_iterations']}请求迭代（非实际有效样本）；"
                                   f"本次分组并发上限{workers}", file=sys.stderr, flush=True)

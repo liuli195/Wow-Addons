@@ -53,21 +53,13 @@ def memory_ga(monkeypatch):
             frozen = contract_for(search_config)
             config, plan = frozen['config'], frozen['stage_plan']
         manifest = dict(training_config=config, stage_plan=plan, **(manifest_fields or {}))
-        from behavior import context_for
-        manifest['behavior_context'] = context_for(_fast_report(character, 100., 31), character, capabilities)
         from search import digest
         condition = digest(manifest)
         store.state.update(run_id='memory', condition=condition, starts=starts, config=search_config,
             behavior_identity_version=program.BEHAVIOR_IDENTITY_VERSION,
             archive=[], errors=[], ga=dict(algorithm=training.ALGORITHM, phase='initial', generation=0,
             stagnant=0, population=[], pending=None, rng=random.Random(20260912).getstate(), finals={}, baseline=[]))
-        store.state['behavior_context'] = manifest['behavior_context']
-        if formal:
-            store.state['formal_search'] = frozen
-            store.state['ga']['algorithm'] = frozen['algorithm']
-        else:
-            store.state['ga']['algorithm'] = training.TRAINING_ALGORITHM
-            store.state['behavior_context'] = manifest['behavior_context']
+        if formal: store.state['formal_search'] = frozen
         calls, reports = [], {}
         def compile_input(mapped, folder, **kwargs):
             # A native-compiler response fixture, using the existing Program mapping.
@@ -147,7 +139,7 @@ def test_public_check_freezes_both_verified_heroes_and_four_groups(monkeypatch):
     assert {row['configuration_key']['target_type'] for row in result['groups']} == {'single_target', 'aoe'}
     assert result['training_config']['max_trainings'] == 4
     assert result['training_config']['max_processes'] == 5
-    assert result['final_requested_iterations_per_group'] == 3072
+    assert result['final_requested_iterations_per_group'] == 15360
 
 
 def test_public_selection_reads_each_report_group_once_without_skipping_receipts(monkeypatch,memory_ga):
@@ -198,16 +190,16 @@ def test_public_selection_reads_each_report_group_once_without_skipping_receipts
     monkeypatch.setattr(population_training,'digest',counted_digest)
     key=dict(specialization_id=252,hero_talent='rider_of_the_apocalypse',target_type='single_target')
     rows=population_training._selected(ga,case.store,case.manifest,case.character,case.ready,key)
-    assert len(rows)==6 and [row['candidate_id'] for row in rows]==sorted(row['candidate_id'] for row in rows)
+    assert len(rows)==4 and [row['candidate_id'] for row in rows]==sorted(row['candidate_id'] for row in rows)
     assert {row['score'] for row in rows}=={100.}
-    assert counts==dict(reports=2,summaries=24,validations=24,manifests=1)
-    assert sizes==[12]*2 and not live
+    assert counts==dict(reports=10,summaries=120,validations=120,manifests=1)
+    assert sizes==[12]*10 and not live
     duplicate=True
     with pytest.raises(ValueError,match='发布复测报告重复'):
         population_training._selected(ga,case.store,case.manifest,case.character,case.ready,key)
 
 
-def test_public_training_never_requests_retired_stress_retests(memory_ga):
+def test_public_training_accepts_verified_zero_stress_as_full_loss_without_retry(memory_ga):
     import population_training
     def score(candidate, options):
         stress = options['iterations'] == 128 and options['input_times'] != list(range(0, 180000, 300))
@@ -218,8 +210,8 @@ def test_public_training_never_requests_retired_stress_retests(memory_ga):
         case.ready, dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target'))
     zeros = [folder for folder, _, options in case.calls
              if options['iterations'] == 128 and options['input_times'] != list(range(0,180000,300))]
-    assert zeros == []
-    assert all(set(row['evaluation']['scenarios']) == {'nominal'} for row in rows)
+    assert len(zeros) == len(set(zeros)) == 48
+    assert all(row['evaluation']['stability_loss'] == 1. for row in rows)
 
 
 @pytest.mark.parametrize('failure_kind,failures',
@@ -310,7 +302,7 @@ def test_public_run_feedback_failure_uses_same_persistent_single_retry_budget(me
 
 
 @pytest.mark.parametrize('overflow', ['clicks', 'macro'])
-def test_public_illegal_single_parent_child_keeps_parent_without_regeneration(
+def test_public_illegal_slot_uses_first_child_and_ten_persistent_extra_regenerations(
         monkeypatch, memory_ga, overflow):
     import random
     from types import SimpleNamespace
@@ -338,14 +330,13 @@ def test_public_illegal_single_parent_child_keeps_parent_without_regeneration(
     monkeypatch.setattr(population_training,'random',SimpleNamespace(Random=BoundaryRandom))
     for resume in (False,True):
         if resume: case.store.state=case.store.load_state(case.store.db)
-        ga = case.run()
+        with pytest.raises(ValueError,match='已耗尽10次额外重生'): case.run()
         operation='insert' if overflow=='clicks' else 'block'
-        assert operations == [operation, operation]
-        assert ga['pending'] is None and ga['generation'] == 2
-        assert [row['program'] for row in ga['population']] == [program]
+        assert operations==[operation,*[operation,'delete']*10]
+        assert case.store.state['ga']['pending']['regenerations']==[10]
 
 
-def test_public_training_pairs_without_tournament_and_keeps_equal_parents(monkeypatch,memory_ga):
+def test_public_a_tournament_and_block_crossover_keep_duplicate_slots_and_reuse_scores(monkeypatch,memory_ga):
     import random
     from types import SimpleNamespace
     import population_training
@@ -366,16 +357,17 @@ def test_public_training_pairs_without_tournament_and_keeps_equal_parents(monkey
     ga=case.run()
     coarse=[tuple(tuple(command['simc_action'] for command in block) for block in candidate['blocks'])
             for _,candidate,options in case.calls if options['iterations']==32]
-    assert draws == []
-    assert len(coarse) == len(set(coarse))
+    assert len(draws)==6*3*2
+    assert (('outbreak',),('scourge_strike',),('outbreak',)) in coarse
+    assert (('death_coil',),('death_coil',),('scourge_strike',)) in coarse
+    assert len(coarse)==len(set(coarse))==8
     slots=[row['key'] for row in ga['population']]
-    assert len(slots)==6 and len(set(slots))==6
-    assert [row['program'] for row in ga['population']] == case.starts
-    assert len(case.calls) == len(coarse) + 12
+    assert len(slots)==6 and len(set(slots))==2
+    assert len(case.calls)==68
 
 
 @pytest.mark.parametrize('invalid_nominal', [False, True])
-def test_public_selection_keeps_all_positive_nominal_results_and_reports_ineligible(
+def test_public_selection_keeps_nominal_and_minimax_stability_champions_and_reports_ineligible(
         memory_ga, invalid_nominal):
     import population_training
     from itertools import permutations
@@ -391,18 +383,21 @@ def test_public_selection_keeps_all_positive_nominal_results_and_reports_ineligi
     ga = case.run()
     rows = population_training._selected(ga, case.store, case.manifest, case.character,
         case.ready, dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target'))
-    assert {row['score'] for row in rows} == ({200.,180.,160.,140.,120.} if invalid_nominal else set(nominal))
+    assert {row['score'] for row in rows} == ({200.,180.,160.,140.} if invalid_nominal else {200.,180.,160.,100.})
     evaluations = {row['score']:row['evaluation'] for row in rows}
     assert evaluations[200.]['nominal_champion']
-    assert all('stability_loss' not in row for row in evaluations.values())
+    assert evaluations[200.]['stability_loss'] == .25
+    assert evaluations[140. if invalid_nominal else 100.]['stable_representative']
     if invalid_nominal:
         assert len(ga['ineligible']) == 1
         assert '正常复测均分≤0' in next(iter(ga['ineligible'].values()))
+    else:
+        assert evaluations[100.]['stability_loss'] == -.1
     assert sum(options['iterations']==32 for _,_,options in case.calls) == 6
-    assert sum(options['iterations']==128 for _,_,options in case.calls) == 18
+    assert sum(options['iterations']==128 for _,_,options in case.calls) == 90
     seeds = {iterations:{options['seed'] for _,_,options in case.calls if options['iterations']==iterations}
              for iterations in (32,128)}
-    assert len(seeds[128]) == 3 and not seeds[32] & seeds[128]
+    assert len(seeds[128]) == 15 and not seeds[32] & seeds[128]
 
 
 @pytest.mark.parametrize('version',[None,1,2,99])
@@ -441,8 +436,8 @@ def test_public_configured_sample_plan_and_stagnation_are_used_without_old_stage
     ga = case.run()
     requests = [options['iterations'] for _,_,options in case.calls]
     assert ga['generation'] == ga['stagnant'] == 3
-    assert requests.count(4) == 6 and requests.count(8) == 8 and len(requests) == 14
-    assert case.config['top_k'] * case.config['retest_batches'] * case.config['retest_iterations'] == 64
+    assert requests.count(4) == 6 and requests.count(8) == 40 and len(requests) == 46
+    assert case.config['top_k'] * 5 * case.config['retest_batches'] * case.config['retest_iterations'] == 320
 
 
 # Coarse recovery stays in memory below; physical publication recovery keeps one retest group.
@@ -519,7 +514,7 @@ def test_public_resume_verifies_coarse_before_breeding_and_keeps_temporary_read_
     keys={row['batches'][0]['data_key'] for row in case.store.state['archive']}
     assert len(keys)==6
     case.store.state['ga'].update(phase='breed',population=[dict(program=deepcopy(row['program']),key=row['key'],score=row['score'])
-        for row in case.store.state['archive']],baseline=[100.]*4, effective_population_size=6)
+        for row in case.store.state['archive']],baseline=[100.]*4)
     case.store.checkpoint()
     attempts=[]
     def unavailable(table,field,key,**kwargs):
@@ -551,14 +546,14 @@ def test_public_resume_verifies_coarse_before_breeding_and_keeps_temporary_read_
     coarse={key for key,request in requests.items() if request['purpose']=='search'}
     retained={key:(deepcopy(case.reports[key]),deepcopy(case.store.batch(key)))
               for key in requests if key not in coarse}
-    assert len(coarse)==6 and len(retained)==12 and len(case.calls)==18
+    assert len(coarse)==6 and len(retained)==60 and len(case.calls)==66
     for key in coarse: case.reports.pop(key)
     case.store.verified_batches.clear()
     case.calls.clear()
     assert case.run()['phase']=='qualified'
     assert {Path(folder).name for folder,_,_ in case.calls}==coarse
     assert len(case.calls)==6 and all(options['iterations']==32 for _,_,options in case.calls)
-    assert len(case.reports)==case.store.state['completed_batches']==18
+    assert len(case.reports)==case.store.state['completed_batches']==66
     assert {key:case.store.batch(key)['request'] for key in case.reports}==requests
     assert {key:(case.reports[key],case.store.batch(key)) for key in retained}==retained
 
@@ -605,7 +600,7 @@ def test_public_run_training_defaults_really_cross_and_mutate_without_global_rng
     monkeypatch.setattr(population_training,'random',SimpleNamespace(Random=BoundaryRandom))
     ga=case.run()
     coarse=[folder for folder,_,options in case.calls if options['iterations']==32]
-    assert ga['algorithm']=='ga-deterministic-crowding-v1' and ga['generation']==2
+    assert ga['algorithm']=='ga-easimple-v1' and ga['generation']==2
     assert len(ga['population'])==6 and len(coarse)==len(set(coarse))>6
     assert all(options['iterations']!=2 for _,_,options in case.calls)
     assert algorithms.random is original
@@ -629,7 +624,7 @@ def test_public_ga_timeline_switch_exports_existing_scores_without_extra_evaluat
     timeline=Timeline(context=dict(algorithm=dict(training='ga-easimple-v1'))) if enabled else None
     if timeline is not None: timeline.start()
     case.run(timeline=timeline)
-    assert len(case.calls)==len({row[0] for row in case.calls})==18
+    assert len(case.calls)==len({row[0] for row in case.calls})==66
     writes=[]
     if enabled:
         timeline.stop('stagnation')
@@ -640,7 +635,7 @@ def test_public_ga_timeline_switch_exports_existing_scores_without_extra_evaluat
         assert curve['schema']=='sim2gse-search-timeline-v1' and curve['status']=='completed'
         assert curve['search_start_seconds']<=curve['search_stop_seconds']<=curve['result_saved_seconds']
         assert curve['context']['algorithm']['training']=='ga-easimple-v1'
-        assert {row['series'] for row in curve['events'] if row['kind']=='score'}=={'search','nominal'}
+        assert {row['series'] for row in curve['events'] if row['kind']=='score'}=={'search','nominal','jitter','pause','slow','phase'}
         assert path.with_suffix('.html') in {file for file,text in writes}
     else: assert writes==[]
 
@@ -694,7 +689,6 @@ def test_public_feedback_commits_at_twelve_and_replays_same_generation_rng(monke
     assert max(row[0] for row in checkpoints)<=12
     resumed=case.store.load_state(case.store.db)['ga']
     assert resumed['generation']==0 and len(resumed['pending']['programs'])==70
-    assert sorted(resumed['pending']['parent_slots']) == list(range(70))
 
 
 def test_formal_resume_can_switch_observation_detail_without_changing_computation(memory_ga):

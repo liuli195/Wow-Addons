@@ -1,4 +1,4 @@
-"""差异化训练与共享代际评价。复用报告/TaskStore，不创建第二套模拟后端。"""
+"""A代际预训练。复用现有评价/报告/TaskStore，不创建第二套模拟后端。"""
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import replace
@@ -12,9 +12,8 @@ import uuid
 from runtime import TaskRuntime, TaskCancelled
 from search import TaskStore, digest, optimize, mutate, _tuple, _validate_saved_batch, _observe_ga
 
-SCENARIOS = ('nominal',)
+SCENARIOS = ('nominal', 'jitter', 'pause', 'slow', 'phase')
 ALGORITHM = 'ga-easimple-v1'
-TRAINING_ALGORITHM = 'ga-deterministic-crowding-v1'
 
 
 def _cross(left, right, rng):
@@ -51,7 +50,7 @@ def _stage_plan(config, seed, *, scenarios=SCENARIOS):
 
 
 def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
-    """Group-local varAnd and frozen generation plans; training uses parent crowding."""
+    """The eaSimple replacement step and varAnd are group-local, including RNG."""
     from deap import algorithms, base
     from program import canonicalize_search_program, _search_expanded_nodes
     from codec import load_targeting, prepare_block, prepare_castsequence
@@ -69,7 +68,6 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
     class Individual(list):
         pass
     ga = store.state['ga']
-    diverse = not store.state.get('formal_search')
     if ga['phase'] == 'qualified':
         ga['phase'] = 'retest'  # Re-verify all frozen receipts after a failed publication; refill only missing evidence.
     rng = random.Random()
@@ -190,20 +188,6 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
             return [results[key(program)] for program in programs]
         def ranking():
             return sorted(store.state['archive'], key=lambda row: (-row['batches'][0]['dps'], row['key']))[:config['top_k']]
-        def finalists():
-            if not diverse:
-                return [row['key'] for row in ranking()]
-            from behavior import distance
-            candidates = sorted(store.state['archive'], key=lambda row: (-row['batches'][0]['dps'], row['key']))[:2 * config['top_k']]
-            chosen = candidates[:1]
-            candidates = candidates[1:]
-            while candidates and len(chosen) < config['top_k']:
-                next_row = min(candidates, key=lambda row: (-min(distance(
-                    row['batches'][0]['behavior'], selected['batches'][0]['behavior'],
-                    store.state['behavior_context'], config['behavior_alpha']) for selected in chosen), row['key']))
-                chosen.append(next_row)
-                candidates.remove(next_row)
-            return [row['key'] for row in chosen]
         def baseline():
             return [row['batches'][0]['dps'] for row in ranking()]
         # Once per invocation, before any old fitness is used. The existing evaluator
@@ -216,55 +200,37 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
             if (old['key'] != row['candidate_key'] or len(batches) != 1
                     or batches[0].get('data_key') != row['batch_key']
                     or digest(batches[0].get('request')) != row['batch_key']
-                    or any(batches[0].get(field) != row[field] for field in ('dps', 'samples'))
-                    or batches[0].get('behavior') != row.get('behavior')):
-                raise ValueError('恢复粗评档案与冻结条件的成功凭据不符；已暂停，旧快照保持不变')
+                    or any(batches[0].get(field) != row[field] for field in ('dps', 'samples'))):
+                raise ValueError('恢复粗评档案与冻结条件的成功凭据不符；已暂停，旧四条保持不变')
         fitness = {row['candidate_key']: row['dps'] for row in verified}
         if any(fitness.get(row['key']) != row['score'] for row in ga['population']):
-            raise ValueError('恢复种群粗分与成功凭据不符；已暂停，旧快照保持不变')
+            raise ValueError('恢复种群粗分与成功凭据不符；已暂停，旧四条保持不变')
         if ga['phase'] == 'initial':
             rows = scores(store.state['starts'], allow_rejections=bool(policy))
-            unique = {}
-            for program, row in zip(store.state['starts'], rows):
-                if row is not None:
-                    unique.setdefault(row['candidate_key'], dict(program=deepcopy(program), key=row['candidate_key'], score=row['dps']))
-            ga['population'] = list(unique.values())
+            ga['population'] = [dict(program=deepcopy(program), key=row['candidate_key'], score=row['dps'])
+                                for program, row in zip(store.state['starts'], rows) if row is not None]
             if not ga['population']:
                 raise ValueError('没有可靠的正式粗评候选；全部候选评分无效')
-            ga['effective_population_size'] = len(ga['population'])
-            if not diverse:
-                ga['rtr_window_size'] = max(1, min(len(ga['population']),
-                    math.ceil(config['rtr_window_ratio'] * len(ga['population']))))
+            if policy:
+                ga['effective_population_size'] = len(ga['population'])
             ga.update(phase='breed', baseline=baseline())
             store.checkpoint()
         while ga['phase'] == 'breed':
             runtime.check()
-            if (policy or diverse) and (type(ga.get('effective_population_size')) is not int
+            if policy and (type(ga.get('effective_population_size')) is not int
                     or ga['effective_population_size'] != len(ga['population']) or not ga['population']):
-                raise ValueError('有效种群大小与已冻结检查点不符')
-            if not diverse and ga.get('rtr_window_size') != max(1, min(len(ga['population']),
-                    math.ceil(config['rtr_window_ratio'] * ga['effective_population_size']))):
-                raise ValueError('RTR窗口与冻结初始人数不符')
+                raise ValueError('正式有效种群大小与已冻结检查点不符')
             population = [individual(row) for row in ga['population']]
             pending = ga.get('pending')
             if pending is None:
-                parent_slots = list(range(len(population)))
-                if diverse:
-                    rng.shuffle(parent_slots)
-                    parents = [population[slot] for slot in parent_slots]
-                else:
-                    parents = select(population, len(population))
-                children = variation(parents, toolbox,
+                children = variation(select(population, len(population)), toolbox,
                     config['crossover_probability'], config['mutation_probability'])
                 pending = dict(programs=[deepcopy(list(child)) for child in children],
-                               parent_slots=parent_slots, regenerations=[0] * len(children), rng=rng.getstate())
+                               regenerations=[0] * len(children), rng=rng.getstate())
                 ga['pending'] = pending
                 store.checkpoint()
             else:
                 rng.setstate(_tuple(pending['rng']))
-            if diverse and (len(pending['programs']) != ga['effective_population_size']
-                    or sorted(pending.get('parent_slots', [])) != list(range(ga['effective_population_size']))):
-                raise ValueError('训练父代配对计划与冻结种群不符')
             for slot in range(len(pending['programs'])):
                 while True:
                     runtime.check()
@@ -272,8 +238,6 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                         key(pending['programs'][slot])
                         break
                     except ValueError as error:
-                        if diverse:
-                            break  # Illegal children never receive a new parent or a replacement proposal.
                         if pending['regenerations'][slot] >= 10:
                             raise ValueError(f'非法子代槽{slot}已耗尽10次额外重生: {error}') from error
                     children = variation(select(population, 2), toolbox,
@@ -284,76 +248,15 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                     store.checkpoint()
             if policy and len(pending['programs']) != ga['effective_population_size']:
                 raise ValueError('正式子代槽数量与已冻结种群不符')
-            if not diverse:
-                if 'windows' not in pending:
-                    pending['windows'] = [rng.sample(range(len(population)), ga['rtr_window_size'])
-                                          for _ in pending['programs']]
-                    pending['rng'] = rng.getstate()
-                    store.checkpoint()
-                if (len(pending['windows']) != len(pending['programs']) or any(
-                        len(window) != ga['rtr_window_size'] or len(set(window)) != len(window)
-                        or any(type(slot) is not int or not 0 <= slot < len(population) for slot in window)
-                        for window in pending['windows'])):
-                    raise ValueError('RTR无放回窗口提案与冻结人数不符')
-            valid_slots = []
-            for slot, program in enumerate(pending['programs']):
-                try:
-                    key(program)
-                    valid_slots.append(slot)
-                except ValueError:
-                    if not diverse:
-                        raise
-            evaluated = scores([pending['programs'][slot] for slot in valid_slots], allow_rejections=bool(policy))
-            rows = [None] * len(pending['programs'])
-            for slot, row in zip(valid_slots, evaluated):
-                rows[slot] = row
+            rows = scores(pending['programs'], allow_rejections=bool(policy))
             members, fallbacks = [], {}
             for slot, (program, row) in enumerate(zip(pending['programs'], rows)):
                 if row is None:
                     previous = deepcopy(ga['population'][slot])
                     members.append(previous)
-                    if not diverse:
-                        fallbacks[str(slot)] = dict(rejected_key=key(program), status='skipped')
+                    fallbacks[str(slot)] = dict(rejected_key=key(program), retained_key=previous['key'])
                 else:
                     members.append(dict(program=deepcopy(program), key=row['candidate_key'], score=row['dps']))
-            if diverse:
-                from behavior import distance
-                archive = {row['key']: row for row in store.state['archive']}
-                survivors = deepcopy(ga['population'])
-                parents = pending['parent_slots']
-                def separation(child, parent):
-                    return distance(rows[child]['behavior'], archive[survivors[parent]['key']]['batches'][0]['behavior'],
-                                    store.state['behavior_context'], config['behavior_alpha'])
-                for at in range(0, len(parents), 2):
-                    slots = parents[at:at + 2]
-                    children = sorted((i for i in range(at, at + len(slots)) if rows[i] is not None),
-                                      key=lambda i: (rows[i]['candidate_key'], i))
-                    if len(children) == 2:
-                        assignments = [list(zip(children, slots)), list(zip(children, reversed(slots)))]
-                        assignment = min(assignments, key=lambda pairs: (sum(separation(c, p) for c, p in pairs),
-                                                                         tuple((survivors[p]['key'], p) for _, p in pairs)))
-                    elif children:
-                        child = children[0]
-                        assignment = [(child, min(slots, key=lambda p: (separation(child, p), survivors[p]['key'], p)))]
-                    else:
-                        assignment = []
-                    for child, parent in assignment:
-                        if rows[child]['dps'] > survivors[parent]['score']:
-                            survivors[parent] = members[child]
-                members = survivors
-            else:
-                from behavior import distance
-                archive = {row['key']: row for row in store.state['archive']}
-                survivors = deepcopy(ga['population'])
-                for child, row in enumerate(rows):
-                    if row is None:
-                        continue
-                    nearest = min(pending['windows'][child], key=lambda slot: (distance(
-                        row['behavior'], archive[survivors[slot]['key']]['batches'][0]['behavior'],
-                        store.state['behavior_context'], config['behavior_alpha']), survivors[slot]['key'], slot))
-                    if row['dps'] > survivors[nearest]['score']:
-                        survivors[nearest] = members[child]
-                members = survivors
             current = baseline()
             improved = len(current) > len(ga['baseline']) or any(
                 value > old for value, old in zip(current, ga['baseline']))
@@ -363,7 +266,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
             if policy:
                 ga['last_fallbacks'] = fallbacks
             if ga['stagnant'] >= config['stagnation_generations']:
-                ga.update(phase='retest', finalists=finalists())
+                ga.update(phase='retest', finalists=[row['key'] for row in ranking()])
                 if timeline is not None and store.state.get('formal_search'):
                     timeline.stop('stagnation')
                     timeline.mark('normal_retest_started')
@@ -451,8 +354,6 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
     options = seeds._training_options(search_config, diagnostic_logging)
     inputs = None
     if frozen:
-        if frozen[0][2].get('ga', {}).get('algorithm') != TRAINING_ALGORITHM:
-            raise ValueError('旧未完成训练不能混接差异化算法；请创建新任务，旧完整成果仍可读取')
         from simulation_config import reject_removed_search_settings
         from search import config_for
         saved = frozen[0][1]['search_config']
@@ -488,7 +389,7 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
     if expected_key is not None and configuration_key != expected_key:
         raise ValueError('受检标准模板实际英雄/目标与冻结训练分组不符')
     if prepare_only:
-        return dict(status='prepared', algorithm=TRAINING_ALGORITHM, configuration_key=configuration_key,
+        return dict(status='prepared', algorithm=ALGORITHM, configuration_key=configuration_key,
                     population_size=len(ready['queue']), config_key=ready['config_key'],
                     preparation=ready['preparation'])
     scope = seeds.shared_scope(configuration_key)
@@ -509,8 +410,7 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
     else:
         manifest = dict(environment=environment, training_config=config, template_path=str(Path(template).resolve()),
             starts=[row['program'] for row in ready['queue']], sources=ready['queue'],
-            search_config=ready['config'], seed=uuid.uuid4().int % 1000000000,
-            behavior_context=context['behavior_context'], algorithm=TRAINING_ALGORITHM)
+            search_config=ready['config'], seed=uuid.uuid4().int % 1000000000)
         manifest['stage_plan'] = _stage_plan(config, manifest['seed'])
         folder = root / uuid.uuid4().hex
         folder.mkdir(parents=True)
@@ -533,18 +433,16 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
             simulation_config=ready['simulation_config']), resumed=bool(active))
         timeline.configure(profile_sha=ready['template_sha'], engines=ready['engines'],
             simulation_config=ready['simulation_config'], config=manifest['search_config'], burst=context['burst'])
-        timeline.context['algorithm'].update(training=TRAINING_ALGORITHM, random_seed=manifest['seed'], training_config=config)
+        timeline.context['algorithm'].update(training=ALGORITHM, random_seed=manifest['seed'], training_config=config)
         runtime.search_timeline = timeline
     try:
         if not store.state:
             rng = random.Random(manifest['seed'])
             store.state.update(run_id=uuid.uuid4().hex, starts=manifest['starts'], config=execution_config,
                 capabilities=context['capabilities'], configuration_key=configuration_key, burst=context['burst'],
-                behavior_context=manifest['behavior_context'],
-                ga=dict(algorithm=TRAINING_ALGORITHM, phase='initial', generation=0, stagnant=0,
+                ga=dict(algorithm=ALGORITHM, phase='initial', generation=0, stagnant=0,
                         population=[], pending=None, rng=rng.getstate(), finals={}))
-        if (store.state.get('ga', {}).get('algorithm') != TRAINING_ALGORITHM
-                or store.state.get('behavior_context') != manifest['behavior_context']
+        if (store.state.get('ga', {}).get('algorithm') != ALGORITHM
                 or store.state.get('starts') != manifest['starts']):
             raise ValueError('GA检查点算法或冻结初始种群身份不符')
         store.character, store.simulation_config = character, ready['simulation_config']
@@ -573,13 +471,9 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
             store.checkpoint()
             if timeline is not None:
                 timeline.saved('completed')
-        return dict(status='completed', algorithm=TRAINING_ALGORITHM, population_size=len(manifest['starts']),
+        return dict(status='completed', algorithm=ALGORITHM, population_size=len(manifest['starts']),
             complete_generations=ga['generation'], configuration_key=configuration_key,
             selected=len(selected), task_path=str(folder), training_config=config,
-            retest=selected[0]['evaluation']['retest'],
-            evaluation_counts=dict(native_batch_starts=store.state.get('native_batch_starts', 0),
-                **{key: store.state.get(key, 0) if execution_config['diagnostic_logging'] else None
-                   for key in ('batch_requests', 'batch_cache_hits')}),
             ineligible=ga.get('ineligible', {}))
     except BaseException as error:
         store.state.update(status='paused', error=str(error))
@@ -598,7 +492,7 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
 
 
 def _retest_scores(ga, store, *, condition, stage_plan, config, character, simulation_config,
-                   scenarios=SCENARIOS, require_positive=False):
+                   scenarios=SCENARIOS):
     from result_store import DATA_ROOT, read_many, report_locations
     receipts = {}
     qualified = []
@@ -621,14 +515,14 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
                         or row['candidate_key'] != identity):
                     raise ValueError('发布复测凭据与冻结候选/条件/成绩不符')
                 if row['batch_key'] in receipts:
-                    raise ValueError('发布复测凭据重复；旧快照保持不变')
+                    raise ValueError('发布复测凭据重复；旧四条保持不变')
                 receipts[row['batch_key']] = (cached, index, scenario)
             samples = sum(row['samples'] for row in batches)
             results[scenario] = dict(dps=sum(row['dps'] * row['samples'] for row in batches) / samples,
                                        samples=samples, batches=batches)
         nominal = results['nominal']['dps']
-        if (len(scenarios) > 1 or require_positive) and nominal <= 0:
-            ga.setdefault('ineligible', {})[identity] = '正常复测均分≤0，不具备正质量发布资格'
+        if len(scenarios) > 1 and nominal <= 0:
+            ga.setdefault('ineligible', {})[identity] = '正常复测均分≤0，无法定义相对损失'
             continue
         loss = max(((nominal - results[name]['dps']) / nominal for name in scenarios[1:]), default=0.)
         qualified.append(dict(identity=identity, nominal=nominal, loss=loss, scenarios=results))
@@ -643,34 +537,23 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
     for group, targets in groups.items():
         saved_rows = read_many('batches', [group])
         if len(saved_rows) > 12:
-            raise ValueError('发布报告组超过十二份；旧快照保持不变')
+            raise ValueError('发布报告组超过十二份；旧四条保持不变')
         found = set()
         for saved in saved_rows:
             key = saved.get('batch_key')
             if key not in targets:
                 continue
             if key in found:
-                raise ValueError('发布复测报告重复；旧快照保持不变')
+                raise ValueError('发布复测报告重复；旧四条保持不变')
             found.add(key)
             cached, index, scenario = targets[key]
             _validate_saved_batch(saved, key, cached, character, index, scenario,
                                   simulation_config)
         if found != targets.keys():
-            raise ValueError('发布缺少完整复测报告；旧快照保持不变')
+            raise ValueError('发布缺少完整复测报告；旧四条保持不变')
         # Only small receipts survive the group; do not retain the last full report.
         del saved_rows, saved
     return qualified
-
-
-def retest_budget(ga, config, scenarios=SCENARIOS):
-    """Frozen finalist workload, separate from actual valid samples or cache activity."""
-    planned_batches = len(ga['finalists']) * len(scenarios) * config['retest_batches']
-    receipts = {row['batch_key']: row for identity in ga['finalists'] for scenario in scenarios
-                for row in ga['finals'].get(identity, {}).get(scenario, {}).values()}
-    return dict(candidates=len(ga['finalists']), scenarios=len(scenarios),
-        batches_per_candidate=config['retest_batches'], iterations_per_batch=config['retest_iterations'],
-        planned_batches=planned_batches, planned_requested_iterations=planned_batches * config['retest_iterations'],
-        completed_batches=len(receipts), effective_samples=sum(row['samples'] for row in receipts.values()))
 
 
 def _selected(ga, store, manifest, character, ready, configuration_key):
@@ -680,15 +563,18 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
     condition = digest(manifest)
     qualified = _retest_scores(ga, store, condition=condition,
         stage_plan=manifest['stage_plan'], config=manifest['training_config'], character=character,
-        simulation_config=ready['simulation_config'], require_positive=True)
-    config = manifest['training_config']
-    if len(qualified) < config['min_publish']:
+        simulation_config=ready['simulation_config'])
+    if len(qualified) < 4:
         reasons = '; '.join(identity[:12] + ': ' + reason for identity, reason in ga.get('ineligible', {}).items())
-        raise ValueError('正常完整复测后合格人数不足最低发布数；旧快照保持不变' + ('; ' + reasons if reasons else ''))
+        raise ValueError('五场景完整复测后合格不同行为不足四条；旧四条保持不变' + ('; ' + reasons if reasons else ''))
     nominal = sorted(qualified, key=lambda row: (-row['nominal'], row['identity']))
-    if len(qualified) > config['top_k']:
-        raise ValueError('冻结入围名单超过训练终评上限')
-    chosen = nominal
+    stable = min(qualified, key=lambda row: (row['loss'], -row['nominal'], row['identity']))
+    chosen = []
+    for row in [nominal[0], stable, *nominal]:
+        if row['identity'] not in {item['identity'] for item in chosen}:
+            chosen.append(row)
+        if len(chosen) == 4:
+            break
     result = []
     for row in chosen:
         program = archive[row['identity']]['program']
@@ -699,10 +585,9 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
             class_name=character.class_name, spec=character.spec, targets=ready['simulation_config']['target_count'],
             program=program, family='ga', score=row['nominal'],
             scores=[item['dps'] for item in row['scenarios']['nominal']['batches']],
-            template_sha256=ready['template_sha'], engines=ready['engines'], contract_version=3,
-            evaluation=dict(scenarios=row['scenarios'],
-                retest=retest_budget(ga, config),
+            template_sha256=ready['template_sha'], engines=ready['engines'], contract_version=2,
+            evaluation=dict(scenarios=row['scenarios'], stability_loss=row['loss'],
                 nominal_champion=row['identity'] == nominal[0]['identity'],
-                publication=dict(count=len(chosen), top_k=config['top_k'], min_publish=config['min_publish'])))
+                stable_representative=row['identity'] == stable['identity']))
         result.append(record)
     return result

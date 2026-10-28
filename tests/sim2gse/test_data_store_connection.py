@@ -47,30 +47,12 @@ assert m['read_records']('measurements','one',columns=['score'],filters={'score'
 assert m['read_records']('measurements','one',columns=['score'],filters={'score':8})==[]
 assert m['write']('binary_measurements','one',[{'score':8,'payload':bytes([0,255])}],schema={'score':'INTEGER','payload':'BLOB'},binary=True)==1
 assert m['read_records']('binary_measurements','one',columns=['payload'],filters={'score':8})==[{'payload':bytes([0,255])}]
-sys.path.insert(0,sys.argv[2])
-from seed_training import SELECTED_V2_SCHEMA,selected_contract_version
-rows=[]
-for identity in ('first','second'):
- row=dict.fromkeys(SELECTED_V2_SCHEMA)
- row.update(candidate_id=identity,contract_version=3,evaluation={'publication':{'count':2,'top_k':8,'min_publish':1}})
- rows.append(row)
-assert m['write']('seed_selected','scope',rows,schema=SELECTED_V2_SCHEMA)==2
-snapshot=m['read_records']('seed_selected','scope')
-assert all(isinstance(row['evaluation'],str) for row in snapshot)
-assert selected_contract_version(snapshot)==3
 print(json.dumps(list(m['iter_rows']('SELECT score,parts[1].value AS part FROM measurements',tables=['measurements']))))
 """
-    result = subprocess.run([sys.executable, "-c", program, str(adapter), str(REPOSITORY / 'projects/sim2gse')], env=env,
+    result = subprocess.run([sys.executable, "-c", program, str(adapter)], env=env,
                             text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [{"score": 7, "part": 4}]
-
-
-@pytest.mark.parametrize('evaluation', ['{broken', '[]', 'null', '42', '"text"', [], 42])
-def test_selected_v3_rejects_malformed_or_non_object_evaluation(evaluation):
-    from seed_training import selected_contract_version
-    with pytest.raises(ValueError, match='v3.*evaluation'):
-        selected_contract_version([dict(candidate_id='one',contract_version=3,evaluation=evaluation)])
 
 
 def test_page_classifies_chained_locator_permission_error_without_http(monkeypatch):

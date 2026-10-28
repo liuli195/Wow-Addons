@@ -56,17 +56,6 @@ let running=false,taskId=null,timer=null,inspected=null;
 function resetResult(){resultSection.hidden=true;for(const [field,button] of Object.values(outputs)){field.value='';button.disabled=true;}collectionResult.value='';copyCollection.disabled=true;document.getElementById('dualResults').hidden=true;resumeButton.hidden=true;localStorage.removeItem('sim2gse-task');resultNote.textContent='等待运行结果';document.getElementById('copyStatus').textContent='';importResult.hidden=true;importResult.textContent='';}
 function showError(message){error.textContent=message;error.hidden=false;}
 function resetProgress(){progress.value=0;progressText.textContent='等待开始';progressNote.textContent='开始后，这里会展示实际任务进度。';}
-function sceneEvidence(scene){
- const label=scene.purpose==='single_target'?'单目标':'5目标',parts=[];
- parts.push(scene.effective_population_size!=null&&scene.rtr_window_size!=null?'初始人数'+scene.effective_population_size+'，窗口'+scene.rtr_window_size:'人数/窗口待初评');
- if(scene.generation!=null)parts.push('第'+scene.generation+'代');
- const budget=scene.retest_budget;
- if(budget?.planned_requested_iterations!=null){
-  parts.push('复测'+budget.candidates+'个候选，'+budget.completed_batches+'/'+budget.planned_batches+'批，计划'+budget.planned_requested_iterations+'次请求，有效样本'+budget.effective_samples);
- }else{parts.push('复测预算/样本尚未提供');}
- if(scene.search_result?.samples!=null)parts.push('冠军有效样本'+scene.search_result.samples);
- return label+'：'+parts.join('，');
-}
 profile.addEventListener('input',()=>{error.hidden=true;resetResult();resetProgress();});
 async function poll(){
  try{
@@ -78,7 +67,7 @@ async function poll(){
   if(state.scenes){
    const labels={single_target:'单目标',aoe:'5目标'},statuses={pending:'等待',running:'运行中',completed:'完成',failed:'失败',incomplete:'未完成'};
    progressText.textContent=state.scenes.map(scene=>labels[scene.purpose]+'：'+(statuses[scene.status]||scene.status)+(scene.status==='running'?'（'+(phases[scene.phase]||'正在准备')+'）':'')).join(' · ');
-   progressNote.textContent='已用时 '+Math.round(state.elapsed_seconds||0)+' 秒；'+(state.stop_policy?'自然早停后完成正常复测，无总时间硬截止。':'旧任务每场计算预算 '+state.scenes[0].total_budget_seconds+' 秒。')+state.scenes.map(sceneEvidence).join('；');
+   progressNote.textContent='已用时 '+Math.round(state.elapsed_seconds||0)+' 秒；'+(state.stop_policy?'自然早停后完成正常复测，无总时间硬截止。'+state.scenes.map(scene=>labels[scene.purpose]+'第 '+(scene.generation||0)+' 代').join('，'):'旧任务每场计算预算 '+state.scenes[0].total_budget_seconds+' 秒。');
    for(const [purpose,[field,button]] of Object.entries(outputs)){field.value=state.exports[purpose]||'';button.disabled=!field.value;}
    collectionResult.value=state.collection_text||'';copyCollection.disabled=!state.collection_ready;
    resultSection.hidden=!state.result_ready;document.getElementById('dualResults').hidden=false;

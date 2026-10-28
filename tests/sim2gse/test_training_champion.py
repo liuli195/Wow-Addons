@@ -124,8 +124,8 @@ def test_dual_seed_scope_is_exact_and_target_count_is_only_source_evidence():
     character = __import__('task').parse_character(reviewed_fixture()[1])
     starts, decisions = _seed_programs([], [unknown, foreign, *rows], character=character, targets=1,
         configuration_key=key, capabilities=_fast_capabilities(), runtime=TaskRuntime(600))
-    assert len(starts) == len(decisions) == 5
-    assert [row['candidate_id'] for row in decisions] == ['scope-0', 'scope-1', 'scope-2', 'scope-3', 'scope-4']
+    assert len(starts) == len(decisions) == 4
+    assert [row['candidate_id'] for row in decisions] == ['scope-0', 'scope-1', 'scope-2', 'scope-3']
     assert all(row['status'] == 'accepted' for row in decisions)
     assert [unknown, foreign, *rows] == original
     aoe, _ = _seed_programs([], rows, character=character, targets=5,
@@ -159,5 +159,5 @@ def test_training_selected_snapshot_uses_explicit_contract_not_source_labels(ver
 @pytest.mark.parametrize('versions', [[2], [1, 2], [True], ['2'], [3]])
 def test_training_selected_snapshot_rejects_mixed_unknown_or_incomplete_contracts(versions):
     import seed_training
-    with pytest.raises(ValueError, match='契约版本|完整四条|发布人数'):
+    with pytest.raises(ValueError, match='契约版本|完整四条'):
         seed_training.selected_contract_version([dict(contract_version=version) for version in versions])

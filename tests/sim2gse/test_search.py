@@ -125,14 +125,8 @@ def _fast_report(character, score, samples):
                  {'encoded_item': item.raw} for slot, item in character.equipment.items()},
         "collected_data": {"dps": {"mean": score, "count": samples, "variance": 0}, "fight_length": {"mean": 180},
                            "resource_overflowed": {"runic_power": {"mean": 0}}},
-        "stats": [dict(name=action['simc_action'], id=action.get('spell_id', action.get('driver_spell_id')),
-                       item_id=action.get('item_id'), sim2gse_actor_index=1, sim2gse_actor_name=character.name,
-                       sim2gse_owner_type='player', num_executes=dict(mean=30.))
-                  for action in _fast_capabilities()['actions']],
-        "buffs": [dict(name='runic_corruption', spell=51460, uptime=45.)], "buffs_constant": [],
     }
-    return {"report_version": "2.0.0", "version": "1210-01",
-            "sim": {"players": [player], "targets": [{"name": "Damage_Dummy", "level": 90}],
+    return {"sim": {"players": [player], "targets": [{"name": "Damage_Dummy", "level": 90}],
                     "statistics": {"raid_dps": {"mean": score, "count": samples}},
                     "options": {"dbc": {"Live": {"build_level": 69587, "wow_version": "12.1.0.69587"}, "version_used": "Live"}}}}
 

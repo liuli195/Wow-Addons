@@ -419,10 +419,6 @@ def _public_state(state: dict, destination: Path) -> dict:
                     "canonicalized_duplicates")
     if all(search.get(name) is not None for name in metric_names):
         response["search_metrics"] = {name: int(search[name]) for name in metric_names}
-    for name in ('effective_population_size', 'rtr_window_size'):
-        value = search.get(name, (state.get('ga') or {}).get(name))
-        if value is not None:
-            response.setdefault('search_metrics', {})[name] = value
     observation = state.get("search_observability") or (state.get("search") or {}).get("observability")
     if observation and observation.get("mode") != "off":
         response["search_observability"] = observation

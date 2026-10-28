@@ -1,3 +1,0 @@
-.........                                                                [100%]
-9 passed, 102 deselected in 0.51s
-exit_code=0

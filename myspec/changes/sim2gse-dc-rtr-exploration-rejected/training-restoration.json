@@ -1,0 +1,389 @@
+{
+  "status": "completed",
+  "source_commit": "a914e40c9e20225647729b0ea16d680cc476fdf9",
+  "initial_exit": {
+    "exit_code": 2,
+    "elapsed_seconds": 1531.4256052970886,
+    "cumulative_new_bytes": 2240927972,
+    "ended_utc": "2026-10-28T13:58:02.471251+00:00"
+  },
+  "resume_exit": {
+    "exit_code": 0,
+    "elapsed_seconds": 1217.4778764247894,
+    "cumulative_new_bytes": 2430566039,
+    "ended_utc": "2026-10-28T14:21:37.085394+00:00"
+  },
+  "groups": [
+    {
+      "scope": {
+        "hero_talent": "sanlayn",
+        "specialization_id": 252,
+        "target_type": "aoe"
+      },
+      "contract_version": 2,
+      "selected": 4,
+      "batch_references": 60,
+      "present": 60,
+      "generation": 21,
+      "consumer_accepted": 4,
+      "ids": [
+        "sim2gse-search-behavior-v2-438a52546f53a6b3337db9ae6f5e0fa16771f5b3062eb2532b548788cb8abd96",
+        "sim2gse-search-behavior-v2-90908301f965ff2d1b3de5b4e844f85d354c901abc2fd2b517c1523f71205727",
+        "sim2gse-search-behavior-v2-05a09ab303a9382e3845386e394d9eb1f77957c753915afb0d5f4b119ee9b40d",
+        "sim2gse-search-behavior-v2-7b0fdf73914625c4b89dedbab7c5dd8ef3285d3b49e3204a821ca8bd0f3dbc1d"
+      ],
+      "scores": [
+        402731.4128487863,
+        391870.4100833667,
+        400873.3428020386,
+        393313.83946042793
+      ],
+      "seed": 871336292,
+      "stage_plan": {
+        "search": {
+          "iterations": 32,
+          "seeds": [
+            748124483
+          ]
+        },
+        "feedback": {
+          "iterations": 2,
+          "seeds": [
+            208781619
+          ]
+        },
+        "nominal": {
+          "iterations": 128,
+          "seeds": [
+            869148639,
+            173888531,
+            525687487
+          ]
+        },
+        "jitter": {
+          "iterations": 128,
+          "seeds": [
+            372921366,
+            566395014,
+            730380969
+          ]
+        },
+        "pause": {
+          "iterations": 128,
+          "seeds": [
+            960594243,
+            980499100,
+            584936899
+          ]
+        },
+        "slow": {
+          "iterations": 128,
+          "seeds": [
+            680854917,
+            765922595,
+            393693436
+          ]
+        },
+        "phase": {
+          "iterations": 128,
+          "seeds": [
+            359720540,
+            758498171,
+            262393357
+          ]
+        }
+      },
+      "training_config": {
+        "max_processes": 5,
+        "max_trainings": 4,
+        "coarse_iterations": 32,
+        "retest_batches": 3,
+        "retest_iterations": 128,
+        "stagnation_generations": 2,
+        "top_k": 8,
+        "tournament_size": 3,
+        "crossover_probability": 0.8,
+        "mutation_probability": 0.8
+      }
+    },
+    {
+      "scope": {
+        "hero_talent": "rider_of_the_apocalypse",
+        "specialization_id": 252,
+        "target_type": "aoe"
+      },
+      "contract_version": 2,
+      "selected": 4,
+      "batch_references": 60,
+      "present": 60,
+      "generation": 43,
+      "consumer_accepted": 4,
+      "ids": [
+        "sim2gse-search-behavior-v2-b0f058bb0c9d551965fc1f0253bba63cc6a69391c82ba1b30aadfe2cc8ce2f6c",
+        "sim2gse-search-behavior-v2-0cf5c01615a2343a9c056c6631d6384bd5c948f2c5d8ea5f763ba76a62cf5b8e",
+        "sim2gse-search-behavior-v2-3cbae779ae760a7b5335aae38d7876dfa36f5550e5c68e469ba7f0fc90a95ea9",
+        "sim2gse-search-behavior-v2-d2d7342be503f97b08fbc5c390edb52a1b38acc10c5c0e4e68c31010330ba6dd"
+      ],
+      "scores": [
+        396628.15594247164,
+        395756.2754284491,
+        395756.2754284491,
+        395756.2754284491
+      ],
+      "seed": 945206991,
+      "stage_plan": {
+        "search": {
+          "iterations": 32,
+          "seeds": [
+            487457167
+          ]
+        },
+        "feedback": {
+          "iterations": 2,
+          "seeds": [
+            922020755
+          ]
+        },
+        "nominal": {
+          "iterations": 128,
+          "seeds": [
+            836885607,
+            949609924,
+            913528251
+          ]
+        },
+        "jitter": {
+          "iterations": 128,
+          "seeds": [
+            384202092,
+            180488962,
+            925714197
+          ]
+        },
+        "pause": {
+          "iterations": 128,
+          "seeds": [
+            945856232,
+            528794828,
+            72676588
+          ]
+        },
+        "slow": {
+          "iterations": 128,
+          "seeds": [
+            590039908,
+            165655828,
+            845974677
+          ]
+        },
+        "phase": {
+          "iterations": 128,
+          "seeds": [
+            959838232,
+            733896455,
+            900481658
+          ]
+        }
+      },
+      "training_config": {
+        "max_processes": 5,
+        "max_trainings": 4,
+        "coarse_iterations": 32,
+        "retest_batches": 3,
+        "retest_iterations": 128,
+        "stagnation_generations": 2,
+        "top_k": 8,
+        "tournament_size": 3,
+        "crossover_probability": 0.8,
+        "mutation_probability": 0.8
+      }
+    },
+    {
+      "scope": {
+        "hero_talent": "sanlayn",
+        "specialization_id": 252,
+        "target_type": "single_target"
+      },
+      "contract_version": 2,
+      "selected": 4,
+      "batch_references": 60,
+      "present": 60,
+      "generation": 26,
+      "consumer_accepted": 4,
+      "ids": [
+        "sim2gse-search-behavior-v2-9bb6c50a10fec2c32209c595b0a5930c001e88f6c1df532d0e6a0e45f13c67a6",
+        "sim2gse-search-behavior-v2-1e309264148d9054efac25d469185e901ecaeaf7ca0235a2acc9c7ef9193cc19",
+        "sim2gse-search-behavior-v2-a0e98742000628b7451b0bc2d603d107c051963be8a69715058850abceb9545c",
+        "sim2gse-search-behavior-v2-af1973b75817028629219df45789531c9768b69c0093f92190ba28c6a200028c"
+      ],
+      "scores": [
+        152472.72297807367,
+        150936.7191384868,
+        152342.1864755025,
+        151173.58485587605
+      ],
+      "seed": 322255064,
+      "stage_plan": {
+        "search": {
+          "iterations": 32,
+          "seeds": [
+            878728623
+          ]
+        },
+        "feedback": {
+          "iterations": 2,
+          "seeds": [
+            330648563
+          ]
+        },
+        "nominal": {
+          "iterations": 128,
+          "seeds": [
+            117214098,
+            348170199,
+            32603273
+          ]
+        },
+        "jitter": {
+          "iterations": 128,
+          "seeds": [
+            317024653,
+            564684547,
+            31861270
+          ]
+        },
+        "pause": {
+          "iterations": 128,
+          "seeds": [
+            380122786,
+            537570256,
+            499133145
+          ]
+        },
+        "slow": {
+          "iterations": 128,
+          "seeds": [
+            932223492,
+            854675636,
+            804621753
+          ]
+        },
+        "phase": {
+          "iterations": 128,
+          "seeds": [
+            969196445,
+            426334342,
+            69138181
+          ]
+        }
+      },
+      "training_config": {
+        "max_processes": 5,
+        "max_trainings": 4,
+        "coarse_iterations": 32,
+        "retest_batches": 3,
+        "retest_iterations": 128,
+        "stagnation_generations": 2,
+        "top_k": 8,
+        "tournament_size": 3,
+        "crossover_probability": 0.8,
+        "mutation_probability": 0.8
+      }
+    },
+    {
+      "scope": {
+        "hero_talent": "rider_of_the_apocalypse",
+        "specialization_id": 252,
+        "target_type": "single_target"
+      },
+      "contract_version": 2,
+      "selected": 4,
+      "batch_references": 60,
+      "present": 60,
+      "generation": 23,
+      "consumer_accepted": 4,
+      "ids": [
+        "sim2gse-search-behavior-v2-4e26456d25aff9475a30cc6ef35c393daed42323d7bbb6cbff10097b8ed0da0e",
+        "sim2gse-search-behavior-v2-2f50f71e4c975fbfdef84cbb47e033a9f8e2ddc062124f9b92e24b6f2d980e41",
+        "sim2gse-search-behavior-v2-e3cdb6a7b0eb348ee28a775842c8f68fff22695bc52317d555280225d654af1d",
+        "sim2gse-search-behavior-v2-c9a31f6e3cc29a29264f03235ca39a34d8d27e1dc88a68ad6c465adf768fb688"
+      ],
+      "scores": [
+        167732.3638459219,
+        166279.6277542321,
+        165693.35501301274,
+        165616.2702132204
+      ],
+      "seed": 519401175,
+      "stage_plan": {
+        "search": {
+          "iterations": 32,
+          "seeds": [
+            217281127
+          ]
+        },
+        "feedback": {
+          "iterations": 2,
+          "seeds": [
+            471687772
+          ]
+        },
+        "nominal": {
+          "iterations": 128,
+          "seeds": [
+            209422201,
+            909747521,
+            281051804
+          ]
+        },
+        "jitter": {
+          "iterations": 128,
+          "seeds": [
+            814791374,
+            243795716,
+            30737145
+          ]
+        },
+        "pause": {
+          "iterations": 128,
+          "seeds": [
+            479661915,
+            513324433,
+            703104621
+          ]
+        },
+        "slow": {
+          "iterations": 128,
+          "seeds": [
+            753515715,
+            697198871,
+            261647724
+          ]
+        },
+        "phase": {
+          "iterations": 128,
+          "seeds": [
+            686812601,
+            899095595,
+            210769615
+          ]
+        }
+      },
+      "training_config": {
+        "max_processes": 5,
+        "max_trainings": 4,
+        "coarse_iterations": 32,
+        "retest_batches": 3,
+        "retest_iterations": 128,
+        "stagnation_generations": 2,
+        "top_k": 8,
+        "tournament_size": 3,
+        "crossover_probability": 0.8,
+        "mutation_probability": 0.8
+      }
+    }
+  ],
+  "consumer": "all four scopes accepted four programs; no SimC search",
+  "production_data": "data",
+  "cleanup": "see .local/t/gr/final-cleanup.json"
+}

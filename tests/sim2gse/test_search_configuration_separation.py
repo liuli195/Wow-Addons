@@ -40,7 +40,7 @@ def test_formal_run_uses_five_workers_and_eight_stagnant_generations(memory_ga):
     assert result['status'] == 'completed'
     assert peak == 5
     assert result['search']['complete_generations'] == 8
-    assert result['search']['formal_search']['version'] == 3
+    assert result['search']['formal_search']['version'] == 2
 
 
 @pytest.mark.parametrize('file_values, overrides, expected', [
@@ -143,7 +143,7 @@ def test_public_result_reads_frozen_v1_without_current_defaults(monkeypatch, res
     assert result['search']['formal_search'] == frozen
 
 
-def test_training_configuration_does_not_inherit_formal_runtime_or_curve():
+def test_training_file_projection_keeps_only_preexisting_timeline_setting():
     from io import StringIO
     from simulation_config import load_training_search_config, load_training_config
     values = load_training_search_config(StringIO('''[search]
@@ -160,7 +160,7 @@ search_timeline=true
 '''))
     assert values == dict(iterations=100, max_processes=2, random_seed=20260912,
         input_interval_ms=300, reset_events=(), diagnostic_logging=False,
-        diagnostics='off', search_observability='off', search_timeline=False)
+        diagnostics='off', search_observability='off', search_timeline=True)
     assert load_training_search_config(StringIO('[search]\nsearch_timeline=true'),
         search_timeline=False)['search_timeline'] is False
     with pytest.raises(ValueError, match='max_processes'):

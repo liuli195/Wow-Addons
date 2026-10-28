@@ -63,7 +63,7 @@ def check_scene(scene, ready):
     from program import canonicalize_search_program
     from search import digest, _validate_saved_batch
     from seed_training import shared_scope, template_character, SELECTED_V2_SCHEMA
-    from population_training import TRAINING_ALGORITHM, _selected, _stage_plan
+    from population_training import ALGORITHM, _selected, _stage_plan
     from task import _rule_hashes, parse_character
     from engine import ROOT
     from formal_search import contract_for
@@ -89,7 +89,7 @@ def check_scene(scene, ready):
                                 'starts', 'training_evaluation_plan', 'burst'])
     ga = state['ga']
     require(state['status'] == 'completed' and ga['phase'] == 'published' and
-            ga['algorithm'] == TRAINING_ALGORITHM and state['configuration_key'] == key and
+            ga['algorithm'] == ALGORITHM and state['configuration_key'] == key and
             state['starts'] == manifest['starts'] and state['burst'] == environment['burst'] and
             state['training_evaluation_plan'] == manifest['stage_plan'] ==
             _stage_plan(manifest['training_config'], manifest['seed']) and
@@ -101,15 +101,15 @@ def check_scene(scene, ready):
     expected = _selected(ga, store, manifest, character,
         dict(context=dict(capabilities=state['capabilities']), template_sha=environment['template'],
              engines=ready['engines'], simulation_config=environment['simulation']), key)
-    require(len(scene['selected']) == len(expected) and set(scene['selected']) ==
-            {row['candidate_id'] for row in expected}, '索引必须指向本次完整GA成果')
+    require(len(scene['selected']) == 4 and set(scene['selected']) ==
+            {row['candidate_id'] for row in expected}, '索引必须指向本次完整四条GA成果')
     selected = []
     for expected_row in expected:
         row = one('seed_selected', shared_scope(key), list(SELECTED_V2_SCHEMA),
                   {'candidate_id': expected_row['candidate_id'], 'family': 'ga'})
         row = {name: decode(value) if SELECTED_V2_SCHEMA[name] == 'JSON' else value
                for name, value in row.items()}
-        require(row == expected_row, '入选成果与完整正常复测和代表选择不一致')
+        require(row == expected_row, '入选四条与完整五场景复测和代表选择不一致')
         selected.append(row)
 
     run = one('runs', scene['run_id'], ['run_id', 'status', 'engines', 'condition_key',

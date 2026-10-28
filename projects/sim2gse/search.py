@@ -83,13 +83,12 @@ def config_for(values=None, *, training=False, legacy=False, _defer_interval_ali
         if type(config[key]) is not int or not 1 <= config[key] <= maximum:
             raise ValueError('搜索配置超出范围: '+key)
     if not training and not legacy:
-        for key in set(FORMAL_ALGORITHM_DEFAULTS) - {'max_processes', 'crossover_probability', 'mutation_probability', 'behavior_alpha', 'rtr_window_ratio'}:
+        for key in set(FORMAL_ALGORITHM_DEFAULTS) - {'max_processes', 'crossover_probability', 'mutation_probability'}:
             if type(config[key]) is not int or config[key] < (4 if key == 'top_k' else 1):
                 raise ValueError('正式搜索配置必须为正整数（top_k至少4）: ' + key)
-        for key in ('crossover_probability', 'mutation_probability', 'behavior_alpha', 'rtr_window_ratio'):
+        for key in ('crossover_probability', 'mutation_probability'):
             value = config[key]
-            if (type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1
-                    or key == 'rtr_window_ratio' and value == 0):
+            if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
                 raise ValueError('正式搜索概率必须为0至1的有限数: ' + key)
     if type(config['input_interval_ms']) is not int or not 50 <= config['input_interval_ms'] <= 2000:
         raise ValueError('按键间隔必须为 50 至 2000 毫秒的整数')
@@ -1307,11 +1306,6 @@ class TaskStore:
                 brief['stop_policy'] = self.state['formal_search']['stop_policy']
                 brief['generation'] = self.state.get('ga', {}).get('generation', 0)
                 brief['phase'] = self.state.get('ga', {}).get('phase', brief['phase'])
-                brief.update({key: self.state['ga'][key] for key in
-                    ('effective_population_size', 'rtr_window_size') if key in self.state.get('ga', {})})
-                if self.state.get('ga', {}).get('finalists'):
-                    from population_training import retest_budget
-                    brief['retest_budget'] = retest_budget(self.state['ga'], self.state['formal_search']['config'])
             brief['completed_batches'] = self.persisted_batches
             if not self.diagnostic_logging:
                 for key in ('batch_requests', 'batch_cache_hits', 'native_batch_starts', 'canonicalized_duplicates'):
@@ -1453,7 +1447,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         raise ValueError('旧训练供应器检查点身份不兼容，不能恢复；原成果仍可读取')
     if not training or training_runner is None or training_stage_plan is None:
         raise ValueError('搜索必须提供共享GA执行器及完整冻结评分计划')
-    scenarios = ('nominal',)
+    scenarios = ('nominal',) if store.state.get('formal_search') else ('nominal', 'jitter', 'pause', 'slow', 'phase')
     expected = dict(search=(None, 1), feedback=(2, 1), **{name: (None, None) for name in scenarios})
     if set(training_stage_plan) != set(expected):
         raise ValueError('GA必须冻结全部评分阶段')
@@ -1493,7 +1487,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             if not state.get('formal_search') and observability.get('mode') != observation_mode:
                 raise ValueError('任务恢复时搜索记录模式不能改变')
             observability['mode'] = observation_mode
-            observability['algorithm'] = store.state['ga']['algorithm']
+            observability['algorithm'] = 'ga-easimple-v1'
 
     initializing = ('behavior_identity_version' not in store.saved_fields
                     or store.saved_fields.get('phase', (None, 0))[0] == 'initialize')
@@ -1669,10 +1663,6 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 if cached['request'] != request:
                     raise ValueError('缓存请求身份不符')
                 _validate_saved_batch(saved, key, cached, character, index, scenario, simulation_config)
-                if state.get('behavior_context') and purpose == 'search':
-                    from behavior import describe
-                    if cached.get('behavior') != describe(saved['report'], character, state['behavior_context']):
-                        raise ValueError('缓存行为描述与原生报告不符')
             except (BudgetExceeded, TaskCancelled):
                 raise
             except (ValueError, KeyError, TypeError, RuntimeError) as error:
@@ -1723,9 +1713,6 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                        feedback=feedback_from_trace(result['trace'],[a['simc_action'] for a in capabilities['actions']],
                            player_report(result['report'], character)['collected_data'].get('resource_overflowed',{}).get(reference['identity']['resource'],{}).get('mean',0)>0,
                            {v['simc_action']: a['simc_action'] for a in capabilities['actions'] for v in a.get('variants',[a])}) if trace else None)
-            if state.get('behavior_context') and purpose == 'search':
-                from behavior import describe
-                row['behavior'] = describe(result['report'], character, state['behavior_context'])
             if trace and 'position_summary' not in row:
                 row['position_summary'] = _position_observations(
                     compiled, behavior_id, result['trace'])
@@ -1824,7 +1811,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         return dict(candidate_key=canonical['identity'], seed=row['request']['seed'],
                     input_seed=row['request']['input_seed'], iterations=row['requested_iterations'],
                     dps=row['dps'], samples=row['samples'], batch_key=row['data_key'],
-                    cached=bool(row.get('cached')), **({'behavior': row['behavior']} if 'behavior' in row else {}))
+                    cached=bool(row.get('cached')))
 
     def feedback_training(program):
         canonical, diagnostic = training_batch(program, 'feedback', trace=True)
