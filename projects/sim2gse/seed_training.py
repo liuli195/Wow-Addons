@@ -369,7 +369,8 @@ def shared_scope(configuration_key, syntax=None):
             not isinstance(configuration_key['hero_talent'], str) or not configuration_key['hero_talent'] or
             configuration_key['target_type'] not in ('single_target', 'aoe')):
         raise ValueError('起点共享范围缺少有效专精、英雄天赋或目标类型')
-    return 'scope-' + digest(configuration_key) + (('-syntax-' + digest(syntax)) if syntax is not None else '')
+    return 'scope-' + digest(configuration_key if syntax is None else
+                           dict(configuration_key=configuration_key, syntax=syntax))
 
 
 
