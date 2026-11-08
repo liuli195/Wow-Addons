@@ -26,7 +26,7 @@ from runtime import replace_file, diagnostic_summary
 from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
 from formal_search import runtime_for as formal_runtime, STOP_POLICY as FORMAL_STOP_POLICY
 from simulation_config import (RETIRED_SEARCH_SETTINGS, config_for as simulation_config_for,
-                               engine_options, load_config)
+                               engine_options, load_config, SYNTAX_UNSET)
 
 
 class TaskError(ValueError):
@@ -1727,12 +1727,12 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
 def run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
-             version=None, gse_context=None, use_burst=False, burst_identity=None, syntax_config=None) -> dict:
+             version=None, gse_context=None, use_burst=False, burst_identity=None, syntax_config=SYNTAX_UNSET) -> dict:
     if mode == 'single':
         from simulation_config import load_syntax_config
         from program import check_search_syntax
         if isinstance(search_config, dict) and 'syntax' in search_config:
-            if syntax_config is not None:
+            if syntax_config is not SYNTAX_UNSET:
                 raise ValueError('syntax存在重复权威来源')
             search_config = dict(search_config)
             syntax_config = search_config.pop('syntax')
@@ -1741,6 +1741,8 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
         syntax_config = load_syntax_config(syntax_config=syntax_config)
         if program is not None:
             check_search_syntax(program, syntax_config)
+    elif syntax_config is SYNTAX_UNSET:
+        syntax_config = None
     timeline = None
     if mode == 'optimize':
         from simulation_config import load_search_config

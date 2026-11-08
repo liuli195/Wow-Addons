@@ -18,7 +18,7 @@ def test_search_configuration_overlays_only_explicit_syntax_keys():
     assert config['syntax'] == SIMPLE
     config = load_search_config(BytesIO(document), syntax_config={'loop': True})
     assert config['syntax'] == dict(SIMPLE, loop=True)
-    for invalid in ({'loop': None}, {'looop': False}, {'loop': 0}):
+    for invalid in (None, {'loop': None}, {'looop': False}, {'loop': 0}):
         with pytest.raises(ValueError):
             load_search_config(BytesIO(document), syntax_config=invalid)
 

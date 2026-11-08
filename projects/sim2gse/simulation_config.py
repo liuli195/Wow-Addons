@@ -16,6 +16,7 @@ DEFAULT_CONFIG = {
 }
 _CONFIG_KEYS = frozenset(DEFAULT_CONFIG)
 SYNTAX_DEFAULTS = dict(multi_command_blocks=True, loop=True, wait_clicks=True, castsequence=True)
+SYNTAX_UNSET = object()
 
 
 def syntax_for(values=None):
@@ -28,13 +29,15 @@ def syntax_for(values=None):
     return dict(SYNTAX_DEFAULTS, **values)
 
 
-def load_syntax_config(path=None, *, syntax_config=None, document=None):
+def load_syntax_config(path=None, *, syntax_config=SYNTAX_UNSET, document=None):
     document = _load_document(path) if document is None else document
     section = document.get('syntax', {})
     syntax_for(section)
-    if syntax_config is not None:
+    if syntax_config is not SYNTAX_UNSET:
+        if not isinstance(syntax_config, dict):
+            raise ValueError('syntax语法配置必须为对象')
         syntax_for(syntax_config)
-    return syntax_for(dict(section, **(syntax_config or {})))
+    return syntax_for(dict(section, **({} if syntax_config is SYNTAX_UNSET else syntax_config)))
 
 
 def config_for(values: dict | None = None) -> dict:
@@ -149,15 +152,15 @@ def _search_values(path, overrides, *, document=None):
     return dict(section, **{key: value for key, value in overrides.items() if value is not None})
 
 
-def load_search_config(path=None, *, default_input_interval_ms=300, syntax_config=None, **overrides):
+def load_search_config(path=None, *, default_input_interval_ms=300, syntax_config=SYNTAX_UNSET, **overrides):
     """运行参数优先，false有效；default_input_interval_ms=None表示所属入口尚未选内置间隔，缺失时不补齐。"""
     from search import config_for
     if 'input_interval_ms' in overrides and overrides['input_interval_ms'] is None:
         raise ValueError('按键间隔必须为 50 至 2000 毫秒的整数')
     document = _load_document(path)
-    frozen_syntax = overrides.pop('syntax', None)
-    if frozen_syntax is not None:
-        if syntax_config is not None:
+    frozen_syntax = overrides.pop('syntax', SYNTAX_UNSET)
+    if frozen_syntax is not SYNTAX_UNSET:
+        if syntax_config is not SYNTAX_UNSET:
             raise ValueError('syntax存在重复权威来源')
         syntax_config = frozen_syntax
     values = _search_values(path, overrides, document=document)
