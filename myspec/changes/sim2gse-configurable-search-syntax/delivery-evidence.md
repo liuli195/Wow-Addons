@@ -7,7 +7,7 @@
 - 实施分支：`codex/sim2gse-configurable-search-syntax`。
 - 实施工作区：`C:/Users/liuli/.codex/worktrees/sim2gse-configurable-search-syntax/Wow Addons`，由Codex原生工作区能力建立。
 - 主工作区：`D:/My Project/Wow Addons`，仍为main，干净。旧循环实验目录无差异，未恢复实验、删除历史资料或启动生产训练。
-- 当前仅完成开发和规格预览；正式规格应用、推送、拉取请求、远端检查、合并和安全收尾等待门禁二。
+- 用户明确确认门禁二；三份正式规格已按预览应用并校验，外部完整交付进行中。
 
 ## 按票核验
 
@@ -38,8 +38,8 @@
 - 使用本次实际加载的MySpec插件生成并校验预览；输入为固定003907dd中的已批准需求、设计和说明，后续仅补齐同一需求内的显示及查询检查。
 - 在既有训练、序列评价、用户流程三份规格分别新增一项范围要求；不删除、改名或撤销原复杂语法条文。
 - 无待决冲突，增量及完整预览校验通过，状态为`READY_TO_APPLY`（预览已就绪，等待应用授权）。
-- 完整差异：`.local/spec-work/current/full-diff.patch`；完整规格：`.local/spec-work/current/preview/`；需求对应：`.local/spec-work/current/traceability.md`。
-- 主规格目录尚未应用差异。
+- 原始预览与验证证据已保留到`.local/sim2gse/acceptance/configurable-search-syntax/gate-two-preview/`，其中有full-diff.patch、preview/、traceability.md和原始日志。
+- 主规格已应用，与备份预览逐字节一致，通过正式规格校验。
 
 ## 限制与下一步
 
@@ -47,3 +47,5 @@
 - 缺少范围凭据的旧未完成任务只读，完整旧成果保留；不同语法范围成果隔离。
 - 300候选/8代表改造、正式成果重新训练及收益比较均不属于本轮。
 - 门禁二确认后，原子应用已预览规格并校验，随后按既有拉取请求流程推送、创建请求、等待远端检查和审查、合并main及安全收尾；不强制删除工作区或历史数据。
+
+门禁二执行：用户已明确确认，预览及输入指纹复核一致后由本次已加载MySpec启动器原子应用。远端检查、合并和收尾的实际结果以本次拉取请求及交付流程状态为准，不提前标记通过。
