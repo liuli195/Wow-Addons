@@ -607,6 +607,18 @@ def test_public_training_reads_shared_file_once_for_all_configuration(monkeypatc
     assert reader.call_count==1 and case.store.state['config']['syntax']==SIMPLE
 
 
+def test_training_command_reports_actual_syntax(monkeypatch,capsys,public_training_memory):
+    import simulation_config,seed_training
+    from test_search_syntax import SIMPLE
+    case=public_training_memory
+    original=simulation_config._load_document
+    monkeypatch.setattr(simulation_config,'_load_document',lambda path=None:dict(original(path),syntax=SIMPLE))
+    assert seed_training.main(['--project','/memory','run','--legacy','--targets','1',
+        '--template',str(case.template),'--workspace','/memory/work'])==0
+    result=json.loads(capsys.readouterr().out)[0]
+    assert result['syntax']==SIMPLE and '一键一技能' in result['syntax_summary']
+
+
 @pytest.mark.parametrize('explicit', [False, True])
 def test_public_training_resume_freezes_computation_and_only_changes_explicit_observation(
         monkeypatch, public_training_memory, explicit):

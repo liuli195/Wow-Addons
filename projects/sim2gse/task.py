@@ -1592,7 +1592,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                      elapsed_seconds=runtime.elapsed_seconds, error=str(error), inflight={})
         store.save()
         result = {k:state.get(k) for k in (
-            'status', 'phase', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
+            'status', 'phase', 'config', 'syntax', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
             'batch_requests', 'batch_cache_hits', 'native_batch_starts',
             'canonicalized_duplicates', 'error')}
         observation = state.get('search_observability')
@@ -2501,7 +2501,13 @@ def main(argv=None):
             result = run_task(args.input, args.output, simulation_config=simulation_config,
                               search_config=dict(diagnostic_logging=args.diagnostic_logging,
                                   search_timeline=args.search_timeline))
-        print(json.dumps(dict(status=result['status'], result=str(args.output.resolve() / 'result.json')), ensure_ascii=False))
+        summary = dict(status=result['status'], result=str(args.output.resolve() / 'result.json'))
+        syntax = (result.get('config') or {}).get('syntax')
+        if syntax is not None:
+            from simulation_config import describe_syntax
+            summary.update(syntax=syntax, syntax_summary=describe_syntax(syntax),
+                           start_rejection_count=start_rejection_count(result.get('search') or result))
+        print(json.dumps(summary, ensure_ascii=False))
         return 0
     except (TaskError, ValueError) as error:
         print(str(error), file=sys.stderr)

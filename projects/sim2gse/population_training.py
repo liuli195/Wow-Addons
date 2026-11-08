@@ -411,10 +411,14 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
     configuration_key = context['configuration_key']
     if expected_key is not None and configuration_key != expected_key:
         raise ValueError('受检标准模板实际英雄/目标与冻结训练分组不符')
+    from simulation_config import describe_syntax
+    syntax_result = dict(syntax=ready['config']['syntax'], syntax_summary=describe_syntax(ready['config']['syntax']),
+        source_rejections=[dict(source_id=row['source_id'], reason=row['reason'])
+                           for row in ready.get('entries', []) if row['status'] == 'rejected'])
     if prepare_only:
         return dict(status='prepared', algorithm=ALGORITHM, configuration_key=configuration_key,
                     population_size=len(ready['queue']), config_key=ready['config_key'],
-                    preparation=ready['preparation'])
+                    preparation=ready['preparation'], **syntax_result)
     scope = seeds.shared_scope(configuration_key, ready['config']['syntax'])
     root = Path(workspace).resolve() / 'ga' / scope
     environment = dict(template=ready['template_sha'], engines=ready['engines'],
@@ -502,7 +506,7 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
         return dict(status='completed', algorithm=ALGORITHM, population_size=len(manifest['starts']),
             complete_generations=ga['generation'], configuration_key=configuration_key,
             selected=len(selected), task_path=str(folder), training_config=config,
-            ineligible=ga.get('ineligible', {}))
+            ineligible=ga.get('ineligible', {}), **syntax_result)
     except BaseException as error:
         store.state.update(status='paused', error=str(error))
         store.checkpoint()

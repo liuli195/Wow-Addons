@@ -136,6 +136,16 @@ def test_public_formal_result_rejects_lost_policy_receipt(public_formal_memory):
         task.read_task('/memory/formal')
 
 
+def test_formal_command_reports_actual_syntax(monkeypatch,capsys,public_formal_memory):
+    import simulation_config,task
+    from test_search_syntax import SIMPLE
+    monkeypatch.setattr(simulation_config,'_load_document',lambda path=None:dict(syntax=SIMPLE,
+        simulation=dict(target_count=1,scene='single_target')))
+    assert task.main(['/memory/role.simc','--output','/memory/formal'])==0
+    result=json.loads(capsys.readouterr().out)
+    assert result['syntax']==SIMPLE and '一键一技能' in result['syntax_summary']
+
+
 def test_mutate_fetches_parent_feedback_only_after_its_usage_gate():
     import random
     from search import mutate
