@@ -146,7 +146,8 @@ def test_formal_command_reports_actual_syntax(monkeypatch,capsys,public_formal_m
     assert result['syntax']==SIMPLE and '一键一技能' in result['syntax_summary']
 
 
-def test_cancelled_formal_command_keeps_actual_rejection_count(monkeypatch,capsys,public_formal_memory):
+@pytest.mark.parametrize('cancel',[False,True])
+def test_formal_command_keeps_actual_rejection_count(monkeypatch,capsys,public_formal_memory,cancel):
     import simulation_config,task,sequence
     from runtime import TaskCancelled
     from seed_training import shared_scope
@@ -159,10 +160,11 @@ def test_cancelled_formal_command_keeps_actual_rejection_count(monkeypatch,capsy
         spec='unholy',configuration_key=key,program=program,contract_version=2) for i,program in enumerate(programs)]
     monkeypatch.setattr(simulation_config,'_load_document',lambda path=None:dict(syntax=SIMPLE,
         simulation=dict(target_count=1,scene='single_target')))
-    monkeypatch.setattr(sequence,'evaluate',lambda *a,**k:(_ for _ in ()).throw(TaskCancelled('pause')))
+    if cancel:
+        monkeypatch.setattr(sequence,'evaluate',lambda *a,**k:(_ for _ in ()).throw(TaskCancelled('pause')))
     assert task.main(['/memory/role.simc','--output','/memory/formal'])==0
     result=json.loads(capsys.readouterr().out)
-    assert result['status']=='cancelled' and result['syntax']==SIMPLE
+    assert result['status']==('cancelled' if cancel else 'completed') and result['syntax']==SIMPLE
     assert result['start_rejection_count']==1
 
 

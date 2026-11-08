@@ -1543,6 +1543,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                               condition_key=condition, store=store,
                               simulation_config=simulation_config)
             result['search']['configuration_key'] = state['seed_configuration_key']
+            result['start_rejection_count'] = start_rejection_count(state)
             result.update(config=config, simulation_config=simulation_config,
                               syntax=state['syntax'],
                               character=character, output_root=destination,capabilities=state['capabilities'],
