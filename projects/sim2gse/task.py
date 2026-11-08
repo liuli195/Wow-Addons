@@ -1952,12 +1952,6 @@ def start_rejection_count(search):
     decisions.extend(search[name] for name in ('training_champion_adaptation', 'formal_champion_adaptation')
                      if search.get(name))
     return sum(row.get('status') == 'rejected' for row in decisions)
-    config = state.get('config')
-    if any(key in (config or {}) for key in
-            ('rule_initialization_enabled', 'adaptive_selector_enabled', 'rule_diagnostics_policy')):
-        raise TaskError('旧任务含已移除搜索开关，身份不兼容，不能续跑；请创建新任务，原成果仍可读取')
-    from simulation_config import reject_removed_search_settings
-    reject_removed_search_settings(config or {})
 
 
 def _resume_task(output_root, **kwargs):
