@@ -1595,6 +1595,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
             'status', 'phase', 'config', 'syntax', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
             'batch_requests', 'batch_cache_hits', 'native_batch_starts',
             'canonicalized_duplicates', 'error')}
+        result['start_rejection_count'] = start_rejection_count(state)
         observation = state.get('search_observability')
         if observation and observation.get('mode') != 'off':
             with store.lock:
@@ -2506,7 +2507,7 @@ def main(argv=None):
         if syntax is not None:
             from simulation_config import describe_syntax
             summary.update(syntax=syntax, syntax_summary=describe_syntax(syntax),
-                           start_rejection_count=start_rejection_count(result.get('search') or result))
+                           start_rejection_count=result.get('start_rejection_count', start_rejection_count(result.get('search') or result)))
         print(json.dumps(summary, ensure_ascii=False))
         return 0
     except (TaskError, ValueError) as error:

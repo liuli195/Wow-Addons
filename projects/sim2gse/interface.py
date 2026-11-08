@@ -426,7 +426,7 @@ def _public_state(state: dict, destination: Path) -> dict:
         response.update(syntax=syntax, syntax_summary=describe_syntax(syntax))
     search = state.get("search") or state
     from task import start_rejection_count
-    response['start_rejection_count'] = start_rejection_count(search)
+    response['start_rejection_count'] = state.get('start_rejection_count', start_rejection_count(search))
     if natural:
         from formal_search import STOP_POLICY
         response.update(stop_policy=STOP_POLICY, generation=state.get("generation", search.get("rounds", 0)))
