@@ -69,6 +69,8 @@ def config_for(values=None, *, training=False, legacy=False, _defer_interval_ali
         if set(values)-set(config)-({'rule_initialization_enabled', 'adaptive_selector_enabled', 'rule_diagnostics_policy'} if legacy else set()):
             raise ValueError('未知搜索配置')
         config.update(values)
+        if not legacy and 'syntax' in values and not isinstance(values['syntax'], dict):
+            raise ValueError('syntax语法配置必须为对象')
         if legacy and 'total_budget_seconds' in values and 'search_budget_seconds' not in values:
             config['search_budget_seconds'] = config['total_budget_seconds']
     if not legacy:

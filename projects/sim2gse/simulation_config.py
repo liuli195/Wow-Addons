@@ -46,15 +46,27 @@ def syntax_receipt(policy):
     return dict(version=1, policy=policy, digest=digest(dict(version=1, policy=policy)))
 
 
-def verify_syntax_receipt(receipt, policy=None):
+def verify_syntax_receipt(receipt, policy=SYNTAX_UNSET):
+    if policy is not SYNTAX_UNSET and (not isinstance(policy, dict) or set(policy) != set(SYNTAX_DEFAULTS)):
+        raise ValueError('冻结语法范围缺失或不完整，请创建新任务')
     if (not isinstance(receipt, dict) or set(receipt) != {'version', 'policy', 'digest'}
             or type(receipt.get('version')) is not int or receipt['version'] != 1
             or not isinstance(receipt.get('policy'), dict)
             or set(receipt['policy']) != set(SYNTAX_DEFAULTS)
             or receipt != syntax_receipt(receipt['policy'])
-            or policy is not None and receipt != syntax_receipt(policy)):
+            or policy is not SYNTAX_UNSET and receipt != syntax_receipt(policy)):
         raise ValueError('冻结语法凭据缺失或不符，请创建新任务')
     return receipt['policy']
+
+
+def describe_syntax(policy):
+    policy = syntax_for(policy)
+    if not any(policy.values()):
+        return '一键一技能；独立爆发保留。'
+    labels = dict(multi_command_blocks='同键多技能', loop='循环块', wait_clicks='空按键', castsequence='连续施法')
+    enabled = '、'.join(label for key, label in labels.items() if policy[key])
+    disabled = '、'.join(label for key, label in labels.items() if not policy[key])
+    return '允许：' + enabled + ('；关闭：' + disabled if disabled else '') + '。'
 
 
 def config_for(values: dict | None = None) -> dict:
@@ -109,10 +121,11 @@ TRAINING_DEFAULTS = dict(max_processes=5, max_trainings=4, coarse_iterations=32,
     tournament_size=3, crossover_probability=0.8, mutation_probability=0.8)
 
 
-def load_training_config(path: str | Path | BinaryIO | TextIO | None = None, *, max_processes=None, max_trainings=None) -> dict:
+def load_training_config(path: str | Path | BinaryIO | TextIO | None = None, *, max_processes=None, max_trainings=None,
+                         _document=None) -> dict:
     """启动读取的GA白名单；普通搜索的资源和采样上限不变。"""
     import math
-    section = _load_document(path).get("training", {})
+    section = (_load_document(path) if _document is None else _document).get("training", {})
     if not isinstance(section, dict) or set(section) - set(TRAINING_DEFAULTS):
         raise ValueError("[training] 包含未知GA配置")
     values = dict(TRAINING_DEFAULTS, **section)

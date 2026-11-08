@@ -282,6 +282,29 @@ def test_prepare_checks_original_structure_before_adaptation_and_cache(prepared_
     assert result['context']['capabilities']['search_syntax'] == SIMPLE
 
 
+def test_prepare_rejects_forbidden_cached_representative(prepared_input):
+    import seed_training as seeds
+    from program import canonicalize_search_program
+    from search import digest
+    from test_search_syntax import SIMPLE
+    case=prepared_input
+    # 合法来源和合法上下文摘要不能为一个违规的缓存代表开绿灯。
+    config=case.inputs['config']
+    config['syntax']=SIMPLE
+    caps=dict(case.header['context']['capabilities'],search_syntax=SIMPLE)
+    identity=canonicalize_search_program([['outbreak']],caps)['identity']
+    case.header['context']['representations']={identity:dict(candidate_id='source',
+        program=[dict(kind='Loop',count=1,blocks=[['outbreak']])])}
+    key_input=dict(version=seeds.PREPARATION_VERSION,template=case.inputs['template_sha'],engines=case.inputs['engines'],
+        simulation=case.inputs['simulation_config'],definition=None,semantics=seeds.semantic_versions(),
+        config=seeds._identity_config(config))
+    case.header['config_key']=digest(key_input)
+    case.header['checksum']=digest([{k:v for k,v in case.header.items() if k!='checksum'}])
+    with pytest.raises(ValueError,match='syntax.loop'):
+        seeds.ensure_prepared('/memory/template',1,'/memory/work',inputs=case.inputs,
+                              sources=[case.source('source',[['outbreak']])])
+
+
 def test_public_training_runs_from_materials_through_four_policy_receipts(monkeypatch, public_training_memory):
     from copy import deepcopy
     import result_store, seed_training
@@ -569,6 +592,19 @@ def test_public_run_training_consumes_interval_reset_logging_and_training_defaul
     assert case.store.state['config']['diagnostic_logging'] is True
     assert case.store.state['config']['diagnostics'] == 'off'
     assert not getattr(case.store, 'diagnostic_summary', None)
+
+
+def test_public_training_reads_shared_file_once_for_all_configuration(monkeypatch,public_training_memory):
+    from unittest.mock import Mock
+    import simulation_config,seed_training
+    from test_search_syntax import SIMPLE
+    case=public_training_memory
+    original=simulation_config._load_document
+    reader=Mock(side_effect=lambda path=None:dict(original(path),syntax=SIMPLE))
+    monkeypatch.setattr(simulation_config,'_load_document',reader)
+    result=seed_training.run_training(case.template,1,'/memory/work',syntax_config={'loop':False})
+    assert result['status']=='completed'
+    assert reader.call_count==1 and case.store.state['config']['syntax']==SIMPLE
 
 
 @pytest.mark.parametrize('explicit', [False, True])

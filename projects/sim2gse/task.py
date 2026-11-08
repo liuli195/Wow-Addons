@@ -1544,6 +1544,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                               simulation_config=simulation_config)
             result['search']['configuration_key'] = state['seed_configuration_key']
             result.update(config=config, simulation_config=simulation_config,
+                              syntax=state['syntax'],
                               character=character, output_root=destination,capabilities=state['capabilities'],
                               profile=json.loads((destination/'profile.json').read_text(encoding='utf-8')),
                               reference_data_key=state.get('reference_data_key'))
@@ -1850,10 +1851,16 @@ def start_task(input_path, output_root, **kwargs):
     timeline_origin = None
     if kwargs.get('mode', 'optimize') == 'optimize':
         from simulation_config import load_search_config
-        config = load_search_config(**(config or {}))
+        if kwargs.pop('_config_frozen', False):
+            from search import config_for
+            config = config_for(config)
+        else:
+            config = load_search_config(syntax_config=kwargs.pop('syntax_config', SYNTAX_UNSET), **(config or {}))
         kwargs['search_config'] = config
         if config['search_timeline']:
             timeline_origin = call_started
+    else:
+        kwargs.pop('_config_frozen', None)
     from search import config_for
     runtime = formal_runtime(config_for(config)) if kwargs.get("mode", "optimize") == "optimize" else TaskRuntime(600)
     if timeline_origin is not None:
@@ -1904,7 +1911,7 @@ def _read_resume_checkpoint(output_root):
             raise TaskError('任务缺少恢复清单')
         state = json.loads(row[0])
         if state == {'storage_format': 2}:
-            names = ('formal_search_version', 'formal_search', 'config', 'syntax', 'rule_snapshot',
+            names = ('formal_search_version', 'formal_search', 'config', 'syntax', 'capabilities', 'burst', 'rule_snapshot',
                      'rule_context', 'formal_champion_publication_intent')
             rows = connection.execute('SELECT key,value FROM state_fields WHERE key IN (' +
                 ','.join('?' for _ in names) + ')', names)
@@ -1933,12 +1940,18 @@ def _require_current_formal_resume(state):
         reject_removed_search_settings(state.get('config') or {})
     except ValueError as error:
         raise TaskError('旧搜索能力已移除，身份不兼容，请创建新任务: ' + str(error)) from error
-    if 'parent_id' not in state:
-        from simulation_config import verify_syntax_receipt
-        try:
-            verify_syntax_receipt(state.get('syntax'), (state.get('config') or {}).get('syntax'))
-        except ValueError as error:
-            raise TaskError(str(error)) from error
+    from simulation_config import verify_syntax_receipt
+    try:
+        verify_syntax_receipt(state.get('syntax'), (state.get('config') or {}).get('syntax'))
+    except ValueError as error:
+        raise TaskError(str(error)) from error
+
+
+def start_rejection_count(search):
+    decisions = [*search.get('seed_adaptations', []), *search.get('start_adaptations', [])]
+    decisions.extend(search[name] for name in ('training_champion_adaptation', 'formal_champion_adaptation')
+                     if search.get(name))
+    return sum(row.get('status') == 'rejected' for row in decisions)
     config = state.get('config')
     if any(key in (config or {}) for key in
             ('rule_initialization_enabled', 'adaptive_selector_enabled', 'rule_diagnostics_policy')):
@@ -2217,9 +2230,9 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         return json.loads(value) if isinstance(value, str) else value
 
     frozen_syntax = None
-    if 'syntax' in (decode(saved['config']) or {}):
+    if 'syntax' in (decode(saved['config']) or {}) or saved.get('syntax') is not None:
         from simulation_config import verify_syntax_receipt
-        frozen_syntax = verify_syntax_receipt(decode(saved.get('syntax')), decode(saved['config'])['syntax'])
+        frozen_syntax = verify_syntax_receipt(decode(saved.get('syntax')), (decode(saved['config']) or {}).get('syntax'))
     search = dict(
         candidate_count=saved['search_candidate_count'],
         unique_candidates=saved['search_unique_candidates'],
@@ -2261,6 +2274,7 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         run_id=run_id, status=saved['status'], phase=saved['phase'],
         profile=decode(saved['profile']), identity=decode(saved['identity']),
         config=decode(saved['config']), simulation_config=decode(saved['simulation_config']),
+        syntax=decode(saved.get('syntax')),
         elapsed_seconds=saved['elapsed_seconds'], completed_batches=saved['completed_batches'],
         reference_data_key=saved['reference_data_key'], controlled_data_key=saved['controlled_data_key'],
         candidate_key=saved['candidate_key'], candidate_data_key=saved['candidate_data_key'],

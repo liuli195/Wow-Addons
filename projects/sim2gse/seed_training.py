@@ -772,6 +772,9 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
             first = min(group, key=lambda row: row['source_id'])
             representative = dict(candidate_id=first['candidate_id'], program=first['initial_program'])
             representations[behavior_id] = representative
+        check_search_syntax(representative['program'], config['syntax'])
+        if canonicalize_search_program(representative['program'], context['capabilities'])['identity'] != behavior_id:
+            raise ValueError('准备快照代表与冻结行为身份不符')
         for entry in group:
             entry.update(representative_id=representative['candidate_id'],
                          representative_program=representative['program'])
@@ -854,7 +857,10 @@ def run_training(template, targets, workspace, *, use_burst=False, max_processes
             raise ValueError('syntax存在重复权威来源')
         search_config['syntax'] = syntax_config
     search_config = _training_options(search_config, diagnostic_logging)
-    options = load_training_search_config(_default_interval_ms=200 if use_burst else 300, **search_config)
+    from simulation_config import _load_document, load_training_config
+    document = _load_document()
+    options = load_training_search_config(_document=document, _default_interval_ms=200 if use_burst else 300, **search_config)
+    parallelism = load_training_config(_document=document, max_processes=max_processes, max_trainings=max_trainings)
     timeline_origin = None
     if options['search_timeline']:
         from time import monotonic
@@ -863,7 +869,8 @@ def run_training(template, targets, workspace, *, use_burst=False, max_processes
         sources = sync_history(template_character(Path(template).read_text(encoding='utf-8')))
         return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
                              max_processes=max_processes, max_trainings=max_trainings, sources=sources,
-                             search_config=search_config, new_search_config=options, _timeline_origin=timeline_origin)
+                             search_config=search_config, new_search_config=options, training_config=parallelism,
+                             _timeline_origin=timeline_origin)
 
 
 def check_training(template=None, *, use_burst=True, training_config=None):
@@ -907,7 +914,7 @@ def selected_contract_version(rows, syntax=None):
     for row in rows:
         evaluation = decode(row.get('evaluation')) or {}
         if syntax is not None or 'syntax' in evaluation:
-            policy = verify_syntax_receipt(evaluation.get('syntax'), syntax)
+            policy = verify_syntax_receipt(evaluation.get('syntax'), syntax if syntax is not None else SYNTAX_UNSET)
             from program import check_search_syntax
             program = decode(row.get('program'))
             check_search_syntax(program, policy)
@@ -1131,13 +1138,15 @@ def main(argv=None):
             search_config = ({'search_timeline': args.search_timeline}
                              if args.search_timeline is not None else {})
             search_config = _training_options(search_config, args.diagnostic_logging)
-            options = load_training_search_config(_default_interval_ms=200 if args.use_burst else 300, **search_config)
+            from simulation_config import _load_document
+            document = _load_document()
+            options = load_training_search_config(_document=document, _default_interval_ms=200 if args.use_burst else 300, **search_config)
             timeline_origin = None
             if args.command == 'run' and options['search_timeline']:
                 from time import monotonic
                 timeline_origin = monotonic()
             from simulation_config import load_training_config
-            parallelism = load_training_config(max_processes=args.max_processes, max_trainings=args.max_trainings)
+            parallelism = load_training_config(_document=document, max_processes=args.max_processes, max_trainings=args.max_trainings)
             max_processes = parallelism['max_processes']
             from seed_activity import training_activity
             with writer_lock():

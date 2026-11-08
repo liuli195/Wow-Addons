@@ -8,6 +8,7 @@
 <header><h1>角色按键序列优化器</h1><p>粘贴角色信息，找到适合你的按键序列。</p></header>
 <main>
 <section><h2><span class="number">01</span>导入角色</h2>
+<p id="syntaxSummary" class="note" role="status">开始后显示本次使用的语法范围。</p>
 <label for="profile">角色导出字符串</label><textarea id="profile" rows="7" spellcheck="false" placeholder="在这里粘贴从 SimC（角色导出插件）复制的完整文本"></textarea>
 <p id="error" class="error" role="alert" hidden></p><label for="interval">模拟按键间隔（毫秒）</label><input id="interval" type="number" min="50" max="2000" step="1" value="200"><p class="note">依次寻找单目标和5目标序列，每场遗传搜索自然早停后完成正常场景复测，没有总时间硬截止；可随时取消。另需读取角色和整理结果。爆发宏中的内容自动排除在普通循环之外。地面技能在角色脚下释放。</p><button id="start">开始运行</button>
 </section>
@@ -62,6 +63,7 @@ async function poll(){
   const response=await fetch('/api/tasks/'+taskId,{cache:'no-store'}),state=await response.json();
   if(!response.ok)throw new Error(state.error||'读取任务状态失败');
   error.hidden=true;if(state.storage_unavailable)showError(state.error);
+  if(state.syntax_summary)document.getElementById('syntaxSummary').textContent=state.syntax_summary+(state.start_rejection_count?' 已拒绝 '+state.start_rejection_count+' 条不合规起点。':'');
   if(state.progress==null){progress.removeAttribute('value');}else{progress.value=state.progress;} progressText.textContent=phases[state.phase]||state.phase||'正在处理';
   progressNote.textContent='已完成 '+(state.completed_batches||0)+' 个真实模拟批次，已用时 '+Math.round(state.elapsed_seconds||0)+' 秒。';
   if(state.scenes){
