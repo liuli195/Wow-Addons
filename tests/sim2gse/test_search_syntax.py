@@ -53,6 +53,37 @@ def test_training_rejects_invalid_shared_policy_before_reading_materials():
                                        syntax_config={'loop': 1})
 
 
+def test_simple_mutation_reaches_single_edits_and_targeted_feedback_stays_in_scope():
+    from itertools import product
+    import random
+    from search import mutate
+    from program import check_search_syntax
+    from test_search import _fast_capabilities
+    caps = _fast_capabilities()
+    caps['actions'] = caps['actions'][:2]
+    caps['search_syntax'] = SIMPLE
+    names = ('outbreak', 'death_coil')
+    operations = set()
+    for size in range(1,5):
+        for words in product(names, repeat=size):
+            parent = [[name] for name in words]
+            reached = set()
+            for seed in range(1500):
+                detail = {}
+                child = mutate(parent,caps,random.Random(seed),observation=detail,
+                    feedback=dict(positions=[dict(source_position=dict(segment=0),unresolved_inputs=1)]))
+                check_search_syntax(child,SIMPLE)
+                operations.add(detail['actual_mutation'])
+                reached.add(tuple(block[0] for block in child))
+            # 独立列举每个位置的替换、首尾及中间插入、删除目标。
+            expected = {words[:i]+(name,)+words[i+1:] for i in range(size) for name in names}
+            expected |= {words[:i]+(name,)+words[i:] for i in range(size+1) for name in names}
+            if size>1: expected |= {words[:i]+words[i+1:] for i in range(size)}
+            assert expected-{words} <= reached
+    assert {'replace','insert','delete','move','swap'} <= operations
+    assert not operations & {'block','loop','wait_clicks','castsequence'}
+
+
 @pytest.mark.parametrize('program,key', [
     ([['a', 'b']], 'multi_command_blocks'),
     ([dict(kind='Loop', count=2, blocks=[['a']])], 'loop'),

@@ -354,7 +354,8 @@ def group_workers(workspace, templates, config, targets=(1, 5), *, effective_con
 
 def run_group(template, targets, workspace, *, cancel_event, use_burst, sources, config,
               prepare_only=False, materials=None, diagnostic_logging=None, search_config=None,
-              expected_key=None, timeline_origin=None, burst_identity=None, training_overrides=None):
+              expected_key=None, timeline_origin=None, burst_identity=None, training_overrides=None,
+              new_search_config=None):
     import seed_training as seeds
     from task import _write_json, _rule_hashes
     from engine import ROOT
@@ -396,6 +397,10 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
         inputs = seeds._training_inputs(template, targets, cancel_event=cancel_event,
             use_burst=use_burst, max_processes=config['max_processes'],
             burst_identity=burst_identity, _frozen_config=resumed)
+    elif new_search_config is not None:
+        inputs = seeds._training_inputs(template, targets, cancel_event=cancel_event,
+            use_burst=use_burst, max_processes=config['max_processes'],
+            burst_identity=burst_identity, _frozen_config=new_search_config)
     ready = seeds.ensure_prepared(template, targets, workspace, cancel_event=cancel_event,
         use_burst=use_burst, sources=sources, materials=materials, inputs=inputs,
         max_processes=config['max_processes'], search_config=options,
@@ -611,6 +616,7 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
             scores=[item['dps'] for item in row['scenarios']['nominal']['batches']],
             template_sha256=ready['template_sha'], engines=ready['engines'], contract_version=2,
             evaluation=dict(syntax=syntax_receipt(ready['context']['capabilities']['search_syntax']),
+                program_digest=digest(program),
                 scenarios=row['scenarios'], stability_loss=row['loss'],
                 nominal_champion=row['identity'] == nominal[0]['identity'],
                 stable_representative=row['identity'] == stable['identity']))

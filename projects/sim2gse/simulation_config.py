@@ -190,7 +190,8 @@ def load_search_config(path=None, *, default_input_interval_ms=300, syntax_confi
     return config
 
 
-def load_training_search_config(path=None, *, syntax_config=SYNTAX_UNSET, _document=None, **overrides):
+def load_training_search_config(path=None, *, syntax_config=SYNTAX_UNSET, _document=None,
+                                _default_interval_ms=300, **overrides):
     """训练文件仅沿用旧曲线开关，其余运行值只接受训练显式调用。"""
     from search import config_for, TRAINING_SEARCH_DEFAULTS
     document = _load_document(path) if _document is None else _document
@@ -207,6 +208,9 @@ def load_training_search_config(path=None, *, syntax_config=SYNTAX_UNSET, _docum
         raise ValueError('预训练不支持搜索参数，请使用专用训练配置: ' + ', '.join(sorted(unsupported)))
     values = {key: value for key, value in section.items() if key == 'search_timeline'}
     values.update({key: value for key, value in overrides.items() if value is not None})
+    values.setdefault('input_interval_ms', _default_interval_ms)
+    if values.get('diagnostic_logging'):
+        values.setdefault('diagnostics', 'summary')
     projected = {key: value for key, value in values.items() if key in TRAINING_SEARCH_DEFAULTS}
     config = config_for(projected, training=True)
     config.update({key: projected[key] for key in ('diagnostics', 'search_observability') if key in projected})
