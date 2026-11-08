@@ -528,7 +528,8 @@ class InterfaceTests(unittest.TestCase):
             export['program_digest']=digest(export['program'])
             with self.assertRaises(HTTPError) as caught:
                 self._json_request('GET','/api/tasks/'+task_id)
-            self.assertEqual(caught.exception.code,400)
+            self.assertEqual(caught.exception.code,404)
+            self.assertIn('syntax.loop',json.loads(caught.exception.read())['error'])
 
     def test_legacy_dual_without_rule_snapshot_remains_readable_but_cannot_resume(self):
         import engine
