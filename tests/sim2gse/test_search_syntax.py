@@ -1,0 +1,68 @@
+"""搜索语法配置通过公开任务和编译入口生效。"""
+from io import BytesIO
+from pathlib import Path
+import sys
+from unittest.mock import patch
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'projects' / 'sim2gse'))
+
+SIMPLE = dict(multi_command_blocks=False, loop=False, wait_clicks=False, castsequence=False)
+
+
+def test_search_configuration_overlays_only_explicit_syntax_keys():
+    from simulation_config import load_search_config
+    document = ('[syntax]\n' + '\n'.join(f'{key}=false' for key in SIMPLE)).encode()
+    config = load_search_config(BytesIO(document), syntax_config={'loop': False})
+    assert config['syntax'] == SIMPLE
+    config = load_search_config(BytesIO(document), syntax_config={'loop': True})
+    assert config['syntax'] == dict(SIMPLE, loop=True)
+    for invalid in ({'loop': None}, {'looop': False}, {'loop': 0}):
+        with pytest.raises(ValueError):
+            load_search_config(BytesIO(document), syntax_config=invalid)
+
+
+@pytest.mark.parametrize('program,key', [
+    ([['a', 'b']], 'multi_command_blocks'),
+    ([dict(kind='Loop', count=2, blocks=[['a']])], 'loop'),
+    ([dict(kind='WaitClicks', clicks=2)], 'wait_clicks'),
+    ([dict(kind='CastSequence', members=['a', 'b'], reset=None)], 'castsequence'),
+])
+def test_single_task_rejects_forbidden_syntax_before_storage_or_native(program, key):
+    import task
+    with patch('result_store.ensure_available', side_effect=AssertionError('不应访问存储')), \
+            pytest.raises(ValueError, match=key):
+        task.run_task('/memory/character.simc', '/memory/task', mode='single',
+                      program=program, syntax_config=SIMPLE)
+
+
+def test_search_program_binds_one_base_button_without_expanding_variants():
+    from program import from_search_program
+    base = dict(kind='spell', spell_id=85948, base_spell_id=85948,
+                simc_action='festering_strike', name='Festering Strike', gcd_ms=1500)
+    variant = dict(base, spell_id=458128, simc_action='festering_scythe', name='Festering Scythe')
+    capabilities = dict(actions=[dict(base, variants=[base, variant])], precombat_actions=[],
+                        search_syntax=SIMPLE)
+    result = from_search_program([['festering_strike']], capabilities)
+    assert len(result['nodes']) == 1
+    assert result['nodes'][0]['commands'] == [base]
+    # 原全开放路径仍保留原来的形态展开能力。
+    capabilities.pop('search_syntax')
+    assert len(from_search_program([['festering_strike']], capabilities)['nodes'][0]['commands']) == 2
+
+
+@pytest.mark.real
+def test_single_button_variants_really_export_as_one_gse_step(tmp_path):
+    from program import from_search_program, compile_program
+    from sequence import compiled_program
+    base = dict(kind='spell', spell_id=85948, base_spell_id=85948,
+                simc_action='festering_strike', name='Festering Strike', gcd_ms=1500)
+    variant = dict(base, spell_id=458128, simc_action='festering_scythe', name='Festering Scythe')
+    capabilities = dict(actions=[dict(base, variants=[base, variant])], precombat_actions=[],
+                        search_syntax=SIMPLE)
+    exported = compile_program(from_search_program([['festering_strike']] * 2, capabilities),
+                               tmp_path / 'export', identity=dict(class_id=6, spec_id=252),
+                               capabilities=capabilities)
+    assert [step['spell'] for step in exported['compiled_steps']] == [85948, 85948]
+    assert compiled_program(exported) == [['festering_strike'], ['festering_strike']]

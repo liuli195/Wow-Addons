@@ -22,7 +22,20 @@ def select(capabilities, program=None):
             raise ValueError('动作块必须包含 1 至 16 个命令')
         if any(not isinstance(name, str) or name not in available for name in block):
             raise ValueError('程序包含当前角色不支持的动作')
-        commands = [a for name in block for a in available[name].get('variants', [available[name]])]
+        from simulation_config import syntax_for
+        single = not syntax_for(capabilities.get('search_syntax'))['multi_command_blocks']
+        commands = []
+        for name in block:
+            action = available[name]
+            variants = action.get('variants', [action])
+            if single:
+                base = [row for row in variants if row.get('kind') != 'spell' or
+                        row.get('spell_id') == row.get('base_spell_id', row.get('spell_id'))]
+                if len(base) != 1:
+                    raise ValueError('单技能按钮无法唯一绑定: ' + name)
+                commands.append(base[0])
+            else:
+                commands.extend(variants)
         if len(commands) > 16:
             raise ValueError('展开后的动作块超过 16 个命令')
         if len({a.get('base_spell_id', a['simc_action']) for a in commands if a.get('gcd_ms',0)>0}) > 1:

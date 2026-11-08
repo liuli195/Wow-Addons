@@ -339,7 +339,9 @@ class SimulationConfigTests(unittest.TestCase):
                               tournament_size=3, crossover_probability=.8, mutation_probability=.8,
                               iterations=128, random_seed=20260912,
                               reset_events=(), diagnostic_logging=False, diagnostics="summary",
-                              search_observability="full", search_timeline=False)},
+                              search_observability="full", search_timeline=False,
+                              syntax=dict(multi_command_blocks=True, loop=True,
+                                          wait_clicks=True, castsequence=True))},
         )
 
     def test_invalid_service_config_stops_before_starting_server(self) -> None:

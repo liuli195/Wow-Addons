@@ -57,18 +57,22 @@ def verify_behavior_identity_state(state):
 
 
 def config_for(values=None, *, training=False, legacy=False, _defer_interval_alignment=False):
-    from simulation_config import reject_removed_search_settings
+    from simulation_config import reject_removed_search_settings, syntax_for
     if not legacy:
         reject_removed_search_settings(values or {})
     if type(training) is not bool:
         raise ValueError('训练配置开关必须为布尔值')
     config = dict(LEGACY_DEFAULT_CONFIG if legacy else TRAINING_SEARCH_DEFAULTS if training else DEFAULT_CONFIG)
+    if not legacy:
+        config['syntax'] = syntax_for()
     if values:
         if set(values)-set(config)-({'rule_initialization_enabled', 'adaptive_selector_enabled', 'rule_diagnostics_policy'} if legacy else set()):
             raise ValueError('未知搜索配置')
         config.update(values)
         if legacy and 'total_budget_seconds' in values and 'search_budget_seconds' not in values:
             config['search_budget_seconds'] = config['total_budget_seconds']
+    if not legacy:
+        config['syntax'] = syntax_for(config['syntax'])
     limits = [('max_processes', 16 if training else 2 if legacy else 5), ('iterations', 512), ('random_seed', 1000000000)]
     if legacy:
         for key in ('total_budget_seconds', 'search_budget_seconds'):

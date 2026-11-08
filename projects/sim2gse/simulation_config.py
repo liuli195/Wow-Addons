@@ -15,6 +15,26 @@ DEFAULT_CONFIG = {
     "enable_omnium_talents": True,
 }
 _CONFIG_KEYS = frozenset(DEFAULT_CONFIG)
+SYNTAX_DEFAULTS = dict(multi_command_blocks=True, loop=True, wait_clicks=True, castsequence=True)
+
+
+def syntax_for(values=None):
+    if values is None:
+        values = {}
+    if not isinstance(values, dict) or set(values) - set(SYNTAX_DEFAULTS):
+        raise ValueError('syntax包含未知语法配置')
+    if any(type(value) is not bool for value in values.values()):
+        raise ValueError('syntax语法配置必须为布尔值')
+    return dict(SYNTAX_DEFAULTS, **values)
+
+
+def load_syntax_config(path=None, *, syntax_config=None, document=None):
+    document = _load_document(path) if document is None else document
+    section = document.get('syntax', {})
+    syntax_for(section)
+    if syntax_config is not None:
+        syntax_for(syntax_config)
+    return syntax_for(dict(section, **(syntax_config or {})))
 
 
 def config_for(values: dict | None = None) -> dict:
@@ -50,7 +70,7 @@ def _load_document(path=None):
         raise ValueError(f"本地模拟配置无效: {path}: {error}") from error
     if not isinstance(document, dict):
         raise ValueError("本地模拟配置必须是 TOML 对象")
-    unknown = set(document) - {"simulation", "training", "search"}
+    unknown = set(document) - {"simulation", "training", "search", "syntax"}
     if unknown:
         raise ValueError("未知模拟配置区域: " + ", ".join(sorted(unknown)))
     return document
@@ -118,8 +138,8 @@ SEARCH_RUNTIME_DEFAULTS = dict(iterations=128, random_seed=20260912, search_time
 SEARCH_DEFAULTS = dict(FORMAL_ALGORITHM_DEFAULTS, **SEARCH_RUNTIME_DEFAULTS)
 
 
-def _search_values(path, overrides):
-    section = _load_document(path).get('search', {})
+def _search_values(path, overrides, *, document=None):
+    section = (document if document is not None else _load_document(path)).get('search', {})
     if not isinstance(section, dict):
         raise ValueError('[search] 必须是 TOML 表')
     reject_removed_search_settings(section)
@@ -129,17 +149,24 @@ def _search_values(path, overrides):
     return dict(section, **{key: value for key, value in overrides.items() if value is not None})
 
 
-def load_search_config(path=None, *, default_input_interval_ms=300, **overrides):
+def load_search_config(path=None, *, default_input_interval_ms=300, syntax_config=None, **overrides):
     """运行参数优先，false有效；default_input_interval_ms=None表示所属入口尚未选内置间隔，缺失时不补齐。"""
     from search import config_for
     if 'input_interval_ms' in overrides and overrides['input_interval_ms'] is None:
         raise ValueError('按键间隔必须为 50 至 2000 毫秒的整数')
-    values = _search_values(path, overrides)
+    document = _load_document(path)
+    frozen_syntax = overrides.pop('syntax', None)
+    if frozen_syntax is not None:
+        if syntax_config is not None:
+            raise ValueError('syntax存在重复权威来源')
+        syntax_config = frozen_syntax
+    values = _search_values(path, overrides, document=document)
     config = config_for({'input_interval_ms': 300 if default_input_interval_ms is None else default_input_interval_ms, **values},
                         _defer_interval_alignment=default_input_interval_ms is None)
     if default_input_interval_ms is None and 'input_interval_ms' not in values:
         config.pop('input_interval_ms')
     config.update({key: values[key] for key in ('diagnostics', 'search_observability') if key in values})
+    config['syntax'] = load_syntax_config(syntax_config=syntax_config, document=document)
     return config
 
 

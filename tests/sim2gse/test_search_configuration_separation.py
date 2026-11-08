@@ -160,7 +160,8 @@ search_timeline=true
 '''))
     assert values == dict(iterations=100, max_processes=2, random_seed=20260912,
         input_interval_ms=300, reset_events=(), diagnostic_logging=False,
-        diagnostics='off', search_observability='off', search_timeline=True)
+        diagnostics='off', search_observability='off', search_timeline=True,
+        syntax=dict(multi_command_blocks=True, loop=True, wait_clicks=True, castsequence=True))
     assert load_training_search_config(StringIO('[search]\nsearch_timeline=true'),
         search_timeline=False)['search_timeline'] is False
     with pytest.raises(ValueError, match='max_processes'):

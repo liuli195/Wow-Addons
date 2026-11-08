@@ -559,7 +559,8 @@ def _prepare_task(input_path, output_root, *, resume=False, simulation_config=No
 
 
 def _run_single(input_path, destination, character, *, program, phase_ms, runtime, interval_ms=300,
-                simulation_config, gse_program=None, gse_context=None, diagnostic_logging=False, use_burst=False):
+                simulation_config, gse_program=None, gse_context=None, diagnostic_logging=False, use_burst=False,
+                syntax_config=None):
     from engine import prepare_loop, reference, damage_statistics
     from sequence import select, evaluate
     from program import compile_program, from_action_blocks
@@ -617,6 +618,8 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
         effective_character = parse_character(_read_utf8(destination / 'input.simc', description='任务输入副本')[1])
     _, capabilities, context = prepare_loop(native, effective_character, destination, runtime,
                                             definition=definition, interval_ms=interval_ms)
+    if gse_program is None:
+        capabilities = dict(capabilities, search_syntax=syntax_config)
     if not diagnostic_logging:
         native.pop('action_sequence', None)
         native.pop('precombat_sequence', None)
@@ -1014,7 +1017,7 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
         identity = (profile or {}).get('identity', {})
         comparable_config = lambda value: {key: item for key, item in value.items()
             if key not in (*RETIRED_SEARCH_SETTINGS, *FORMAL_ALGORITHM_DEFAULTS,
-                           'search_observability', 'diagnostics', 'diagnostic_logging', 'search_timeline')}
+                               'search_observability', 'diagnostics', 'diagnostic_logging', 'search_timeline', 'syntax')}
         source_burst, current_burst = decode(run['burst']) or {}, state.get('burst') or {}
         source_context = {key: item for key, item in source_burst.items()
                           if key not in ('candidate_key', 'candidate_data_key')}
@@ -1613,7 +1616,7 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
              version=None, gse_context=None, use_burst=False, burst_identity=None,
-             _formal_source_run_ids=None) -> dict:
+             _formal_source_run_ids=None, syntax_config=None) -> dict:
     """执行角色任务；优化模式是产品默认，single 仅保留前两票快速回归。"""
     if type(use_burst) is not bool:
         raise TaskError('爆发开关必须为布尔值')
@@ -1663,6 +1666,8 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
         gse_program = None
     from search import config_for
     config = config_for(search_config)
+    if syntax_config is not None:
+        config['syntax'] = syntax_config
     from result_store import ensure_available
     ensure_available()
     simulation_config = simulation_config_for(simulation_config)
@@ -1680,7 +1685,7 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
                                      runtime=runtime, interval_ms=config["input_interval_ms"],
                                      simulation_config=simulation_config, gse_program=gse_program,
                                      gse_context=gse_context, diagnostic_logging=config["diagnostic_logging"],
-                                     use_burst=use_burst)
+                                     use_burst=use_burst, syntax_config=syntax_config)
                 result['config'] = config
                 result['elapsed_seconds'] = runtime.elapsed_seconds
                 pointer = _store_run(destination, result)
@@ -1722,7 +1727,13 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
 def run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
-             version=None, gse_context=None, use_burst=False, burst_identity=None) -> dict:
+             version=None, gse_context=None, use_burst=False, burst_identity=None, syntax_config=None) -> dict:
+    if mode == 'single':
+        from simulation_config import load_syntax_config
+        from program import check_search_syntax
+        syntax_config = load_syntax_config(syntax_config=syntax_config)
+        if program is not None:
+            check_search_syntax(program, syntax_config)
     timeline = None
     if mode == 'optimize':
         from simulation_config import load_search_config
@@ -1749,6 +1760,7 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
                              cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
                              gse_text=gse_text, sequence_name=sequence_name, version=version,
                              gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity,
+                             syntax_config=syntax_config,
                              )
         from seed_activity import foreground_search
         with foreground_search():
@@ -1757,6 +1769,7 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
                              cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
                              gse_text=gse_text, sequence_name=sequence_name, version=version,
                              gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity,
+                             syntax_config=syntax_config,
                              )
     finally:
         if timeline is not None:
