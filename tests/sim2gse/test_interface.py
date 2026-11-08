@@ -499,6 +499,37 @@ class InterfaceTests(unittest.TestCase):
             self.assertIn('仅可查看',state['syntax_summary'])
         self.input_write.assert_not_called()
 
+    def test_partial_dual_returns_only_completed_export_and_checks_its_policy(self):
+        import result_store
+        from dual_task import PARENT_SCHEMA
+        from search import config_for,digest
+        from test_search_syntax import SIMPLE
+        task_id='b'*32
+        program=dict(adapter='search',metadata={},nodes=[dict(kind='Action',commands=[dict(kind='spell',spell_id=77575)])])
+        text=gse_fixture(['PARTIAL',dict(MetaData=dict(SpecID=252,GSEVersion=3331),Default=1,
+            Versions=[dict(Actions=[dict(Type='Action',type='spell',spell=77575)])])])
+        row=dict.fromkeys(PARENT_SCHEMA)
+        row.update(parent_id=task_id,formal_search_version=1,status='partial',phase='aoe',error='第二场失败',
+            input_sha256='frozen',definition_id='reviewed',spec_id=252,config=config_for({'syntax':SIMPLE}),
+            syntax=syntax_receipt(SIMPLE),simulation_config={},rules={},engines={},preparation_seconds=1.,packaging_seconds=0.,
+            single_target_path='single_target',aoe_path='aoe',single_target_status='completed',aoe_status='failed',
+            single_target_export='one-export',burst_instructions='')
+        export=dict(parent_id=task_id,purpose='single_target',text=text,program=program,
+                    syntax=syntax_receipt(SIMPLE),program_digest=digest(program))
+        with patch.object(result_store,'read_records',side_effect=lambda table,*a,**k:[deepcopy(row if table=='dual_tasks' else export)]), \
+                patch.object(Path,'read_text',return_value=json.dumps(dict(parent_id=task_id))), \
+                patch.object(Path,'exists',lambda path:path.name=='dual.json'):
+            state=self._json_request('GET','/api/tasks/'+task_id)
+            self.assertEqual(state['status'],'partial')
+            self.assertEqual(state['exports'],{'single_target':text})
+            self.assertTrue(state['result_ready'])
+            self.assertFalse(state['collection_ready'])
+            export['program']=dict(program,metadata={'purpose':'burst'},nodes=[dict(kind='Loop',count=2,body=program['nodes'])])
+            export['program_digest']=digest(export['program'])
+            with self.assertRaises(HTTPError) as caught:
+                self._json_request('GET','/api/tasks/'+task_id)
+            self.assertEqual(caught.exception.code,400)
+
     def test_legacy_dual_without_rule_snapshot_remains_readable_but_cannot_resume(self):
         import engine
         import result_store
