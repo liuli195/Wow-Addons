@@ -1,6 +1,6 @@
 # Sim2GSE 探索分支收尾
 
-Status（状态）：ready-for-agent；门禁一已展示并确认，本机文档检查已通过，独立审查及外部交付仍待完成。
+Status（状态）：ready-for-agent；本机文档检查及独立审查已通过，外部交付等待门禁二。
 
 ## 问题
 
