@@ -578,7 +578,8 @@ def test_public_alias_template_cannot_bypass_frozen_group_scheduling(monkeypatch
     context=dict(configuration_key=dict(specialization_id=252,hero_talent='rider_of_the_apocalypse',target_type='single_target'),burst=None)
     monkeypatch.setattr(Path,'glob',lambda *args:iter(()))
     monkeypatch.setattr(seed_training,'ensure_prepared',lambda *args,**kwargs:dict(context=context,queue=[{}],
-        template_sha='same-role-bytes',engines={},simulation_config=dict(target_count=1),config={}))
+        template_sha='same-role-bytes',engines={},simulation_config=dict(target_count=1),
+        config={'syntax': __import__('simulation_config').syntax_for()}))
     import task
     monkeypatch.setattr(task,'_rule_hashes',lambda **kwargs:{})
     with pytest.raises(ValueError,match='跨模板路径'):
@@ -604,6 +605,27 @@ def test_public_run_training_defaults_really_cross_and_mutate_without_global_rng
     assert len(ga['population'])==6 and len(coarse)==len(set(coarse))>6
     assert all(options['iterations']!=2 for _,_,options in case.calls)
     assert algorithms.random is original
+
+
+def test_training_simple_policy_closes_children_and_publication(memory_ga):
+    from itertools import product
+    from test_search_syntax import SIMPLE
+    import population_training
+    from program import check_search_syntax
+    # 两技能、长度1～4，共30条。变异与交叉都实际执行，不用复制补起点。
+    programs = [[[name] for name in order] for size in range(1,5)
+                for order in product(('outbreak','death_coil'), repeat=size)]
+    case = memory_ga(programs=programs, settings=dict(mutation_probability=1., crossover_probability=1.),
+                     search_settings={'syntax': SIMPLE})
+    ga = case.run()
+    assert ga['generation'] >= 2
+    for _, candidate, _ in case.calls:
+        check_search_syntax(candidate['program'], SIMPLE)
+    rows = population_training._selected(ga, case.store, case.manifest, case.character, case.ready,
+        dict(specialization_id=252,hero_talent='rider_of_the_apocalypse',target_type='single_target'))
+    assert len(rows) == len({row['candidate_id'] for row in rows}) == 4
+    assert all(row['evaluation']['syntax']['policy'] == SIMPLE for row in rows)
+    assert case.capabilities['search_syntax'] == SIMPLE
 
 
 @pytest.mark.parametrize('entry',['cli','api'])

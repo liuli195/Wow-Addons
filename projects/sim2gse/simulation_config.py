@@ -40,6 +40,23 @@ def load_syntax_config(path=None, *, syntax_config=SYNTAX_UNSET, document=None):
     return syntax_for(dict(section, **({} if syntax_config is SYNTAX_UNSET else syntax_config)))
 
 
+def syntax_receipt(policy):
+    from search import digest
+    policy = syntax_for(policy)
+    return dict(version=1, policy=policy, digest=digest(dict(version=1, policy=policy)))
+
+
+def verify_syntax_receipt(receipt, policy=None):
+    if (not isinstance(receipt, dict) or set(receipt) != {'version', 'policy', 'digest'}
+            or type(receipt.get('version')) is not int or receipt['version'] != 1
+            or not isinstance(receipt.get('policy'), dict)
+            or set(receipt['policy']) != set(SYNTAX_DEFAULTS)
+            or receipt != syntax_receipt(receipt['policy'])
+            or policy is not None and receipt != syntax_receipt(policy)):
+        raise ValueError('冻结语法凭据缺失或不符，请创建新任务')
+    return receipt['policy']
+
+
 def config_for(values: dict | None = None) -> dict:
     """返回补齐默认值并完成校验的实际模拟配置。"""
     if values is None:
@@ -173,10 +190,16 @@ def load_search_config(path=None, *, default_input_interval_ms=300, syntax_confi
     return config
 
 
-def load_training_search_config(path=None, **overrides):
+def load_training_search_config(path=None, *, syntax_config=SYNTAX_UNSET, _document=None, **overrides):
     """训练文件仅沿用旧曲线开关，其余运行值只接受训练显式调用。"""
     from search import config_for, TRAINING_SEARCH_DEFAULTS
-    section = _search_values(path, {})
+    document = _load_document(path) if _document is None else _document
+    section = _search_values(path, {}, document=document)
+    if 'syntax' in overrides:
+        if syntax_config is not SYNTAX_UNSET:
+            raise ValueError('syntax存在重复权威来源')
+        syntax_config = overrides.pop('syntax')
+    syntax = load_syntax_config(syntax_config=syntax_config, document=document)
     reject_removed_search_settings(overrides)
     unsupported = set(overrides) - {'search_timeline', 'diagnostic_logging', 'diagnostics',
                                     'search_observability', 'input_interval_ms', 'reset_events'}
@@ -187,6 +210,7 @@ def load_training_search_config(path=None, **overrides):
     projected = {key: value for key, value in values.items() if key in TRAINING_SEARCH_DEFAULTS}
     config = config_for(projected, training=True)
     config.update({key: projected[key] for key in ('diagnostics', 'search_observability') if key in projected})
+    config['syntax'] = syntax
     return config
 
 

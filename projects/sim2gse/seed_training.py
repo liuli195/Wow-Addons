@@ -11,6 +11,7 @@ from itertools import islice
 import json
 import math
 from pathlib import Path
+from simulation_config import SYNTAX_UNSET
 import sqlite3
 import sys
 import uuid
@@ -359,7 +360,7 @@ def training_program(program, capabilities, all_capabilities, burst_context):
         dict(all_capabilities, actions=list(by_name.values())))
 
 
-def shared_scope(configuration_key):
+def shared_scope(configuration_key, syntax=None):
     """训练和消费共用规则的三元身份，不把角色、引擎或目标数加入主键。"""
     if (not isinstance(configuration_key, dict) or set(configuration_key) != {
             'specialization_id', 'hero_talent', 'target_type'} or
@@ -368,7 +369,7 @@ def shared_scope(configuration_key):
             not isinstance(configuration_key['hero_talent'], str) or not configuration_key['hero_talent'] or
             configuration_key['target_type'] not in ('single_target', 'aoe')):
         raise ValueError('起点共享范围缺少有效专精、英雄天赋或目标类型')
-    return 'scope-' + digest(configuration_key)
+    return 'scope-' + digest(configuration_key) + (('-syntax-' + digest(syntax)) if syntax is not None else '')
 
 
 
@@ -556,7 +557,7 @@ def _training_options(search_config, diagnostic_logging):
         options['diagnostic_logging'] = diagnostic_logging
     _check_pretraining_observations(options)
     from simulation_config import load_training_search_config
-    load_training_search_config(**options)  # 公共输入先验，不接受未消费的正式参数。
+    load_training_search_config(_document={}, **options)  # 先验显式输入，不重复读取本机文件。
     return options
 
 
@@ -683,6 +684,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
         from task import _rule_hashes
         context = dict(context, preparation_input=preparation_input, rules=_rule_hashes(relative_to=ROOT),
                        configuration_key=configuration_key(context['native'], simulation_config.get('scene')))
+        context['capabilities'] = dict(context['capabilities'], search_syntax=config['syntax'])
     # 受检工具/目标资料加载失败是环境错误，不缓存为某条材料非法。
     target_masks = load_targeting(runtime=runtime)['target_masks'] if context else {}
     previous = {row['source_id']: row for row in cached if row.get('kind') == 'source'}
@@ -697,10 +699,20 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
                      config_key=config_key, version=PREPARATION_VERSION, program_revision=program_revision,
                      status='inactive', reason=source.get('unavailable_reason', ''), adaptation={},
                      initial_program=source['program'])
+        from program import check_search_syntax
+        syntax_error = None
+        try:
+            check_search_syntax(source['program'], config['syntax'])
+            if old and old['program_revision'] == program_revision and old.get('behavior_id'):
+                check_search_syntax(old['initial_program'], config['syntax'])
+        except ValueError as error:
+            syntax_error = str(error)
         if old and old['program_revision'] == program_revision:
             for key in ('initial_program', 'behavior_id', 'adaptation', 'reason'):
                 entry[key] = old[key]
-        if not source.get('active', True) or source['semantic'] == 'unsupported':
+        if syntax_error:
+            entry.update(status='rejected', reason=syntax_error, behavior_id=None)
+        elif not source.get('active', True) or source['semantic'] == 'unsupported':
             entry['reason'] = source.get('unavailable_reason') or entry['reason'] or '; '.join(source['changes'])
         elif old and old['program_revision'] == program_revision:
             for key in ('initial_program', 'behavior_id', 'adaptation', 'reason'):
@@ -770,6 +782,9 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     snapshot_entries = entries
     if materials is not None:
         wanted = {row['candidate_id'] for row in materials}
+        invalid = [row for row in entries if row['candidate_id'] in wanted and row['status'] != 'ready']
+        if invalid:
+            raise ValueError('显式训练材料不合法: ' + '; '.join(row['candidate_id'] + ': ' + row['reason'] for row in invalid))
         entries = [dict(row) for row in entries if row['candidate_id'] in wanted]
         scoped_queue = []
         for row in queue:
@@ -830,11 +845,16 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
 
 
 def run_training(template, targets, workspace, *, use_burst=False, max_processes=None, max_trainings=None,
-                 diagnostic_logging=None, search_config=None):
+                 diagnostic_logging=None, search_config=None, syntax_config=SYNTAX_UNSET):
     from seed_activity import training_activity
     from simulation_config import load_training_search_config
+    search_config = dict(search_config or {})
+    if syntax_config is not SYNTAX_UNSET:
+        if 'syntax' in search_config:
+            raise ValueError('syntax存在重复权威来源')
+        search_config['syntax'] = syntax_config
     search_config = _training_options(search_config, diagnostic_logging)
-    options = load_training_search_config(**search_config)
+    options = load_training_search_config(_document={}, **search_config)
     timeline_origin = None
     if options['search_timeline']:
         from time import monotonic
@@ -877,12 +897,17 @@ def check_training(template=None, *, use_burst=True, training_config=None):
         final_requested_iterations_per_group=config['top_k'] * 5 * config['retest_batches'] * config['retest_iterations'])
 
 
-def selected_contract_version(rows):
+def selected_contract_version(rows, syntax=None):
     """缺版本是旧成果，不从TRAINING_VERSION或程序来源猜新契约。"""
     versions = {row.get('contract_version') if row.get('contract_version') is not None else 1 for row in rows}
     if any(type(version) is not int or version not in (1, 2) for version in versions) or len(versions) > 1:
         raise ValueError('不支持的训练成果契约版本')
     version = next(iter(versions), 1)
+    from simulation_config import verify_syntax_receipt
+    for row in rows:
+        evaluation = decode(row.get('evaluation')) or {}
+        if syntax is not None or 'syntax' in evaluation:
+            verify_syntax_receipt(evaluation.get('syntax'), syntax)
     if version == 2 and len(rows) != 4:
         raise ValueError('v2训练成果必须是完整四条')
     return version

@@ -45,6 +45,14 @@ def test_resume_compares_only_explicit_syntax_keys_and_rejects_missing_policy():
         resume_config_for(saved)
 
 
+def test_training_rejects_invalid_shared_policy_before_reading_materials():
+    import seed_training
+    with patch.object(seed_training, 'sync_history', side_effect=AssertionError('不得读取材料')):
+        with pytest.raises(ValueError, match='语法|syntax'):
+            seed_training.run_training('/memory/template', 1, '/memory/training',
+                                       syntax_config={'loop': 1})
+
+
 @pytest.mark.parametrize('program,key', [
     ([['a', 'b']], 'multi_command_blocks'),
     ([dict(kind='Loop', count=2, blocks=[['a']])], 'loop'),

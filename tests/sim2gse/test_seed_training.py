@@ -259,6 +259,85 @@ def test_prepare_rejects_oversize_macro_without_losing_legal_materials(prepared_
     assert len(case.writes)==1 and case.writes[0][0]=='seed_prepared'
 
 
+def test_prepare_checks_original_structure_before_adaptation_and_cache(prepared_input):
+    from seed_training import ensure_prepared
+    from search import digest
+    from test_search_syntax import SIMPLE
+    case = prepared_input
+    case.inputs['config']['syntax'] = SIMPLE
+    # 缓存输入随策略变化；只读夹具提供已验证角色，材料仍走完整准备入口。
+    import seed_training as seeds
+    key_input = dict(version=seeds.PREPARATION_VERSION, template=case.inputs['template_sha'],
+        engines=case.inputs['engines'], simulation=case.inputs['simulation_config'], definition=None,
+        semantics=seeds.semantic_versions(), config=seeds._identity_config(case.inputs['config']))
+    case.header['config_key'] = digest(key_input)
+    case.header['checksum'] = digest([{k:v for k,v in case.header.items() if k!='checksum'}])
+    loop = [dict(kind='Loop', count=2, blocks=[['outbreak']])]
+    result = ensure_prepared('/memory/template', 1, '/memory/work', inputs=case.inputs,
+        sources=[case.source('loop', loop), case.source('legal', [['outbreak']])])
+    assert len(result['queue']) == 1
+    rejected = next(row for row in result['entries'] if row['candidate_id']=='loop')
+    assert rejected['program'] == loop and rejected['status'] == 'rejected'
+    assert 'syntax.loop' in rejected['reason']
+    assert result['context']['capabilities']['search_syntax'] == SIMPLE
+
+
+def test_public_training_runs_from_materials_through_four_policy_receipts(monkeypatch, memory_ga):
+    from contextlib import nullcontext
+    from copy import deepcopy
+    import threading
+    import engine, population_training, result_store, seed_activity, seed_training, task
+    from test_character_export import sample_profile
+    from test_search_syntax import SIMPLE
+    from search import digest
+    case = memory_ga(search_settings={'syntax': SIMPLE})
+    programs = deepcopy(case.starts)
+    case.store.state = {}
+    scope = dict(specialization_id=252,hero_talent='rider_of_the_apocalypse',target_type='single_target')
+    context = dict(native=dict(dps=100.,identity=dict(spec_id=252,race=case.character.race,resource='runic_power')),
+        all_capabilities=case.capabilities,capabilities=case.capabilities,burst=None,
+        configuration_key=scope, representations={})
+    def prepared_cache(table, key):
+        header = dict.fromkeys(seed_training.PREPARED_SCHEMA)
+        header.update(kind='context', config_key=key, version=seed_training.PREPARATION_VERSION,
+                      context=deepcopy(context))
+        header['checksum'] = digest([{k:v for k,v in header.items() if k!='checksum'}])
+        return [header]
+    sources = [dict(dict.fromkeys(seed_training.CANDIDATE_SCHEMA), candidate_id=str(i),source_id=str(i),
+        class_name='deathknight',spec='unholy',program=program,core=[],semantic='preserved',
+        instructions='fixture',changes=[],active=True) for i,program in enumerate(programs)]
+    writes, manifests = [], []
+    monkeypatch.setattr(seed_training, 'writer_lock', nullcontext)
+    monkeypatch.setattr(seed_activity, 'training_activity', lambda: nullcontext(threading.Event()))
+    monkeypatch.setattr(seed_training, 'sync_history', lambda character: deepcopy(sources))
+    monkeypatch.setattr(result_store, 'read_records', prepared_cache)
+    monkeypatch.setattr(result_store, 'write', lambda table,key,rows,**kwargs: writes.append((table,key,deepcopy(rows))))
+    monkeypatch.setattr(population_training, '_unfinished', lambda *a,**k: iter(()))
+    monkeypatch.setattr(population_training, 'TaskStore', lambda folder: case.store)
+    monkeypatch.setattr(case.store, 'close', lambda: None)
+    monkeypatch.setattr(case.store, 'recover_reports', lambda *a: None)
+    monkeypatch.setattr(case.store, 'publish', lambda: None)
+    monkeypatch.setattr(task, '_rule_hashes', lambda **kwargs: {})
+    monkeypatch.setattr(task, '_write_json', lambda path,row,**kwargs: manifests.append(deepcopy(row)))
+    monkeypatch.setattr(engine, 'identity', lambda mode: (Path('/engine'), {'fixed':mode}))
+    monkeypatch.setattr(engine, 'configuration_key', lambda *a: scope)
+    monkeypatch.setattr(Path, 'read_text', lambda self,**kwargs: sample_profile())
+    monkeypatch.setattr(Path, 'write_text', lambda *a,**k: 0)
+    monkeypatch.setattr(Path, 'mkdir', lambda *a,**k: None)
+    monkeypatch.setattr(Path, 'exists', lambda self: False)
+    monkeypatch.setattr(Path, 'glob', lambda *a: iter(()))
+    result = seed_training.run_training('/memory/template',1,'/memory/training',max_processes=1,
+                                       syntax_config=SIMPLE)
+    assert result['status']=='completed' and result['selected']==4
+    table,key,rows = next(row for row in writes if row[0]=='seed_selected')
+    assert key == seed_training.shared_scope(scope, SIMPLE)
+    assert all(row['evaluation']['syntax']['policy']==SIMPLE for row in rows)
+    assert seed_training.selected_contract_version(rows, SIMPLE)==2
+    rows[0]['evaluation'].pop('syntax')
+    with pytest.raises(ValueError, match='语法'):
+        seed_training.selected_contract_version(rows, SIMPLE)
+
+
 @pytest.mark.parametrize('boundary',['load_targeting','run_command'])
 def test_prepare_keeps_tool_failure_explicit_instead_of_rejecting_material(monkeypatch,prepared_input,boundary):
     import codec,program

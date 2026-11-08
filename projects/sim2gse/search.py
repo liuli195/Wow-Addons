@@ -261,6 +261,10 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
            excluded_programs=(), feedback_getter=None):
     """执行动作块、顺序 Loop 或 WaitClicks 变异；按需取值须返回非空反馈字典。"""
     source = _copy_program(program)
+    from simulation_config import syntax_for
+    from program import check_search_syntax
+    syntax = syntax_for(capabilities.get('search_syntax'))
+    check_search_syntax(program, syntax)
     available = [a["simc_action"] for a in capabilities["actions"]]
     if not source or not available:
         if observation is not None:
@@ -282,11 +286,16 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
         operations.append("castsequence_reset")
         if reset_flags:
             operations.append("castsequence_reset_flag")
+    operation_policy = dict(block='multi_command_blocks', loop='loop', repeat_count='loop',
+        wait_clicks='wait_clicks', castsequence='castsequence', castsequence_member='castsequence',
+        castsequence_reset='castsequence', castsequence_reset_flag='castsequence')
+    operations = [name for name in operations if syntax.get(operation_policy.get(name), True)]
     sampled_operation = rng.choice(operations)
     operation = sampled_operation
     position = None
 
     def finish():
+        check_search_syntax(source, syntax)
         if observation is not None:
             observation.update(
                 sampled_mutation=sampled_operation,
@@ -327,7 +336,7 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
             choices = ['move', 'swap', 'wait_clicks']
             if isinstance(segment, dict) and segment.get('kind') == 'Loop':
                 choices.append('repeat_count')
-            operation = rng.choice(choices)
+            operation = rng.choice([choice for choice in choices if choice in operations])
             position = dict(target, repair=True)
             if operation == 'repeat_count':
                 choose_value(segment, 'count', (2, 3))
@@ -360,8 +369,6 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
             position = None
         if feedback.get('untried'):
             operation,suggested='insert',rng.choice(feedback['untried'])
-        elif feedback.get('resource_overflowed') and feedback.get('spenders'):
-            operation,suggested='insert',rng.choice(feedback['spenders'])
         else:
             wasted=[name for name,n in feedback.get('attempts',{}).items()
                     if n>2 and feedback.get('successes',{}).get(name,0)/n < 0.05]
@@ -387,7 +394,7 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
             if choose_value(source[block], action, alternatives):
                 position = {"segment": block, "action": action}
     elif operation == "insert" and len(source) < 128:
-        block = rng.randrange(len(source))
+        block = rng.randrange(len(source) + 1)
         source.insert(block, [suggested or rng.choice(available)])
         position = {"segment": block}
     elif operation == "delete" and len(source) > 1:
