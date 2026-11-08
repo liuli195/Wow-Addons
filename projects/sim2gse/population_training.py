@@ -17,6 +17,10 @@ ALGORITHM = 'ga-easimple-v1'
 
 
 def _cross(left, right, rng):
+    def wrapped(member):
+        return (len(member) == 1 and isinstance(member[0], dict) and member[0].get('kind') == 'Loop')
+    if wrapped(left) != wrapped(right):
+        return False
     def blocks(member):
         return member[0]['blocks'] if (len(member) == 1 and isinstance(member[0], dict)
                                        and member[0].get('kind') == 'Loop') else member
@@ -56,6 +60,14 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
     from codec import load_targeting, prepare_block, prepare_castsequence
     from engine import CandidateScoreError
     from search import _coarse_score_failure
+    from simulation_config import syntax_for
+    capabilities['search_syntax'] = syntax_for(store.state['config']['syntax'])
+    from program import check_search_syntax
+    for candidate in [*store.state.get('starts', []),
+            *(row['program'] for row in store.state.get('archive', [])),
+            *(row['program'] for row in store.state.get('ga', {}).get('population', [])),
+            *((store.state.get('ga', {}).get('pending') or {}).get('programs', []))]:
+        check_search_syntax(candidate, capabilities['search_syntax'])
     observe_search = store.diagnostic_logging and store.state['config']['search_observability'] != 'off'
     policy = (store.state.get('formal_search') or {}).get('coarse_failure_policy')
     if policy is not None:
@@ -342,7 +354,8 @@ def group_workers(workspace, templates, config, targets=(1, 5), *, effective_con
 
 def run_group(template, targets, workspace, *, cancel_event, use_burst, sources, config,
               prepare_only=False, materials=None, diagnostic_logging=None, search_config=None,
-              expected_key=None, timeline_origin=None, burst_identity=None, training_overrides=None):
+              expected_key=None, timeline_origin=None, burst_identity=None, training_overrides=None,
+              new_search_config=None):
     import seed_training as seeds
     from task import _write_json, _rule_hashes
     from engine import ROOT
@@ -357,10 +370,16 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
         from simulation_config import reject_removed_search_settings
         from search import config_for
         saved = frozen[0][1]['search_config']
+        from simulation_config import verify_syntax_receipt
+        verify_syntax_receipt(frozen[0][1].get('syntax'), saved.get('syntax'))
+        if 'syntax' not in saved:
+            raise ValueError('旧训练任务缺少冻结语法范围，请创建新任务')
         reject_removed_search_settings(saved)
         seeds._check_pretraining_observations(saved)
         observation = {'diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline'}
         explicit = {key: value for key, value in options.items() if value is not None}
+        if 'syntax' in explicit:
+            explicit['syntax'] = dict(saved['syntax'], **explicit['syntax'])
         frozen_runtime = config_for(saved, training=True)
         checkpoint = frozen[0][2].get('config') or {}
         # 计算仍取不可变清单；省略观测取最近可靠检查点，不跳回初次选择。
@@ -378,6 +397,10 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
         inputs = seeds._training_inputs(template, targets, cancel_event=cancel_event,
             use_burst=use_burst, max_processes=config['max_processes'],
             burst_identity=burst_identity, _frozen_config=resumed)
+    elif new_search_config is not None:
+        inputs = seeds._training_inputs(template, targets, cancel_event=cancel_event,
+            use_burst=use_burst, max_processes=config['max_processes'],
+            burst_identity=burst_identity, _frozen_config=new_search_config)
     ready = seeds.ensure_prepared(template, targets, workspace, cancel_event=cancel_event,
         use_burst=use_burst, sources=sources, materials=materials, inputs=inputs,
         max_processes=config['max_processes'], search_config=options,
@@ -388,11 +411,15 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
     configuration_key = context['configuration_key']
     if expected_key is not None and configuration_key != expected_key:
         raise ValueError('受检标准模板实际英雄/目标与冻结训练分组不符')
+    from simulation_config import describe_syntax
+    syntax_result = dict(syntax=ready['config']['syntax'], syntax_summary=describe_syntax(ready['config']['syntax']),
+        source_rejections=[dict(source_id=row['source_id'], reason=row['reason'])
+                           for row in ready.get('entries', []) if row['status'] == 'rejected'])
     if prepare_only:
         return dict(status='prepared', algorithm=ALGORITHM, configuration_key=configuration_key,
                     population_size=len(ready['queue']), config_key=ready['config_key'],
-                    preparation=ready['preparation'])
-    scope = seeds.shared_scope(configuration_key)
+                    preparation=ready['preparation'], **syntax_result)
+    scope = seeds.shared_scope(configuration_key, ready['config']['syntax'])
     root = Path(workspace).resolve() / 'ga' / scope
     environment = dict(template=ready['template_sha'], engines=ready['engines'],
         simulation=ready['simulation_config'], burst=context['burst'],
@@ -408,9 +435,11 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
             raise ValueError('GA恢复的角色/引擎/规则身份变化，拒绝混接')
         config = manifest['training_config']
     else:
+        from simulation_config import syntax_receipt
         manifest = dict(environment=environment, training_config=config, template_path=str(Path(template).resolve()),
             starts=[row['program'] for row in ready['queue']], sources=ready['queue'],
-            search_config=ready['config'], seed=uuid.uuid4().int % 1000000000)
+            search_config=ready['config'], syntax=syntax_receipt(ready['config']['syntax']),
+            seed=uuid.uuid4().int % 1000000000)
         manifest['stage_plan'] = _stage_plan(config, manifest['seed'])
         folder = root / uuid.uuid4().hex
         folder.mkdir(parents=True)
@@ -445,6 +474,9 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
         if (store.state.get('ga', {}).get('algorithm') != ALGORITHM
                 or store.state.get('starts') != manifest['starts']):
             raise ValueError('GA检查点算法或冻结初始种群身份不符')
+        if (store.state.get('config', {}).get('syntax') != manifest['search_config']['syntax']
+                or store.state.get('capabilities', {}).get('search_syntax') != manifest['search_config']['syntax']):
+            raise ValueError('GA检查点冻结语法范围不符')
         store.character, store.simulation_config = character, ready['simulation_config']
         store.recover_reports(character, ready['simulation_config'])
         store.state['error'] = ''
@@ -474,7 +506,7 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
         return dict(status='completed', algorithm=ALGORITHM, population_size=len(manifest['starts']),
             complete_generations=ga['generation'], configuration_key=configuration_key,
             selected=len(selected), task_path=str(folder), training_config=config,
-            ineligible=ga.get('ineligible', {}))
+            ineligible=ga.get('ineligible', {}), **syntax_result)
     except BaseException as error:
         store.state.update(status='paused', error=str(error))
         store.checkpoint()
@@ -559,6 +591,7 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
 def _selected(ga, store, manifest, character, ready, configuration_key):
     from seed_training import SELECTED_V2_SCHEMA
     from program import canonicalize_search_program
+    from simulation_config import syntax_receipt
     archive = {row['key']: row for row in store.state['archive']}
     condition = digest(manifest)
     qualified = _retest_scores(ga, store, condition=condition,
@@ -586,7 +619,9 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
             program=program, family='ga', score=row['nominal'],
             scores=[item['dps'] for item in row['scenarios']['nominal']['batches']],
             template_sha256=ready['template_sha'], engines=ready['engines'], contract_version=2,
-            evaluation=dict(scenarios=row['scenarios'], stability_loss=row['loss'],
+            evaluation=dict(syntax=syntax_receipt(ready['context']['capabilities']['search_syntax']),
+                program_digest=digest(program),
+                scenarios=row['scenarios'], stability_loss=row['loss'],
                 nominal_champion=row['identity'] == nominal[0]['identity'],
                 stable_representative=row['identity'] == stable['identity']))
         result.append(record)

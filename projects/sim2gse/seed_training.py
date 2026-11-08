@@ -11,6 +11,7 @@ from itertools import islice
 import json
 import math
 from pathlib import Path
+from simulation_config import SYNTAX_UNSET
 import sqlite3
 import sys
 import uuid
@@ -359,7 +360,7 @@ def training_program(program, capabilities, all_capabilities, burst_context):
         dict(all_capabilities, actions=list(by_name.values())))
 
 
-def shared_scope(configuration_key):
+def shared_scope(configuration_key, syntax=None):
     """训练和消费共用规则的三元身份，不把角色、引擎或目标数加入主键。"""
     if (not isinstance(configuration_key, dict) or set(configuration_key) != {
             'specialization_id', 'hero_talent', 'target_type'} or
@@ -368,7 +369,8 @@ def shared_scope(configuration_key):
             not isinstance(configuration_key['hero_talent'], str) or not configuration_key['hero_talent'] or
             configuration_key['target_type'] not in ('single_target', 'aoe')):
         raise ValueError('起点共享范围缺少有效专精、英雄天赋或目标类型')
-    return 'scope-' + digest(configuration_key)
+    return 'scope-' + digest(configuration_key if syntax is None else
+                           dict(configuration_key=configuration_key, syntax=syntax))
 
 
 
@@ -556,7 +558,7 @@ def _training_options(search_config, diagnostic_logging):
         options['diagnostic_logging'] = diagnostic_logging
     _check_pretraining_observations(options)
     from simulation_config import load_training_search_config
-    load_training_search_config(**options)  # 公共输入先验，不接受未消费的正式参数。
+    load_training_search_config(_document={}, **options)  # 先验显式输入，不重复读取本机文件。
     return options
 
 
@@ -683,6 +685,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
         from task import _rule_hashes
         context = dict(context, preparation_input=preparation_input, rules=_rule_hashes(relative_to=ROOT),
                        configuration_key=configuration_key(context['native'], simulation_config.get('scene')))
+        context['capabilities'] = dict(context['capabilities'], search_syntax=config['syntax'])
     # 受检工具/目标资料加载失败是环境错误，不缓存为某条材料非法。
     target_masks = load_targeting(runtime=runtime)['target_masks'] if context else {}
     previous = {row['source_id']: row for row in cached if row.get('kind') == 'source'}
@@ -697,14 +700,22 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
                      config_key=config_key, version=PREPARATION_VERSION, program_revision=program_revision,
                      status='inactive', reason=source.get('unavailable_reason', ''), adaptation={},
                      initial_program=source['program'])
+        from program import check_search_syntax
+        syntax_error = None
+        try:
+            check_search_syntax(source['program'], config['syntax'])
+            if old and old['program_revision'] == program_revision and old.get('behavior_id'):
+                check_search_syntax(old['initial_program'], config['syntax'])
+        except ValueError as error:
+            syntax_error = str(error)
         if old and old['program_revision'] == program_revision:
             for key in ('initial_program', 'behavior_id', 'adaptation', 'reason'):
                 entry[key] = old[key]
-        if not source.get('active', True) or source['semantic'] == 'unsupported':
+        if syntax_error:
+            entry.update(status='rejected', reason=syntax_error, behavior_id=None)
+        elif not source.get('active', True) or source['semantic'] == 'unsupported':
             entry['reason'] = source.get('unavailable_reason') or entry['reason'] or '; '.join(source['changes'])
         elif old and old['program_revision'] == program_revision:
-            for key in ('initial_program', 'behavior_id', 'adaptation', 'reason'):
-                entry[key] = old[key]
             entry['status'] = 'ready' if entry['behavior_id'] else 'rejected'
             if entry['status'] == 'ready':
                 entry['reason'] = ''
@@ -761,6 +772,9 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
             first = min(group, key=lambda row: row['source_id'])
             representative = dict(candidate_id=first['candidate_id'], program=first['initial_program'])
             representations[behavior_id] = representative
+        check_search_syntax(representative['program'], config['syntax'])
+        if canonicalize_search_program(representative['program'], context['capabilities'])['identity'] != behavior_id:
+            raise ValueError('准备快照代表与冻结行为身份不符')
         for entry in group:
             entry.update(representative_id=representative['candidate_id'],
                          representative_program=representative['program'])
@@ -770,6 +784,9 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     snapshot_entries = entries
     if materials is not None:
         wanted = {row['candidate_id'] for row in materials}
+        invalid = [row for row in entries if row['candidate_id'] in wanted and row['status'] != 'ready']
+        if invalid:
+            raise ValueError('显式训练材料不合法: ' + '; '.join(row['candidate_id'] + ': ' + row['reason'] for row in invalid))
         entries = [dict(row) for row in entries if row['candidate_id'] in wanted]
         scoped_queue = []
         for row in queue:
@@ -817,24 +834,33 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
 def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=False, materials=None,
                   max_processes=None, max_trainings=None, prepare_only=False, sources=None, burst_identity=None,
                   diagnostic_logging=None, search_config=None, _timeline_origin=None, training_config=None,
-                  expected_key=None):
+                  expected_key=None, new_search_config=None):
     from population_training import run_group
     from simulation_config import load_training_config
     config = training_config or load_training_config(max_processes=max_processes, max_trainings=max_trainings)
     return run_group(template, targets, workspace, cancel_event=cancel_event or threading.Event(),
         use_burst=use_burst, sources=sources if sources is not None else registry_rows(), config=config,
         prepare_only=prepare_only, materials=materials, diagnostic_logging=diagnostic_logging,
-        search_config=search_config, expected_key=expected_key, timeline_origin=_timeline_origin,
+        search_config=search_config, new_search_config=new_search_config,
+        expected_key=expected_key, timeline_origin=_timeline_origin,
         burst_identity=burst_identity, training_overrides={key: value for key, value in dict(
             max_processes=max_processes, max_trainings=max_trainings).items() if value is not None})
 
 
 def run_training(template, targets, workspace, *, use_burst=False, max_processes=None, max_trainings=None,
-                 diagnostic_logging=None, search_config=None):
+                 diagnostic_logging=None, search_config=None, syntax_config=SYNTAX_UNSET):
     from seed_activity import training_activity
     from simulation_config import load_training_search_config
+    search_config = dict(search_config or {})
+    if syntax_config is not SYNTAX_UNSET:
+        if 'syntax' in search_config:
+            raise ValueError('syntax存在重复权威来源')
+        search_config['syntax'] = syntax_config
     search_config = _training_options(search_config, diagnostic_logging)
-    options = load_training_search_config(**search_config)
+    from simulation_config import _load_document, load_training_config
+    document = _load_document()
+    options = load_training_search_config(_document=document, _default_interval_ms=200 if use_burst else 300, **search_config)
+    parallelism = load_training_config(_document=document, max_processes=max_processes, max_trainings=max_trainings)
     timeline_origin = None
     if options['search_timeline']:
         from time import monotonic
@@ -843,7 +869,8 @@ def run_training(template, targets, workspace, *, use_burst=False, max_processes
         sources = sync_history(template_character(Path(template).read_text(encoding='utf-8')))
         return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
                              max_processes=max_processes, max_trainings=max_trainings, sources=sources,
-                             search_config=search_config, _timeline_origin=timeline_origin)
+                             search_config=search_config, new_search_config=options, training_config=parallelism,
+                             _timeline_origin=timeline_origin)
 
 
 def check_training(template=None, *, use_burst=True, training_config=None):
@@ -877,12 +904,22 @@ def check_training(template=None, *, use_burst=True, training_config=None):
         final_requested_iterations_per_group=config['top_k'] * 5 * config['retest_batches'] * config['retest_iterations'])
 
 
-def selected_contract_version(rows):
+def selected_contract_version(rows, syntax=None):
     """缺版本是旧成果，不从TRAINING_VERSION或程序来源猜新契约。"""
     versions = {row.get('contract_version') if row.get('contract_version') is not None else 1 for row in rows}
     if any(type(version) is not int or version not in (1, 2) for version in versions) or len(versions) > 1:
         raise ValueError('不支持的训练成果契约版本')
     version = next(iter(versions), 1)
+    from simulation_config import verify_syntax_receipt
+    for row in rows:
+        evaluation = decode(row.get('evaluation')) or {}
+        if syntax is not None or 'syntax' in evaluation:
+            policy = verify_syntax_receipt(evaluation.get('syntax'), syntax if syntax is not None else SYNTAX_UNSET)
+            from program import check_search_syntax
+            program = decode(row.get('program'))
+            check_search_syntax(program, policy)
+            if evaluation.get('program_digest') != digest(program):
+                raise ValueError('训练成果程序与冻结凭据不符')
     if version == 2 and len(rows) != 4:
         raise ValueError('v2训练成果必须是完整四条')
     return version
@@ -1100,13 +1137,16 @@ def main(argv=None):
             from simulation_config import load_training_search_config
             search_config = ({'search_timeline': args.search_timeline}
                              if args.search_timeline is not None else {})
-            options = load_training_search_config(**search_config)
+            search_config = _training_options(search_config, args.diagnostic_logging)
+            from simulation_config import _load_document
+            document = _load_document()
+            options = load_training_search_config(_document=document, _default_interval_ms=200 if args.use_burst else 300, **search_config)
             timeline_origin = None
             if args.command == 'run' and options['search_timeline']:
                 from time import monotonic
                 timeline_origin = monotonic()
             from simulation_config import load_training_config
-            parallelism = load_training_config(max_processes=args.max_processes, max_trainings=args.max_trainings)
+            parallelism = load_training_config(_document=document, max_processes=args.max_processes, max_trainings=args.max_trainings)
             max_processes = parallelism['max_processes']
             from seed_activity import training_activity
             with writer_lock():
@@ -1144,7 +1184,7 @@ def main(argv=None):
                                 prepare_only=args.command == 'prepare', sources=sources,
                                 training_config=parallelism, max_processes=args.max_processes, max_trainings=args.max_trainings,
                                 expected_key=expected, burst_identity=row['burst_identity'],
-                                diagnostic_logging=args.diagnostic_logging, search_config=search_config,
+                                search_config=search_config, new_search_config=options,
                                 _timeline_origin=timeline_origin, **material_options))
                         # Deterministic result order; one group's failure never cancels another group.
                         try:
@@ -1168,11 +1208,22 @@ def main(argv=None):
             output = [row for row in result_store.read_records('seed_candidates', 'registry')
                       if (row['semantic'] == 'unsupported' or row.get('active') is False) == (args.state == 'unsupported')]
         else:
+            from simulation_config import load_syntax_config
+            scope = (dict(specialization_id=args.specialization_id, hero_talent=args.hero_talent,
+                          target_type=args.target_type)
+                     if any(value is not None for value in (args.specialization_id, args.hero_talent, args.target_type)) else None)
+            syntax = load_syntax_config()
             key = (shared_scope(dict(specialization_id=args.specialization_id,
-                   hero_talent=args.hero_talent, target_type=args.target_type))
+                   hero_talent=args.hero_talent, target_type=args.target_type), syntax if args.state == 'selected' else None)
                    if any(value is not None for value in (args.specialization_id, args.hero_talent, args.target_type))
                    else f'{args.class_name}-{args.spec}-{args.targets}' + ('-burst' if args.use_burst else ''))
             output = result_store.read_records('seed_' + args.state, key)
+            if args.state == 'selected':
+                if output and scope:
+                    selected_contract_version(output, syntax)
+                elif scope:
+                    output = result_store.read_records('seed_selected', shared_scope(scope))
+                    selected_contract_version(output)
         print(json.dumps(output, ensure_ascii=False))
         return 0
     except (ValueError, OSError, RuntimeError) as error:

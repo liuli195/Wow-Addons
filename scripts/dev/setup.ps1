@@ -13,6 +13,7 @@ function Get-Artifact($spec, $path) {
         (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -eq $spec.sha256) { return }
     $cached = "$path.$($spec.sha256)"
     if (-not (Test-Path -LiteralPath $cached)) {
+        Write-Output "下载固定工具：$($spec.url)"
         Invoke-WebRequest -Uri $spec.url -OutFile $cached
     }
     if ((Get-FileHash -LiteralPath $cached -Algorithm SHA256).Hash -ne $spec.sha256) {

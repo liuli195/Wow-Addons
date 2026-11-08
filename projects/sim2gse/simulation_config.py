@@ -15,6 +15,58 @@ DEFAULT_CONFIG = {
     "enable_omnium_talents": True,
 }
 _CONFIG_KEYS = frozenset(DEFAULT_CONFIG)
+SYNTAX_DEFAULTS = dict(multi_command_blocks=True, loop=True, wait_clicks=True, castsequence=True)
+SYNTAX_UNSET = object()
+
+
+def syntax_for(values=None):
+    if values is None:
+        values = {}
+    if not isinstance(values, dict) or set(values) - set(SYNTAX_DEFAULTS):
+        raise ValueError('syntax包含未知语法配置')
+    if any(type(value) is not bool for value in values.values()):
+        raise ValueError('syntax语法配置必须为布尔值')
+    return dict(SYNTAX_DEFAULTS, **values)
+
+
+def load_syntax_config(path=None, *, syntax_config=SYNTAX_UNSET, document=None):
+    document = _load_document(path) if document is None else document
+    section = document.get('syntax', {})
+    syntax_for(section)
+    if syntax_config is not SYNTAX_UNSET:
+        if not isinstance(syntax_config, dict):
+            raise ValueError('syntax语法配置必须为对象')
+        syntax_for(syntax_config)
+    return syntax_for(dict(section, **({} if syntax_config is SYNTAX_UNSET else syntax_config)))
+
+
+def syntax_receipt(policy):
+    from search import digest
+    policy = syntax_for(policy)
+    return dict(version=1, policy=policy, digest=digest(dict(version=1, policy=policy)))
+
+
+def verify_syntax_receipt(receipt, policy=SYNTAX_UNSET):
+    if policy is not SYNTAX_UNSET and (not isinstance(policy, dict) or set(policy) != set(SYNTAX_DEFAULTS)):
+        raise ValueError('冻结语法范围缺失或不完整，请创建新任务')
+    if (not isinstance(receipt, dict) or set(receipt) != {'version', 'policy', 'digest'}
+            or type(receipt.get('version')) is not int or receipt['version'] != 1
+            or not isinstance(receipt.get('policy'), dict)
+            or set(receipt['policy']) != set(SYNTAX_DEFAULTS)
+            or receipt != syntax_receipt(receipt['policy'])
+            or policy is not SYNTAX_UNSET and receipt != syntax_receipt(policy)):
+        raise ValueError('冻结语法凭据缺失或不符，请创建新任务')
+    return receipt['policy']
+
+
+def describe_syntax(policy):
+    policy = syntax_for(policy)
+    if not any(policy.values()):
+        return '一键一技能；独立爆发保留。'
+    labels = dict(multi_command_blocks='同键多技能', loop='循环块', wait_clicks='空按键', castsequence='连续施法')
+    enabled = '、'.join(label for key, label in labels.items() if policy[key])
+    disabled = '、'.join(label for key, label in labels.items() if not policy[key])
+    return '允许：' + enabled + ('；关闭：' + disabled if disabled else '') + '。'
 
 
 def config_for(values: dict | None = None) -> dict:
@@ -50,7 +102,7 @@ def _load_document(path=None):
         raise ValueError(f"本地模拟配置无效: {path}: {error}") from error
     if not isinstance(document, dict):
         raise ValueError("本地模拟配置必须是 TOML 对象")
-    unknown = set(document) - {"simulation", "training", "search"}
+    unknown = set(document) - {"simulation", "training", "search", "syntax"}
     if unknown:
         raise ValueError("未知模拟配置区域: " + ", ".join(sorted(unknown)))
     return document
@@ -69,10 +121,11 @@ TRAINING_DEFAULTS = dict(max_processes=5, max_trainings=4, coarse_iterations=32,
     tournament_size=3, crossover_probability=0.8, mutation_probability=0.8)
 
 
-def load_training_config(path: str | Path | BinaryIO | TextIO | None = None, *, max_processes=None, max_trainings=None) -> dict:
+def load_training_config(path: str | Path | BinaryIO | TextIO | None = None, *, max_processes=None, max_trainings=None,
+                         _document=None) -> dict:
     """启动读取的GA白名单；普通搜索的资源和采样上限不变。"""
     import math
-    section = _load_document(path).get("training", {})
+    section = (_load_document(path) if _document is None else _document).get("training", {})
     if not isinstance(section, dict) or set(section) - set(TRAINING_DEFAULTS):
         raise ValueError("[training] 包含未知GA配置")
     values = dict(TRAINING_DEFAULTS, **section)
@@ -118,8 +171,8 @@ SEARCH_RUNTIME_DEFAULTS = dict(iterations=128, random_seed=20260912, search_time
 SEARCH_DEFAULTS = dict(FORMAL_ALGORITHM_DEFAULTS, **SEARCH_RUNTIME_DEFAULTS)
 
 
-def _search_values(path, overrides):
-    section = _load_document(path).get('search', {})
+def _search_values(path, overrides, *, document=None):
+    section = (document if document is not None else _load_document(path)).get('search', {})
     if not isinstance(section, dict):
         raise ValueError('[search] 必须是 TOML 表')
     reject_removed_search_settings(section)
@@ -129,24 +182,38 @@ def _search_values(path, overrides):
     return dict(section, **{key: value for key, value in overrides.items() if value is not None})
 
 
-def load_search_config(path=None, *, default_input_interval_ms=300, **overrides):
+def load_search_config(path=None, *, default_input_interval_ms=300, syntax_config=SYNTAX_UNSET, **overrides):
     """运行参数优先，false有效；default_input_interval_ms=None表示所属入口尚未选内置间隔，缺失时不补齐。"""
     from search import config_for
     if 'input_interval_ms' in overrides and overrides['input_interval_ms'] is None:
         raise ValueError('按键间隔必须为 50 至 2000 毫秒的整数')
-    values = _search_values(path, overrides)
+    document = _load_document(path)
+    frozen_syntax = overrides.pop('syntax', SYNTAX_UNSET)
+    if frozen_syntax is not SYNTAX_UNSET:
+        if syntax_config is not SYNTAX_UNSET:
+            raise ValueError('syntax存在重复权威来源')
+        syntax_config = frozen_syntax
+    values = _search_values(path, overrides, document=document)
     config = config_for({'input_interval_ms': 300 if default_input_interval_ms is None else default_input_interval_ms, **values},
                         _defer_interval_alignment=default_input_interval_ms is None)
     if default_input_interval_ms is None and 'input_interval_ms' not in values:
         config.pop('input_interval_ms')
     config.update({key: values[key] for key in ('diagnostics', 'search_observability') if key in values})
+    config['syntax'] = load_syntax_config(syntax_config=syntax_config, document=document)
     return config
 
 
-def load_training_search_config(path=None, **overrides):
+def load_training_search_config(path=None, *, syntax_config=SYNTAX_UNSET, _document=None,
+                                _default_interval_ms=300, **overrides):
     """训练文件仅沿用旧曲线开关，其余运行值只接受训练显式调用。"""
     from search import config_for, TRAINING_SEARCH_DEFAULTS
-    section = _search_values(path, {})
+    document = _load_document(path) if _document is None else _document
+    section = _search_values(path, {}, document=document)
+    if 'syntax' in overrides:
+        if syntax_config is not SYNTAX_UNSET:
+            raise ValueError('syntax存在重复权威来源')
+        syntax_config = overrides.pop('syntax')
+    syntax = load_syntax_config(syntax_config=syntax_config, document=document)
     reject_removed_search_settings(overrides)
     unsupported = set(overrides) - {'search_timeline', 'diagnostic_logging', 'diagnostics',
                                     'search_observability', 'input_interval_ms', 'reset_events'}
@@ -154,9 +221,13 @@ def load_training_search_config(path=None, **overrides):
         raise ValueError('预训练不支持搜索参数，请使用专用训练配置: ' + ', '.join(sorted(unsupported)))
     values = {key: value for key, value in section.items() if key == 'search_timeline'}
     values.update({key: value for key, value in overrides.items() if value is not None})
+    values.setdefault('input_interval_ms', _default_interval_ms)
+    if values.get('diagnostic_logging'):
+        values.setdefault('diagnostics', 'summary')
     projected = {key: value for key, value in values.items() if key in TRAINING_SEARCH_DEFAULTS}
     config = config_for(projected, training=True)
     config.update({key: projected[key] for key in ('diagnostics', 'search_observability') if key in projected})
+    config['syntax'] = syntax
     return config
 
 

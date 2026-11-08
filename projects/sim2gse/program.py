@@ -104,6 +104,74 @@ def _position(adapter, path, *, gse_path=None, sequence=None, version=None):
     return position
 
 
+def check_search_syntax(program, syntax=None):
+    """原结构准入；不通过展开或删除节点掩盖被禁用的语法。"""
+    from simulation_config import syntax_for
+    syntax = syntax_for(syntax)
+
+    def require(key, path):
+        if not syntax[key]:
+            raise ValueError(f'{path}: syntax.{key}已禁用')
+
+    def visit(nodes, path):
+        if not isinstance(nodes, list) or not nodes:
+            raise ValueError(f'{path}: 搜索程序不能为空')
+        for index, node in enumerate(nodes):
+            source = f'{path}[{index}]'
+            if isinstance(node, list):
+                if not node:
+                    require('wait_clicks', source)
+                if len(node) > 1:
+                    require('multi_command_blocks', source)
+            elif isinstance(node, dict):
+                kind = node.get('kind')
+                if kind == 'Loop':
+                    require('loop', source)
+                    visit(node.get('blocks', node.get('body')), source + '.body')
+                elif kind in ('WaitClicks', 'Pause', 'EmptyClick'):
+                    require('wait_clicks', source)
+                elif kind == 'CastSequence':
+                    require('castsequence', source)
+                elif kind == 'Action':
+                    commands = node.get('commands')
+                    if not isinstance(commands, list) or not commands or any(not isinstance(command, dict) for command in commands):
+                        raise ValueError(f'{source}: 动作缺少命令')
+                    if any(command.get('kind') == 'castsequence' for command in commands):
+                        require('castsequence', source)
+                    if len(commands) > 1:
+                        require('multi_command_blocks', source)
+                else:
+                    raise ValueError(f'{source}: 未支持的搜索语法')
+            else:
+                raise ValueError(f'{source}: 搜索节点无效')
+
+    visit(program.get('nodes') if isinstance(program, dict) else program, 'program')
+    return program
+
+
+def check_search_state(state, syntax):
+    """恢复和补发布前检查所有仍可参与计算的程序，不修改检查点。"""
+    ga = state.get('ga') or {}
+    if state.get('capabilities') and state['capabilities'].get('search_syntax') != syntax:
+        raise ValueError('检查点动作能力的冻结语法范围不符')
+    rows = [*state.get('archive', []), *ga.get('population', []), *state.get('formal_finalists', [])]
+    winner = state.get('formal_winner')
+    if winner:
+        rows.append(winner)
+    programs = [*state.get('starts', []), *((ga.get('pending') or {}).get('programs', []))]
+    for row in rows:
+        programs.append(row['program'])
+        if row.get('candidate'):
+            programs.append(row['candidate']['program'])
+    intent = state.get('formal_champion_publication_intent') or {}
+    record = intent.get('record')
+    if record:
+        programs.append(record['program'])
+        programs.extend(row['program'] for row in (record.get('evaluation') or {}).get('finalists', []))
+    for program in programs:
+        check_search_syntax(program, syntax)
+
+
 def from_action_blocks(blocks):
     """把搜索动作块适配成与导入共用的 Program 节点。"""
     nodes = []
@@ -154,6 +222,7 @@ def _search_castsequence_parts(segment, source_path):
 
 def from_search_program(program, capabilities):
     """把搜索动作块、顺序 Loop 和 WaitClicks 转成共享的 Program。"""
+    check_search_syntax(program, capabilities.get('search_syntax'))
     if not isinstance(program, list) or not program:
         raise ValueError("搜索程序必须包含动作块")
     if all(isinstance(segment, list) for segment in program):
@@ -455,6 +524,8 @@ def compile_program(program, folder, *, identity, runtime=None, capabilities=Non
                               capabilities=capabilities, context=context)
     if program.get("adapter") != "search":
         raise ValueError("未知的序列程序适配器")
+    if capabilities is not None and 'search_syntax' in capabilities:
+        check_search_syntax(program, capabilities['search_syntax'])
     blocks = _search_blocks(program)
     if any(node["kind"] in {"Loop", "Pause"} or
            (node["kind"] == "Action" and len(node["commands"]) == 1

@@ -30,6 +30,7 @@ sys.path.insert(0, str(REPOSITORY / "tests" / "sim2gse"))
 from gse_import import inspect_import  # noqa: E402
 from test_population_training import memory_ga  # noqa: E402
 from test_search import _fixed_search_population  # noqa: E402
+from simulation_config import syntax_for, syntax_receipt  # noqa: E402
 
 
 def gse_fixture(payload):
@@ -475,7 +476,8 @@ class InterfaceTests(unittest.TestCase):
         row.update(parent_id=task_id, formal_search_version=1, status='failed',
                    phase='single_target', error='native trace failed',
                    input_sha256='frozen', definition_id='reviewed', spec_id=252,
-                   config=dict(input_interval_ms=200), simulation_config={},
+                   config=dict(input_interval_ms=200,syntax=syntax_for()),
+                   syntax=syntax_receipt(syntax_for()), simulation_config={},
                    rules={}, engines={}, preparation_seconds=1., packaging_seconds=0.,
                    single_target_path='single_target', aoe_path='aoe',
                    single_target_status='running', aoe_status='pending', burst_instructions='')
@@ -490,7 +492,44 @@ class InterfaceTests(unittest.TestCase):
                 self.assertEqual(state['scenes'][1]['status'], 'pending')
                 self.assertTrue(state['recoverable'])
                 self.assertFalse(state['result_ready'])
+            row['config'].pop('syntax')
+            row['syntax']=None
+            state=self._json_request('GET','/api/tasks/'+task_id)
+            self.assertFalse(state['recoverable'])
+            self.assertIn('仅可查看',state['syntax_summary'])
         self.input_write.assert_not_called()
+
+    def test_partial_dual_returns_only_completed_export_and_checks_its_policy(self):
+        import result_store
+        from dual_task import PARENT_SCHEMA
+        from search import config_for,digest
+        from test_search_syntax import SIMPLE
+        task_id='b'*32
+        program=dict(adapter='search',metadata={},nodes=[dict(kind='Action',commands=[dict(kind='spell',spell_id=77575)])])
+        text=gse_fixture(['PARTIAL',dict(MetaData=dict(SpecID=252,GSEVersion=3331),Default=1,
+            Versions=[dict(Actions=[dict(Type='Action',type='spell',spell=77575)])])])
+        row=dict.fromkeys(PARENT_SCHEMA)
+        row.update(parent_id=task_id,formal_search_version=1,status='partial',phase='aoe',error='第二场失败',
+            input_sha256='frozen',definition_id='reviewed',spec_id=252,config=config_for({'syntax':SIMPLE}),
+            syntax=syntax_receipt(SIMPLE),simulation_config={},rules={},engines={},preparation_seconds=1.,packaging_seconds=0.,
+            single_target_path='single_target',aoe_path='aoe',single_target_status='completed',aoe_status='failed',
+            single_target_export='one-export',burst_instructions='')
+        export=dict(parent_id=task_id,purpose='single_target',text=text,program=program,
+                    syntax=syntax_receipt(SIMPLE),program_digest=digest(program))
+        with patch.object(result_store,'read_records',side_effect=lambda table,*a,**k:[deepcopy(row if table=='dual_tasks' else export)]), \
+                patch.object(Path,'read_text',return_value=json.dumps(dict(parent_id=task_id))), \
+                patch.object(Path,'exists',lambda path:path.name=='dual.json'):
+            state=self._json_request('GET','/api/tasks/'+task_id)
+            self.assertEqual(state['status'],'partial')
+            self.assertEqual(state['exports'],{'single_target':text})
+            self.assertTrue(state['result_ready'])
+            self.assertFalse(state['collection_ready'])
+            export['program']=dict(program,metadata={'purpose':'burst'},nodes=[dict(kind='Loop',count=2,body=program['nodes'])])
+            export['program_digest']=digest(export['program'])
+            with self.assertRaises(HTTPError) as caught:
+                self._json_request('GET','/api/tasks/'+task_id)
+            self.assertEqual(caught.exception.code,404)
+            self.assertIn('syntax.loop',json.loads(caught.exception.read())['error'])
 
     def test_legacy_dual_without_rule_snapshot_remains_readable_but_cannot_resume(self):
         import engine
@@ -711,6 +750,23 @@ class InterfaceTests(unittest.TestCase):
                 for options, expected in previous:
                     self.assertIs(options['diagnostic_logging'], expected)
 
+    def test_task_syntax_overlays_only_provided_keys_and_rejects_null(self):
+        import dual_task
+        from test_search_syntax import SIMPLE
+        from search import config_for
+        source=SimpleNamespace(write_text=lambda *a,**k:None)
+        destination=self.server.task_root/('d'*32)
+        self.server.task_options={'search_config':config_for({'syntax':SIMPLE})}
+        with patch.object(self.server,'task_paths',return_value=(source,destination)), \
+                patch.object(dual_task,'start',return_value=SimpleNamespace(done=True)) as start:
+            self._json_request('POST','/api/tasks',dict(profile=sample_profile(),mode='dual',syntax={'loop':True}))
+            self.assertEqual(start.call_args.kwargs['search_config']['syntax'],dict(SIMPLE,loop=True))
+            self.assertEqual(self.server.task_options['search_config']['syntax'],SIMPLE)
+            for invalid in (None,0,{'loop':None},{'unknown':False}):
+                with self.subTest(invalid=invalid),self.assertRaises(HTTPError) as caught:
+                    self._json_request('POST','/api/tasks',dict(profile=sample_profile(),mode='dual',syntax=invalid))
+                self.assertEqual(caught.exception.code,400)
+
     def test_service_cli_keeps_builtin_interval_out_of_snapshot(self):
         import importlib.util
         import interface, dual_task
@@ -874,7 +930,9 @@ class InterfaceTests(unittest.TestCase):
                                   tuple(kwargs['input_times'][:2])))
             return evaluate(*args, **kwargs)
 
-        self.server.task_options = {'search_config': dict(iterations=2, max_processes=1, stagnation_generations=2)}
+        from test_search_syntax import SIMPLE
+        self.server.task_options = {'search_config': dict(iterations=2, max_processes=1, stagnation_generations=2,
+                                                        syntax=SIMPLE)}
         from test_burst import reviewed_fixture
         import burst
         definition, reviewed_profile = reviewed_fixture()
@@ -953,6 +1011,8 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     assert.equal(await page.locator('#resultSection').isVisible(),true,await page.locator('#error').textContent());
     const text=await page.locator('#result').inputValue();assert.match(text,/^!GSE3!/);
     assert.equal(state.input_interval_ms,180);
+    assert.equal(Object.values(state.syntax).some(Boolean),false);
+    assert.match(await page.locator('#syntaxSummary').innerText(),/一键一技能/);
     assert.equal(submitted.mode,'dual');assert.equal(submitted.target_count,undefined);
     assert.equal(submitted.diagnostic_logging,false);
     assert.equal(text,state.exports.single_target);assert.equal(state.evidence_status,'search_result');
@@ -1004,6 +1064,15 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertEqual(len({scene['input_sha256'] for scene in state['scenes']}), 1)
         self.assertEqual(set(state['exports']), {'single_target', 'aoe', 'burst'})
         names = [decode_import(value)['sequences'] for value in state['exports'].values()]
+        for purpose in ('single_target','aoe'):
+            member=next(iter(decode_import(state['exports'][purpose])['sequences'].values()))
+            for version in member['Versions']:
+                for action in version['Actions']:
+                    self.assertEqual(action['Type'],'Action')
+                    commands=[line for line in action.get('macrotext','').splitlines()
+                              if line.startswith(('/cast ','/castsequence ','/use ','/startattack'))]
+                    self.assertLessEqual(len(commands),1)
+                    self.assertFalse(any(line.startswith('/castsequence ') for line in commands))
         self.assertEqual(len({name for member in names for name in member}), 3)
         collection = decode_import(state['collection_text'])
         self.assertEqual(collection['payload']['type'], 'COLLECTION')

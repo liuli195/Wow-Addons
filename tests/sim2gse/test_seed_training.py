@@ -259,6 +259,120 @@ def test_prepare_rejects_oversize_macro_without_losing_legal_materials(prepared_
     assert len(case.writes)==1 and case.writes[0][0]=='seed_prepared'
 
 
+def test_prepare_checks_original_structure_before_adaptation_and_cache(prepared_input):
+    from seed_training import ensure_prepared
+    from search import digest
+    from test_search_syntax import SIMPLE
+    case = prepared_input
+    case.inputs['config']['syntax'] = SIMPLE
+    # 缓存输入随策略变化；只读夹具提供已验证角色，材料仍走完整准备入口。
+    import seed_training as seeds
+    key_input = dict(version=seeds.PREPARATION_VERSION, template=case.inputs['template_sha'],
+        engines=case.inputs['engines'], simulation=case.inputs['simulation_config'], definition=None,
+        semantics=seeds.semantic_versions(), config=seeds._identity_config(case.inputs['config']))
+    case.header['config_key'] = digest(key_input)
+    case.header['checksum'] = digest([{k:v for k,v in case.header.items() if k!='checksum'}])
+    loop = [dict(kind='Loop', count=2, blocks=[['outbreak']])]
+    result = ensure_prepared('/memory/template', 1, '/memory/work', inputs=case.inputs,
+        sources=[case.source('loop', loop), case.source('legal', [['outbreak']])])
+    assert len(result['queue']) == 1
+    rejected = next(row for row in result['entries'] if row['candidate_id']=='loop')
+    assert rejected['program'] == loop and rejected['status'] == 'rejected'
+    assert 'syntax.loop' in rejected['reason']
+    assert result['context']['capabilities']['search_syntax'] == SIMPLE
+
+
+def test_prepare_rejects_forbidden_cached_representative(prepared_input):
+    import seed_training as seeds
+    from program import canonicalize_search_program
+    from search import digest
+    from test_search_syntax import SIMPLE
+    case=prepared_input
+    # 合法来源和合法上下文摘要不能为一个违规的缓存代表开绿灯。
+    config=case.inputs['config']
+    config['syntax']=SIMPLE
+    caps=dict(case.header['context']['capabilities'],search_syntax=SIMPLE)
+    identity=canonicalize_search_program([['outbreak']],caps)['identity']
+    case.header['context']['representations']={identity:dict(candidate_id='source',
+        program=[dict(kind='Loop',count=1,blocks=[['outbreak']])])}
+    key_input=dict(version=seeds.PREPARATION_VERSION,template=case.inputs['template_sha'],engines=case.inputs['engines'],
+        simulation=case.inputs['simulation_config'],definition=None,semantics=seeds.semantic_versions(),
+        config=seeds._identity_config(config))
+    case.header['config_key']=digest(key_input)
+    case.header['checksum']=digest([{k:v for k,v in case.header.items() if k!='checksum'}])
+    with pytest.raises(ValueError,match='syntax.loop'):
+        seeds.ensure_prepared('/memory/template',1,'/memory/work',inputs=case.inputs,
+                              sources=[case.source('source',[['outbreak']])])
+
+
+def test_public_training_runs_from_materials_through_four_policy_receipts(monkeypatch, public_training_memory):
+    from copy import deepcopy
+    import result_store, seed_training
+    from test_search_syntax import SIMPLE
+    case = public_training_memory
+    writes = []
+    monkeypatch.setattr(result_store, 'write', lambda table,key,rows,**kwargs: writes.append((table,key,deepcopy(rows))))
+    result = seed_training.run_training(case.template,1,'/memory/work', syntax_config=SIMPLE)
+    assert result['status']=='completed' and result['selected']==4
+    scope = dict(specialization_id=252,hero_talent='rider_of_the_apocalypse',target_type='single_target')
+    table,key,rows = next(row for row in writes if row[0]=='seed_selected')
+    assert key == seed_training.shared_scope(scope, SIMPLE)
+    assert all(row['evaluation']['syntax']['policy']==SIMPLE for row in rows)
+    assert seed_training.selected_contract_version(rows, SIMPLE)==2
+    rows[0]['evaluation'].pop('syntax')
+    with pytest.raises(ValueError, match='语法'):
+        seed_training.selected_contract_version(rows, SIMPLE)
+
+
+@pytest.mark.parametrize('tamper', [None, 'receipt', 'program'])
+def test_training_list_reads_policy_scope_and_rejects_tampering(monkeypatch,capsys,public_training_memory,tamper):
+    from copy import deepcopy
+    import result_store, seed_training, simulation_config
+    from test_search_syntax import SIMPLE
+    writes = []
+    monkeypatch.setattr(result_store,'write',lambda table,key,rows,**kwargs:writes.append((table,key,deepcopy(rows))))
+    case=public_training_memory
+    seed_training.run_training(case.template,1,'/memory/work',syntax_config=SIMPLE)
+    _,scope,rows=next(row for row in writes if row[0]=='seed_selected')
+    if tamper=='receipt': rows[0]['evaluation'].pop('syntax')
+    if tamper=='program': rows[0]['program']=[dict(kind='Loop',count=2,blocks=[['outbreak']])]
+    monkeypatch.setattr(simulation_config,'_load_document',lambda path=None:dict(syntax=SIMPLE))
+    monkeypatch.setattr(result_store,'read_records',lambda table,key:deepcopy(rows) if key==scope else [])
+    code=seed_training.main(['--project','/memory','list','--state','selected','--legacy',
+        '--specialization-id','252','--hero-talent','rider_of_the_apocalypse','--target-type','single_target'])
+    assert code==(2 if tamper else 0)
+    if not tamper: assert len(json.loads(capsys.readouterr().out))==4
+
+
+@pytest.mark.parametrize('conflict', [None, 'explicit', 'pending', 'receipt'])
+def test_public_training_resume_keeps_frozen_syntax(monkeypatch,public_training_memory,conflict):
+    import seed_training, sequence, simulation_config
+    from runtime import TaskCancelled
+    from test_search_syntax import SIMPLE
+    case=public_training_memory
+    evaluate=sequence.evaluate
+    monkeypatch.setattr(sequence,'evaluate',lambda *a,**k:(_ for _ in ()).throw(TaskCancelled('pause')))
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template,1,'/memory/work',syntax_config=SIMPLE)
+    monkeypatch.setattr(sequence,'evaluate',evaluate)
+    original=simulation_config._load_document
+    monkeypatch.setattr(simulation_config,'_load_document',lambda path=None:dict(original(path),syntax={'loop':True}))
+    if conflict=='pending':
+        case.store.state['ga']['pending']={'programs':[[dict(kind='WaitClicks',clicks=2)]],'regenerations':[0]}
+        case.store.checkpoint()
+    if conflict=='receipt':
+        path=next(p for p in case.files if p.name=='identity.json')
+        manifest=json.loads(case.files[path]); manifest.pop('syntax')
+        case.files[path]=json.dumps(manifest)
+    kwargs={'syntax_config':{'loop':True}} if conflict=='explicit' else {'syntax_config':{'loop':False}}
+    if conflict:
+        with pytest.raises(ValueError,match='语法|syntax|配置'):
+            seed_training.run_training(case.template,1,'/memory/work',**kwargs)
+    else:
+        assert seed_training.run_training(case.template,1,'/memory/work',**kwargs)['status']=='completed'
+        assert case.store.state['config']['syntax']==SIMPLE
+
+
 @pytest.mark.parametrize('boundary',['load_targeting','run_command'])
 def test_prepare_keeps_tool_failure_explicit_instead_of_rejecting_material(monkeypatch,prepared_input,boundary):
     import codec,program
@@ -478,6 +592,31 @@ def test_public_run_training_consumes_interval_reset_logging_and_training_defaul
     assert case.store.state['config']['diagnostic_logging'] is True
     assert case.store.state['config']['diagnostics'] == 'off'
     assert not getattr(case.store, 'diagnostic_summary', None)
+
+
+def test_public_training_reads_shared_file_once_for_all_configuration(monkeypatch,public_training_memory):
+    from unittest.mock import Mock
+    import simulation_config,seed_training
+    from test_search_syntax import SIMPLE
+    case=public_training_memory
+    original=simulation_config._load_document
+    reader=Mock(side_effect=lambda path=None:dict(original(path),syntax=SIMPLE))
+    monkeypatch.setattr(simulation_config,'_load_document',reader)
+    result=seed_training.run_training(case.template,1,'/memory/work',syntax_config={'loop':False})
+    assert result['status']=='completed'
+    assert reader.call_count==1 and case.store.state['config']['syntax']==SIMPLE
+
+
+def test_training_command_reports_actual_syntax(monkeypatch,capsys,public_training_memory):
+    import simulation_config,seed_training
+    from test_search_syntax import SIMPLE
+    case=public_training_memory
+    original=simulation_config._load_document
+    monkeypatch.setattr(simulation_config,'_load_document',lambda path=None:dict(original(path),syntax=SIMPLE))
+    assert seed_training.main(['--project','/memory','run','--legacy','--targets','1',
+        '--template',str(case.template),'--workspace','/memory/work'])==0
+    result=json.loads(capsys.readouterr().out)[0]
+    assert result['syntax']==SIMPLE and '一键一技能' in result['syntax_summary']
 
 
 @pytest.mark.parametrize('explicit', [False, True])

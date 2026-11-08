@@ -12,19 +12,20 @@ import task
 from runtime import TaskRuntime, TaskCancelled
 from formal_search import runtime_for as formal_runtime, STOP_POLICY
 from search import config_for, digest
-from simulation_config import config_for as simulation_config_for
+from simulation_config import config_for as simulation_config_for, SYNTAX_UNSET
 
 SCENES = (('single_target', 1), ('aoe', 5))
 PARENT_SCHEMA = dict(parent_id='VARCHAR', status='VARCHAR', phase='VARCHAR', error='VARCHAR',
     formal_search_version='UBIGINT',
-    input_sha256='VARCHAR', definition_id='VARCHAR', spec_id='UBIGINT', config='JSON',
+    input_sha256='VARCHAR', definition_id='VARCHAR', spec_id='UBIGINT', config='JSON', syntax='JSON',
     simulation_config='JSON', rules='JSON', rule_snapshot='JSON', engines='JSON', preparation_seconds='DOUBLE',
     packaging_seconds='DOUBLE', single_target_status='VARCHAR', aoe_status='VARCHAR',
     single_target_export='VARCHAR', aoe_export='VARCHAR', burst_export='VARCHAR',
     collection_text='VARCHAR', burst_instructions='VARCHAR',
     single_target_path='VARCHAR', aoe_path='VARCHAR')
 EXPORT_SCHEMA = dict(parent_id='VARCHAR', purpose='VARCHAR', behavior_identity='VARCHAR',
-                     name='VARCHAR', text='VARCHAR', simulation='VARCHAR', game_validation='VARCHAR')
+                     name='VARCHAR', text='VARCHAR', simulation='VARCHAR', game_validation='VARCHAR',
+                     syntax='JSON', program='JSON', program_digest='VARCHAR')
 
 
 def _decode(value):
@@ -52,6 +53,7 @@ def _load(destination):
     for key in ('config', 'simulation_config', 'rules', 'engines'):
         row[key] = _decode(row[key])
     row['rule_snapshot'] = _decode(row.get('rule_snapshot'))
+    row['syntax'] = _decode(row.get('syntax'))
     return row
 
 
@@ -61,6 +63,11 @@ def _verify(row, destination, identities, *, current_rules=False):
         raise task.TaskError('旧正式双场任务身份不兼容，不能继续；原完整成果仍可读取')
     if row.get('rule_snapshot') or not row.get('rules') or not row.get('engines'):
         raise task.TaskError('旧规则双场任务身份不兼容，不能继续；原完整成果仍可读取')
+    from simulation_config import verify_syntax_receipt
+    try:
+        verify_syntax_receipt(row.get('syntax'), row['config'].get('syntax'))
+    except ValueError as error:
+        raise task.TaskError(str(error)) from error
     if hashlib.sha256((destination / 'input.original.simc').read_bytes()).hexdigest() != row['input_sha256']:
         raise task.TaskError('双场任务的冻结输入已变化，请创建新任务')
     if load(row['spec_id'])['definition_id'] != row['definition_id']:
@@ -70,12 +77,23 @@ def _verify(row, destination, identities, *, current_rules=False):
         raise task.TaskError('双场任务的版本或规则已变化，请创建新任务')
 
 
-def _export(candidate, purpose, native_identity, destination, runtime):
+def _export(candidate, purpose, native_identity, destination, runtime, *, capabilities, syntax, trusted_burst=None):
     from gse_import import decode_import
-    from program import compile_program
+    from program import compile_program, check_search_syntax
     program = copy.deepcopy(candidate['program'])
+    if purpose == 'burst':
+        if (not trusted_burst or program.get('adapter') != 'search'
+                or program['nodes'] != trusted_burst['program']['nodes']):
+            raise task.TaskError('独立爆发与冻结定义不符')
+        compile_capabilities = None
+    else:
+        check_search_syntax(program, syntax)
+        if capabilities.get('search_syntax') != syntax:
+            raise task.TaskError('最终导出的冻结语法范围不符')
+        compile_capabilities = capabilities
     program['metadata']['purpose'] = purpose
-    compiled = compile_program(program, destination, identity=native_identity, runtime=runtime)
+    compiled = compile_program(program, destination, identity=native_identity, runtime=runtime,
+                               capabilities=compile_capabilities)
     before = next(iter(decode_import(candidate['text'])['sequences'].values()))
     after = next(iter(decode_import(compiled['text'])['sequences'].values()))
     if before['Versions'] != after['Versions'] or before['Default'] != after['Default']:
@@ -90,12 +108,15 @@ def _publish_export(row, purpose, compiled):
     key = digest(dict(parent=row['parent_id'], purpose=purpose, behavior=behavior))
     result_store.write('sequence_exports', key, [dict(parent_id=row['parent_id'], purpose=purpose,
         behavior_identity=behavior, name=compiled['name'], text=compiled['text'],
-        simulation=compiled['simulation'], game_validation=compiled['game_validation'])], schema=EXPORT_SCHEMA)
+        simulation=compiled['simulation'], game_validation=compiled['game_validation'],
+        syntax=row['syntax'], program=compiled['program'], program_digest=digest(compiled['program']))], schema=EXPORT_SCHEMA)
     row[purpose + '_export'] = key
     _save(row)
 
 
 def _child_matches(row, child, targets, scene):
+    from simulation_config import verify_syntax_receipt
+    verify_syntax_receipt(child.get('syntax'), row['config']['syntax'])
     logging_keys = ('diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline')
     def business_config(value):
         frozen = config_for(value)
@@ -191,6 +212,10 @@ def _worker(handle):
                 if child.get('status') != 'completed' or not child.get('candidate'):
                     raise task.TaskError('当前场景尚未完成有效搜索')
                 _child_matches(row, child, targets, purpose)
+                frozen = task._read_resume_checkpoint(child_path)
+                from simulation_config import verify_syntax_receipt
+                verify_syntax_receipt(frozen.get('syntax'), row['config']['syntax'])
+                capabilities = frozen['capabilities']
                 row[purpose + '_status'] = 'completed'
                 _save(row)
                 runtime = TaskRuntime(600, cancel_event=handle.cancel_event,
@@ -198,7 +223,8 @@ def _worker(handle):
                 native_identity = child['native_reference']['identity']
                 started = time.monotonic()
                 compiled = _export(child['candidate'], purpose, native_identity,
-                                   destination / 'exports' / purpose, runtime)
+                                   destination / 'exports' / purpose, runtime,
+                                   capabilities=capabilities, syntax=row['config']['syntax'])
                 _publish_export(row, purpose, compiled)
                 compiled_exports[purpose] = compiled
                 instructions = ('单体' if purpose == 'single_target' else '群体') + '：' + child['burst']['instructions']
@@ -208,7 +234,9 @@ def _worker(handle):
                     candidate = copy.deepcopy(child['burst']['candidate'])
                     candidate['program']['metadata']['instructions'] = row['burst_instructions']
                     compiled = _export(candidate, 'burst', native_identity,
-                                       destination / 'exports' / 'burst', runtime)
+                                       destination / 'exports' / 'burst', runtime,
+                                       capabilities=capabilities, syntax=row['config']['syntax'],
+                                       trusted_burst=(frozen.get('burst') or {}).get('candidate'))
                     _publish_export(row, 'burst', compiled)
                     compiled_exports['burst'] = compiled
                 row['packaging_seconds'] += time.monotonic() - started
@@ -244,21 +272,27 @@ def _worker(handle):
         lease.__exit__(None, None, None)
 
 
-def start(input_path, destination, *, search_config=None, simulation_config=None):
+def start(input_path, destination, *, search_config=None, simulation_config=None,
+          syntax_config=SYNTAX_UNSET, _config_frozen=False):
     started = time.monotonic()
     from burst import select_definition
     from engine import identity
     destination = Path(destination).resolve()
     simulation_config = simulation_config_for(simulation_config)
-    from simulation_config import load_search_config
-    config = load_search_config(default_input_interval_ms=200, **(search_config or {}))
+    from simulation_config import load_search_config, syntax_receipt, SYNTAX_UNSET
+    if _config_frozen:
+        if syntax_config is not SYNTAX_UNSET:
+            raise task.TaskError('syntax存在重复权威来源')
+        config = config_for(search_config)
+    else:
+        config = load_search_config(default_input_interval_ms=200, syntax_config=syntax_config, **(search_config or {}))
     original, text = task._read_utf8(Path(input_path), description='角色输入')
     effective = task._effective_input_bytes(original, text, simulation_config)
     definition = select_definition(task.parse_character(effective.decode('utf-8')))
     identities = {mode: identity(mode) for mode in ('baseline', 'controlled')}
     row = dict(parent_id=uuid.uuid4().hex, formal_search_version=1, status='starting', phase='prepare', error=None,
                input_sha256=hashlib.sha256(original).hexdigest(), definition_id=definition['definition_id'],
-               spec_id=definition['spec_id'], config=config, simulation_config=simulation_config,
+               spec_id=definition['spec_id'], config=config, syntax=syntax_receipt(config['syntax']), simulation_config=simulation_config,
                rules=task._rule_hashes(), rule_snapshot=None, engines={mode: entry[1] for mode, entry in identities.items()},
                preparation_seconds=time.monotonic() - started, packaging_seconds=0., collection_text=None,
                burst_instructions=definition['instructions'], single_target_path='single_target', aoe_path='aoe',
@@ -279,7 +313,7 @@ def _launch(destination, identities, *, timeline_origin=None):
     return handle
 
 
-def resume(destination, *, diagnostic_logging=None, search_timeline=None, search_config=None):
+def resume(destination, *, diagnostic_logging=None, search_timeline=None, search_config=None, syntax_config=SYNTAX_UNSET):
     from search import resume_config_for
     from engine import identity
     destination = Path(destination).resolve()
@@ -290,6 +324,10 @@ def resume(destination, *, diagnostic_logging=None, search_timeline=None, search
         identities = {mode: identity(mode) for mode in ('baseline', 'controlled')}
         _verify(row, destination, identities, current_rules=True)
         overrides = dict(search_config or {})
+        if syntax_config is not SYNTAX_UNSET:
+            if 'syntax' in overrides:
+                raise task.TaskError('syntax存在重复权威来源')
+            overrides['syntax'] = syntax_config
         overrides.update({key: value for key, value in dict(diagnostic_logging=diagnostic_logging,
                           search_timeline=search_timeline).items() if value is not None})
         row['config'] = resume_config_for(row['config'], overrides)
@@ -322,11 +360,20 @@ def read(destination, *, active=None, include_rule_initialization=True):
     destination = Path(destination).resolve()
     row = _load(destination)
     natural = type(row.get('formal_search_version')) is int and row['formal_search_version'] == 1
-    recoverable = natural and row['status'] in ('cancelled', 'partial', 'failed', 'interrupted')
+    current_syntax = 'syntax' in row['config'] or row.get('syntax') is not None
+    syntax_summary = '历史任务未记录语法范围，仅可查看。'
+    if current_syntax:
+        from simulation_config import verify_syntax_receipt, describe_syntax
+        try:
+            verify_syntax_receipt(row.get('syntax'), row['config'].get('syntax'))
+        except ValueError as error:
+            raise task.TaskError(str(error)) from error
+        syntax_summary = describe_syntax(row['config']['syntax'])
+    recoverable = natural and current_syntax and row['status'] in ('cancelled', 'partial', 'failed', 'interrupted')
     if row['status'] in ('starting', 'running', 'stopping') and not (active if active is not None else _is_running(destination) if natural else False):
-        row.update(status='interrupted', error=('执行进程已退出，可以继续未完成的任务' if natural else
+        row.update(status='interrupted', error=('执行进程已退出，可以继续未完成的任务' if natural and current_syntax else
                    '旧正式搜索已退役，任务仅可查看；请创建新GA任务'))
-        recoverable = natural
+        recoverable = natural and current_syntax
     budget = None if natural else row['config']['total_budget_seconds']
     scenes, exports = [], {}
     elapsed, completed, active_progress = 0., 0, 0.
@@ -351,7 +398,7 @@ def read(destination, *, active=None, include_rule_initialization=True):
                 if name in child:
                     scene[name] = child[name]
             search = child.get('search') or child
-            for name in ('training_champion_snapshot', 'training_champion_adaptation', 'start_sources',
+            for name in ('seed_adaptations', 'training_champion_snapshot', 'training_champion_adaptation', 'start_sources',
                          'formal_champion_snapshot', 'formal_champion_adaptation', 'formal_champion_publication',
                          'formal_champion_publication_verification', 'formal_search', 'start_adaptations'):
                 if name in search:
@@ -369,6 +416,18 @@ def read(destination, *, active=None, include_rule_initialization=True):
             records = result_store.read_records('sequence_exports', key)
             if len(records) != 1 or records[0]['parent_id'] != row['parent_id'] or records[0]['purpose'] != purpose:
                 raise task.TaskError('双场导出记录缺失或身份不符')
+            if current_syntax:
+                from program import check_search_syntax
+                record = records[0]
+                try:
+                    verify_syntax_receipt(_decode(record.get('syntax')), row['config']['syntax'])
+                    program = _decode(record.get('program'))
+                    if record.get('program_digest') != digest(program):
+                        raise ValueError('最终导出程序凭据不符')
+                    if purpose != 'burst':
+                        check_search_syntax(program, row['config']['syntax'])
+                except ValueError as error:
+                    raise task.TaskError(str(error)) from error
             exports[purpose] = records[0]['text']
     if natural:
         result_note = ('两个循环均已完成正常场景独立复测，爆发独立按键。已通过本机导入编译，游戏效果尚待验证。'
@@ -377,6 +436,8 @@ def read(destination, *, active=None, include_rule_initialization=True):
     else:
         result_note = '旧正式搜索已退役，任务仅可查看。原结果未进行最终独立复测；爆发独立按键，游戏效果尚待验证。'
     return dict(status=row['status'], phase=row['phase'], error=row['error'], scenes=scenes,
+                syntax=row['config'].get('syntax'), syntax_summary=syntax_summary,
+                start_rejection_count=sum(task.start_rejection_count(scene) for scene in scenes),
                 exports=exports, recoverable=recoverable, collection_text=row['collection_text'], collection_ready=bool(row['collection_text']),
                 result_ready=bool(exports), input_interval_ms=row['config']['input_interval_ms'],
                 progress=1. if row['status'] == 'completed' else None if natural else (completed + active_progress) / 2,

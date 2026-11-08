@@ -23,6 +23,8 @@ from simulation_config import (  # noqa: E402
     engine_options,
     load_config,
     load_training_config,
+    syntax_for,
+    syntax_receipt,
 )
 
 
@@ -43,9 +45,12 @@ class SimulationConfigTests(unittest.TestCase):
         from contextlib import nullcontext
         from copy import deepcopy
         import burst, dual_task, engine, result_store, search, task
+        from simulation_config import syntax_receipt
+        from test_search_syntax import SIMPLE
         frozen = search.config_for(dict(input_interval_ms=250, iterations=96,
-            diagnostic_logging=True, diagnostics='off', search_observability='summary', search_timeline=True))
+            diagnostic_logging=True, diagnostics='off', search_observability='summary', search_timeline=True,syntax=SIMPLE))
         row = dict(parent_id='saved', formal_search_version=1, config=frozen,
+            syntax=syntax_receipt(frozen['syntax']),
             simulation_config=config_for(), rule_snapshot=None, rules=task._rule_hashes(),
             engines={'baseline': {'hash': 'b'}, 'controlled': {'hash': 'b'}},
             input_sha256=hashlib.sha256(b'input').hexdigest(), spec_id=252, definition_id='saved-definition')
@@ -68,6 +73,13 @@ class SimulationConfigTests(unittest.TestCase):
                              search_timeline=False, search_observability='full'))
             with self.assertRaisesRegex(task.TaskError, '创建新任务'):
                 dual_task.resume('/memory/saved', search_config=dict(iterations=128))
+            dual_task.resume('/memory/saved', syntax_config={'loop':False})
+            self.assertEqual(written[-1]['config']['syntax'],SIMPLE)
+            with self.assertRaisesRegex(task.TaskError,'创建新任务'):
+                dual_task.resume('/memory/saved',syntax_config={'loop':True})
+            row.pop('syntax')
+            with self.assertRaisesRegex(task.TaskError,'语法'):
+                dual_task.resume('/memory/saved')
 
     def test_formal_defaults_and_explicit_modes_survive_logging_toggle(self):
         from simulation_config import load_search_config
@@ -254,7 +266,8 @@ class SimulationConfigTests(unittest.TestCase):
                 with patch.object(result_store, 'ensure_available'), \
                         patch('simulation_config._load_document', side_effect=AssertionError('恢复不得读取新文件')), \
                         patch.object(task, '_read_resume_checkpoint', return_value=dict(
-                            formal_search_version=1, config=search.config_for())), \
+                            formal_search_version=1, config=search.config_for(),
+                            syntax=syntax_receipt(syntax_for()))), \
                         patch.object(seed_activity, 'foreground_search', nullcontext), \
                         patch.object(task, '_task_lease', lambda *args: nullcontext()), \
                         patch.object(Path, 'read_text', autospec=True,
@@ -339,7 +352,9 @@ class SimulationConfigTests(unittest.TestCase):
                               tournament_size=3, crossover_probability=.8, mutation_probability=.8,
                               iterations=128, random_seed=20260912,
                               reset_events=(), diagnostic_logging=False, diagnostics="summary",
-                              search_observability="full", search_timeline=False)},
+                              search_observability="full", search_timeline=False,
+                              syntax=dict(multi_command_blocks=True, loop=True,
+                                          wait_clicks=True, castsequence=True))},
         )
 
     def test_invalid_service_config_stops_before_starting_server(self) -> None:

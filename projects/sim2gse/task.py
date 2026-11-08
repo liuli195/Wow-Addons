@@ -26,7 +26,7 @@ from runtime import replace_file, diagnostic_summary
 from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
 from formal_search import runtime_for as formal_runtime, STOP_POLICY as FORMAL_STOP_POLICY
 from simulation_config import (RETIRED_SEARCH_SETTINGS, config_for as simulation_config_for,
-                               engine_options, load_config)
+                               engine_options, load_config, SYNTAX_UNSET)
 
 
 class TaskError(ValueError):
@@ -476,6 +476,9 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
         validation_summary=result.get('validation', {}),
         final_status=final.get('status'), final_scenarios=final.get('scenarios', {}),
         error=result.get('error'))
+    if 'syntax' in record['config']:
+        from simulation_config import syntax_receipt
+        record['syntax'] = syntax_receipt(record['config']['syntax'])
     write_records('runs', run_id, [record], schema=RUN_SCHEMA)
     return dict(run_id=run_id, status=record['status'], phase=record['phase'])
 
@@ -559,7 +562,8 @@ def _prepare_task(input_path, output_root, *, resume=False, simulation_config=No
 
 
 def _run_single(input_path, destination, character, *, program, phase_ms, runtime, interval_ms=300,
-                simulation_config, gse_program=None, gse_context=None, diagnostic_logging=False, use_burst=False):
+                simulation_config, gse_program=None, gse_context=None, diagnostic_logging=False, use_burst=False,
+                syntax_config=None):
     from engine import prepare_loop, reference, damage_statistics
     from sequence import select, evaluate
     from program import compile_program, from_action_blocks
@@ -617,6 +621,8 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
         effective_character = parse_character(_read_utf8(destination / 'input.simc', description='任务输入副本')[1])
     _, capabilities, context = prepare_loop(native, effective_character, destination, runtime,
                                             definition=definition, interval_ms=interval_ms)
+    if gse_program is None:
+        capabilities = dict(capabilities, search_syntax=syntax_config)
     if not diagnostic_logging:
         native.pop('action_sequence', None)
         native.pop('precombat_sequence', None)
@@ -799,6 +805,8 @@ def _seed_programs(starts, snapshot, *, character, targets, configuration_key,
                         derived_program=None, removed=[], status='rejected', reason='')
         decisions.append(decision)
         try:
+            from program import check_search_syntax
+            check_search_syntax(program, capabilities.get('search_syntax'))
             check_original_limits(program)
             derived, removed = filter_search_program(program, excluded, capabilities)
             decision.update(derived_program=derived, removed=[dict(item,
@@ -968,6 +976,9 @@ def _freeze_formal_champion(state, character, native, capabilities):
     binding = dict(condition=state['condition'], input_effective_sha256=state['input_effective_sha256'],
                    class_name=character.class_name, spec=character.spec,
                    spec_id=native['identity']['spec_id'], target_count=state['simulation_config']['target_count'])
+    if 'search_syntax' in capabilities:
+        from simulation_config import syntax_receipt
+        binding['syntax'] = syntax_receipt(capabilities['search_syntax'])['digest']
     key = digest(binding)
     record = read_search_champion(key)
     snapshot = dict(status='absent', condition_key=key, binding=binding, version=0,
@@ -1014,7 +1025,7 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
         identity = (profile or {}).get('identity', {})
         comparable_config = lambda value: {key: item for key, item in value.items()
             if key not in (*RETIRED_SEARCH_SETTINGS, *FORMAL_ALGORITHM_DEFAULTS,
-                           'search_observability', 'diagnostics', 'diagnostic_logging', 'search_timeline')}
+                               'search_observability', 'diagnostics', 'diagnostic_logging', 'search_timeline', 'syntax')}
         source_burst, current_burst = decode(run['burst']) or {}, state.get('burst') or {}
         source_context = {key: item for key, item in source_burst.items()
                           if key not in ('candidate_key', 'candidate_data_key')}
@@ -1087,6 +1098,8 @@ def import_formal_champion(input_path, output_root, source_run_ids, *, search_co
     if len(scope) > 64:
         raise TaskError('历史导入最多64个唯一正式来源，请缩小明确范围')
     from seed_activity import foreground_search
+    from simulation_config import load_search_config
+    search_config = load_search_config(**(search_config or {}))
     with foreground_search():
         return _run_task(input_path, output_root, search_config=search_config,
             simulation_config=simulation_config, use_burst=use_burst, _formal_source_run_ids=scope)
@@ -1132,6 +1145,9 @@ def _prepare_formal_publication(store, result=None):
                   evaluation=dict(search=state['formal_search'], engines=state['engines'],
                       complete_generations=state['ga']['generation'], stagnant=state['ga']['stagnant'],
                       finalist_keys=state['ga']['finalists'], finalists=state['formal_finalists']))
+    if 'syntax' in snapshot['binding']:
+        from simulation_config import syntax_receipt
+        record['evaluation']['syntax'] = syntax_receipt(state['config']['syntax'])
     incumbent = previous or (dict(version=snapshot['version'], source_run_id=snapshot['source_run_id'],
         behavior_identity=snapshot['behavior_identity'])
         if snapshot['status'] == 'selected' and snapshot['version'] > 0 else None)
@@ -1416,6 +1432,14 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                          use_burst=use_burst,
                          simulation_config=simulation_config,
                          simulation_options=engine_options(simulation_config))
+            from simulation_config import syntax_receipt, verify_syntax_receipt
+            if 'syntax' in state:
+                verify_syntax_receipt(state['syntax'], config['syntax'])
+            elif state['phase'] != 'initialize':
+                raise TaskError('旧任务缺少冻结语法凭据，请创建新任务')
+            state['syntax'] = syntax_receipt(config['syntax'])
+            from program import check_search_state
+            check_search_state(state, config['syntax'])
             state.setdefault('phase', 'initialize')
             if state['phase'] == 'initialize':
                 state['inflight'] = {'initialize': dict(start=runtime.elapsed_seconds, allowance=min(30,runtime.remaining_seconds))}
@@ -1452,6 +1476,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 all_capabilities, capabilities, context = prepare_loop(
                     native, effective_character, destination, runtime, definition=definition,
                     interval_ms=config['input_interval_ms'])
+                capabilities = dict(capabilities, search_syntax=config['syntax'])
                 if use_burst:
                     state['all_capabilities'] = all_capabilities
                     state['native'] = native
@@ -1467,8 +1492,12 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 from result_store import read_records
                 # 原生快照绑定英雄后才冻结共享成果；恢复不得沿用旧的宽范围快照。
                 if state.get('seed_configuration_key') != configuration_key:
-                    state['seed_selected_snapshot'] = read_records('seed_selected', shared_scope(configuration_key))
-                    contract = selected_contract_version(state['seed_selected_snapshot'])
+                    state['seed_selected_snapshot'] = read_records('seed_selected', shared_scope(configuration_key, config['syntax']))
+                    if state['seed_selected_snapshot']:
+                        contract = selected_contract_version(state['seed_selected_snapshot'], config['syntax'])
+                    else:
+                        state['seed_selected_snapshot'] = read_records('seed_selected', shared_scope(configuration_key))
+                        contract = selected_contract_version(state['seed_selected_snapshot'])
                     state['training_champion_snapshot'] = (dict(source_kind='training_champion',
                         status='not_applicable', reason='v2四条已包含正常冠军及稳定代表') if contract == 2 else training_champion(
                         character.class_name, character.spec, simulation_config, engines=identities,
@@ -1514,7 +1543,9 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                               condition_key=condition, store=store,
                               simulation_config=simulation_config)
             result['search']['configuration_key'] = state['seed_configuration_key']
+            result['start_rejection_count'] = start_rejection_count(state)
             result.update(config=config, simulation_config=simulation_config,
+                              syntax=state['syntax'],
                               character=character, output_root=destination,capabilities=state['capabilities'],
                               profile=json.loads((destination/'profile.json').read_text(encoding='utf-8')),
                               reference_data_key=state.get('reference_data_key'))
@@ -1562,9 +1593,10 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                      elapsed_seconds=runtime.elapsed_seconds, error=str(error), inflight={})
         store.save()
         result = {k:state.get(k) for k in (
-            'status', 'phase', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
+            'status', 'phase', 'config', 'syntax', 'elapsed_seconds', 'locked_candidate_key', 'completed_batches',
             'batch_requests', 'batch_cache_hits', 'native_batch_starts',
             'canonicalized_duplicates', 'error')}
+        result['start_rejection_count'] = start_rejection_count(state)
         observation = state.get('search_observability')
         if observation and observation.get('mode') != 'off':
             with store.lock:
@@ -1613,7 +1645,7 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
              version=None, gse_context=None, use_burst=False, burst_identity=None,
-             _formal_source_run_ids=None) -> dict:
+             _formal_source_run_ids=None, syntax_config=None) -> dict:
     """执行角色任务；优化模式是产品默认，single 仅保留前两票快速回归。"""
     if type(use_burst) is not bool:
         raise TaskError('爆发开关必须为布尔值')
@@ -1663,6 +1695,8 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
         gse_program = None
     from search import config_for
     config = config_for(search_config)
+    if syntax_config is not None:
+        config['syntax'] = syntax_config
     from result_store import ensure_available
     ensure_available()
     simulation_config = simulation_config_for(simulation_config)
@@ -1680,7 +1714,7 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
                                      runtime=runtime, interval_ms=config["input_interval_ms"],
                                      simulation_config=simulation_config, gse_program=gse_program,
                                      gse_context=gse_context, diagnostic_logging=config["diagnostic_logging"],
-                                     use_burst=use_burst)
+                                     use_burst=use_burst, syntax_config=syntax_config)
                 result['config'] = config
                 result['elapsed_seconds'] = runtime.elapsed_seconds
                 pointer = _store_run(destination, result)
@@ -1722,10 +1756,32 @@ def _run_task(input_path: str | Path, output_root: str | Path | None = None, *, 
 def run_task(input_path: str | Path, output_root: str | Path | None = None, *, program=None, phase_ms=0,
              mode="optimize", search_config=None, simulation_config=None, cancel_event=None,
              resume=False, _runtime=None, _lease=False, gse_text=None, sequence_name=None,
-             version=None, gse_context=None, use_burst=False, burst_identity=None) -> dict:
+             version=None, gse_context=None, use_burst=False, burst_identity=None, syntax_config=SYNTAX_UNSET) -> dict:
+    if mode == 'single':
+        from simulation_config import load_syntax_config
+        from program import check_search_syntax
+        if isinstance(search_config, dict) and 'syntax' in search_config:
+            if syntax_config is not SYNTAX_UNSET:
+                raise ValueError('syntax存在重复权威来源')
+            search_config = dict(search_config)
+            syntax_config = search_config.pop('syntax')
+            if syntax_config is None:
+                raise ValueError('syntax语法配置必须为对象')
+        syntax_config = load_syntax_config(syntax_config=syntax_config)
+        if program is not None:
+            check_search_syntax(program, syntax_config)
     timeline = None
     if mode == 'optimize':
         from simulation_config import load_search_config
+        if syntax_config is not SYNTAX_UNSET:
+            from simulation_config import syntax_for
+            if not isinstance(syntax_config, dict):
+                raise TaskError('syntax语法配置必须为对象')
+            syntax_for(syntax_config)
+            if 'syntax' in (search_config or {}):
+                raise TaskError('syntax存在重复权威来源')
+            search_config = dict(search_config or {}, syntax=syntax_config)
+        syntax_config = None  # 解析后的唯一权威存放于search_config。
         if not resume and _runtime is None:
             search_config = load_search_config(**(search_config or {}))
         from search import config_for
@@ -1742,6 +1798,8 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
         _runtime = _runtime or formal_runtime(config, cancel_event=cancel_event)
         if timeline is not None:
             _runtime.search_timeline = timeline
+    elif syntax_config is SYNTAX_UNSET:
+        syntax_config = None
     try:
         if mode != 'optimize' or _lease:
             return _run_task(input_path, output_root, program=program, phase_ms=phase_ms, mode=mode,
@@ -1749,6 +1807,7 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
                              cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
                              gse_text=gse_text, sequence_name=sequence_name, version=version,
                              gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity,
+                             syntax_config=syntax_config,
                              )
         from seed_activity import foreground_search
         with foreground_search():
@@ -1757,6 +1816,7 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
                              cancel_event=cancel_event, resume=resume, _runtime=_runtime, _lease=_lease,
                              gse_text=gse_text, sequence_name=sequence_name, version=version,
                              gse_context=gse_context, use_burst=use_burst, burst_identity=burst_identity,
+                             syntax_config=syntax_config,
                              )
     finally:
         if timeline is not None:
@@ -1793,10 +1853,16 @@ def start_task(input_path, output_root, **kwargs):
     timeline_origin = None
     if kwargs.get('mode', 'optimize') == 'optimize':
         from simulation_config import load_search_config
-        config = load_search_config(**(config or {}))
+        if kwargs.pop('_config_frozen', False):
+            from search import config_for
+            config = config_for(config)
+        else:
+            config = load_search_config(syntax_config=kwargs.pop('syntax_config', SYNTAX_UNSET), **(config or {}))
         kwargs['search_config'] = config
         if config['search_timeline']:
             timeline_origin = call_started
+    else:
+        kwargs.pop('_config_frozen', None)
     from search import config_for
     runtime = formal_runtime(config_for(config)) if kwargs.get("mode", "optimize") == "optimize" else TaskRuntime(600)
     if timeline_origin is not None:
@@ -1847,7 +1913,7 @@ def _read_resume_checkpoint(output_root):
             raise TaskError('任务缺少恢复清单')
         state = json.loads(row[0])
         if state == {'storage_format': 2}:
-            names = ('formal_search_version', 'formal_search', 'config', 'rule_snapshot',
+            names = ('formal_search_version', 'formal_search', 'config', 'syntax', 'capabilities', 'burst', 'rule_snapshot',
                      'rule_context', 'formal_champion_publication_intent')
             rows = connection.execute('SELECT key,value FROM state_fields WHERE key IN (' +
                 ','.join('?' for _ in names) + ')', names)
@@ -1871,12 +1937,23 @@ def _require_current_formal_resume(state):
             raise TaskError('旧正式搜索补保存和补发布已退役；原完整成果仅可读取')
     if state.get('rule_snapshot') or state.get('rule_context'):
         raise TaskError('旧规则任务身份不兼容，不能续跑；原完整成果仍可读取')
-    config = state.get('config')
-    if any(key in (config or {}) for key in
-            ('rule_initialization_enabled', 'adaptive_selector_enabled', 'rule_diagnostics_policy')):
-        raise TaskError('旧任务含已移除搜索开关，身份不兼容，不能续跑；请创建新任务，原成果仍可读取')
     from simulation_config import reject_removed_search_settings
-    reject_removed_search_settings(config or {})
+    try:
+        reject_removed_search_settings(state.get('config') or {})
+    except ValueError as error:
+        raise TaskError('旧搜索能力已移除，身份不兼容，请创建新任务: ' + str(error)) from error
+    from simulation_config import verify_syntax_receipt
+    try:
+        verify_syntax_receipt(state.get('syntax'), (state.get('config') or {}).get('syntax'))
+    except ValueError as error:
+        raise TaskError(str(error)) from error
+
+
+def start_rejection_count(search):
+    decisions = [*search.get('seed_adaptations', []), *search.get('start_adaptations', [])]
+    decisions.extend(search[name] for name in ('training_champion_adaptation', 'formal_champion_adaptation')
+                     if search.get(name))
+    return sum(row.get('status') == 'rejected' for row in decisions)
 
 
 def _resume_task(output_root, **kwargs):
@@ -1938,6 +2015,8 @@ def _resume_task(output_root, **kwargs):
                 search_timeline=search_timeline, diagnostic_logging=kwargs.pop('diagnostic_logging', None)).items()
                 if value is not None})
             config = resume_config_for(state['config'], requested_config)
+            from program import check_search_state
+            check_search_state(state, config['syntax'])
             state['config'] = config
             from engine import identity
             # 已验身份不提前触发预算/取消检查，保留完成与耗尽恢复的可靠补发顺序。
@@ -2025,7 +2104,17 @@ def resume_task(output_root, **kwargs):
     from simulation_config import reject_removed_search_settings
     if any(name in kwargs for name in ('rule_step', 'diagnostic_candidate_key', 'diagnostic_budget_seconds')):
         raise TaskError('规则编辑和规则诊断执行入口已移除')
-    overrides = kwargs.get('search_config') or {}
+    overrides = dict(kwargs.get('search_config') or {})
+    if 'syntax_config' in kwargs:
+        if 'syntax' in overrides:
+            raise TaskError('syntax存在重复权威来源')
+        syntax = kwargs.pop('syntax_config')
+        if not isinstance(syntax, dict):
+            raise TaskError('syntax语法配置必须为对象')
+        from simulation_config import syntax_for
+        syntax_for(syntax)
+        overrides['syntax'] = syntax
+        kwargs['search_config'] = overrides
     reject_removed_search_settings(overrides)
     saved = _read_resume_checkpoint(output_root)
     _require_current_formal_resume(saved)
@@ -2136,6 +2225,10 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
     def decode(value):
         return json.loads(value) if isinstance(value, str) else value
 
+    frozen_syntax = None
+    if 'syntax' in (decode(saved['config']) or {}) or saved.get('syntax') is not None:
+        from simulation_config import verify_syntax_receipt
+        frozen_syntax = verify_syntax_receipt(decode(saved.get('syntax')), (decode(saved['config']) or {}).get('syntax'))
     search = dict(
         candidate_count=saved['search_candidate_count'],
         unique_candidates=saved['search_unique_candidates'],
@@ -2177,6 +2270,7 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         run_id=run_id, status=saved['status'], phase=saved['phase'],
         profile=decode(saved['profile']), identity=decode(saved['identity']),
         config=decode(saved['config']), simulation_config=decode(saved['simulation_config']),
+        syntax=decode(saved.get('syntax')),
         elapsed_seconds=saved['elapsed_seconds'], completed_batches=saved['completed_batches'],
         reference_data_key=saved['reference_data_key'], controlled_data_key=saved['controlled_data_key'],
         candidate_key=saved['candidate_key'], candidate_data_key=saved['candidate_data_key'],
@@ -2230,6 +2324,9 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
             simulation=candidate['simulation'], selected_sequence=candidate['selected_sequence'],
             selected_version=candidate['selected_version'], import_sha256=candidate['import_sha256'],
             game_validation=candidate['game_validation'])
+        if frozen_syntax is not None and candidate['source'] == 'search':
+            from program import check_search_syntax
+            check_search_syntax(task_result['candidate']['program'], frozen_syntax)
 
     # The run's complete report list also includes the reference/single evaluation.
     # Those groups need not have any search-only columns, particularly after an early failure.
@@ -2406,7 +2503,13 @@ def main(argv=None):
             result = run_task(args.input, args.output, simulation_config=simulation_config,
                               search_config=dict(diagnostic_logging=args.diagnostic_logging,
                                   search_timeline=args.search_timeline))
-        print(json.dumps(dict(status=result['status'], result=str(args.output.resolve() / 'result.json')), ensure_ascii=False))
+        summary = dict(status=result['status'], result=str(args.output.resolve() / 'result.json'))
+        syntax = (result.get('config') or {}).get('syntax')
+        if syntax is not None:
+            from simulation_config import describe_syntax
+            summary.update(syntax=syntax, syntax_summary=describe_syntax(syntax),
+                           start_rejection_count=result.get('start_rejection_count', start_rejection_count(result.get('search') or result)))
+        print(json.dumps(summary, ensure_ascii=False))
         return 0
     except (TaskError, ValueError) as error:
         print(str(error), file=sys.stderr)

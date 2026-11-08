@@ -116,6 +116,9 @@ def run(*, profile, character, capabilities, reference, destination, runtime,
     selected = deepcopy(archive[winner['key']])
     selected.update(score=winner['score'], batches=winner['batches'])
     selected['candidate']['simulation'] = 'passed_native_model'
+    from program import check_search_syntax
+    check_search_syntax(selected['program'], config['syntax'])
+    check_search_syntax(selected['candidate']['program'], config['syntax'])
     if timeline is not None:
         timeline.score(selected, 'global', 'nominal_retest')
     state.update(formal_finalists=finalists, formal_winner=selected,
@@ -159,6 +162,16 @@ def validate_evidence(record, state, character, *, verify_reports):
     from sequence import compiled_identity
     from result_store import InvalidRecordError, read_many, report_locations
     evaluation = record.get('evaluation') or {}
+    if 'syntax' in record.get('binding', {}):
+        from simulation_config import verify_syntax_receipt
+        try:
+            policy = verify_syntax_receipt(evaluation.get('syntax'), state['config'].get('syntax'))
+            if record['binding']['syntax'] != evaluation['syntax']['digest']:
+                raise ValueError('正式冠军语法摘要不符')
+            from program import check_search_syntax
+            check_search_syntax(record['program'], policy)
+        except ValueError as error:
+            raise InvalidRecordError(str(error)) from error
     if (not isinstance(evaluation, dict) or not isinstance(evaluation.get('search'), dict)
             or type(evaluation['search'].get('version')) is not int
             or evaluation['search']['version'] not in (1, VERSION)

@@ -33,7 +33,8 @@ def memory_case(monkeypatch, *, fault='score', formal=True, phase='breed', stop=
         'cancel': TaskCancelled('cancelled')}[fault]
     config = dict(TRAINING_DEFAULTS, top_k=2, max_processes=1,
         crossover_probability=0., mutation_probability=1., tournament_size=1)
-    state = dict(config=dict(reset_events=()), condition='memory-condition', starts=deepcopy(STARTS),
+    from simulation_config import SYNTAX_DEFAULTS
+    state = dict(config=dict(reset_events=(), syntax=dict(SYNTAX_DEFAULTS)), condition='memory-condition', starts=deepcopy(STARTS),
         archive=[], errors=[], training_failures={}, training_failure_causes={},
         ga=dict(algorithm=population_training.ALGORITHM, phase=phase, generation=0, stagnant=0,
             population=[], pending=None, rng=random.Random(20260912).getstate(), finals={}, baseline=[]))

@@ -209,6 +209,15 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         options['search_config'] = dict(
             defaults, input_interval_ms=interval,
             search_observability=observation_mode, diagnostic_logging=diagnostic_logging)
+        if 'syntax' in value:
+            from simulation_config import syntax_for
+            if not isinstance(value['syntax'], dict):
+                raise TaskError('syntax语法配置必须为对象')
+            try:
+                syntax_for(value['syntax'])
+            except ValueError as error:
+                raise TaskError(str(error)) from error
+            options['search_config']['syntax'] = dict(syntax_for(defaults.get('syntax')), **value['syntax'])
         for key in ('search_timeline',):
             if key in value:
                 if type(value[key]) is not bool:
@@ -259,9 +268,9 @@ class InterfaceHandler(BaseHTTPRequestHandler):
             if mode == 'dual':
                 from dual_task import start
                 handle = start(input_path, destination, search_config=options['search_config'],
-                               simulation_config=options['simulation_config'])
+                               simulation_config=options['simulation_config'], _config_frozen=True)
             else:
-                handle = start_task(input_path, destination, **options)
+                handle = start_task(input_path, destination, _config_frozen=True, **options)
         except BaseException:
             input_path.unlink(missing_ok=True)
             raise
@@ -411,7 +420,13 @@ def _public_state(state: dict, destination: Path) -> dict:
         "completed_batches": int(state.get("completed_batches", 0) or 0),
         "input_interval_ms": (state.get("config") or {}).get("input_interval_ms", 300),
     }
+    syntax = (state.get('config') or {}).get('syntax')
+    if syntax is not None:
+        from simulation_config import describe_syntax
+        response.update(syntax=syntax, syntax_summary=describe_syntax(syntax))
     search = state.get("search") or state
+    from task import start_rejection_count
+    response['start_rejection_count'] = state.get('start_rejection_count', start_rejection_count(search))
     if natural:
         from formal_search import STOP_POLICY
         response.update(stop_policy=STOP_POLICY, generation=state.get("generation", search.get("rounds", 0)))
