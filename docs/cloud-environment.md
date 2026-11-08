@@ -1,15 +1,18 @@
 # 云端环境准备
 
-本仓库复用 my-agent-skills 的公共初始化入口，不复制另一套安装器。
+本仓库复用 my-agent-skills（代理技能仓库）的项目环境准备入口，不复制另一套安装器。使用 Python（编程语言）3.12，并显式指定项目目录：
 
 ```sh
-python /path/to/my-agent-skills/scripts/cloud_bootstrap.py init --root /workspace/shared/cloud-skills/managed --project "$PWD"
+python /path/to/my-agent-skills/scripts/cloud_bootstrap.py init --project "$PWD"
+python /path/to/my-agent-skills/scripts/cloud_bootstrap.py update --project "$PWD"
 ```
 
-更新声明版本后，将 init 换成 update。升级公共工具或技能则在同一入口使用 update --latest --only 指定项；不自动升级本项目全部依赖。
+`--project` 必填；可用 `--manifest <项目环境清单.json>` 指定清单，省略时使用技能仓库脚本旁的生产清单。`init`（初始化）与 `update`（同步）都只准备已声明的项目依赖，不表示升级全部依赖或公共工具。旧公共安装目录、运行包、技能导出和选择升级参数已移除，旧参数与旧配置即使为空也明确拒绝；未知项目不执行准备。安装失败返回非零且不报告就绪，可能保留真实部分状态，不保证回滚。
 
-项目入口对应关系放在技能仓库公共初始化清单中，实际依赖使用本仓库的 requirements、锁文件和版本清单。Windows 仍执行原有 PowerShell 准备入口；Linux 仅准备适用的 Python/npm 依赖，不替代 Windows 专属工具和验收。
+项目入口对应关系放在技能仓库项目环境清单中，实际依赖使用本仓库的依赖文件、锁文件和版本清单。Windows（视窗系统）仍执行原有 PowerShell（命令解释器）准备入口；Linux（开源系统）仅准备适用的 Python/npm（编程语言／软件包管理器）依赖，不替代 Windows 专属工具和验收。
 
-工作区使用 Git 原生命令创建、进入与清理；创建后显式运行统一初始化。无需 environment.toml 或自定义 .codex 配置。不要把整套虚拟环境复制到工作树。
+插件安装、更新及发现使用原生插件能力和 plugin-sync（插件同步）的现有流程；环境准备不下载插件、不安装受控全局软件包、不恢复旧安装状态或导出技能链接。数据存储稳定绑定或显式运行目录接入按当前 data-store（数据存储）技能自身公开能力单独执行；初始化不自动绑定、不迁移业务数据，也不修改本仓库现有桥接。任务临时资源不能作为永久项目链接，真实项目接入仍须单独核对和授权。
 
-MCP 不安装、不配置。详见技能仓库 docs/cloud-environment.md。
+工作区使用 Git（版本管理）原生命令创建、进入与清理；创建后显式运行统一初始化。无需 environment.toml（环境声明文件）或自定义 .codex（客户端配置目录）配置。不要把整套虚拟环境复制到工作树；依赖声明一致且主环境有效时沿用原共享环境规则，缺失或不一致时停止，不从链接工作树改写主环境。
+
+MCP（模型上下文协议）不安装、不配置。环境准备成功只表示项目依赖准备成功，不表示插件、数据接入或游戏验收完成。详见技能仓库 docs/cloud-environment.md（云端环境说明）。
