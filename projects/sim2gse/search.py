@@ -143,6 +143,15 @@ def resume_config_for(saved, overrides=None):
     """仅本次明确观测覆盖冻结配置，计算变化必须新建任务。"""
     observation = {'diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline'}
     explicit = {key: value for key, value in (overrides or {}).items() if value is not None}
+    from simulation_config import syntax_for
+    if 'syntax' not in saved:
+        raise ValueError('旧任务缺少冻结语法范围，请创建新任务')
+    if 'syntax' in (overrides or {}):
+        syntax = overrides['syntax']
+        if not isinstance(syntax, dict):
+            raise ValueError('恢复语法配置必须为对象')
+        syntax_for(syntax)
+        explicit['syntax'] = dict(saved['syntax'], **syntax)
     config = config_for(dict(saved, **explicit))
     frozen = config_for(saved)
     if any(config[key] != frozen[key] for key in config if key not in observation):

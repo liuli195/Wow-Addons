@@ -23,6 +23,28 @@ def test_search_configuration_overlays_only_explicit_syntax_keys():
             load_search_config(BytesIO(document), syntax_config=invalid)
 
 
+def test_single_task_preserves_nested_policy_and_rejects_duplicate_authority():
+    import task
+    with patch('result_store.ensure_available', side_effect=AssertionError('不应访问存储')):
+        with pytest.raises(ValueError, match='multi_command_blocks'):
+            task.run_task('/memory/profile', '/memory/task', mode='single',
+                          program=[['a', 'b']], search_config={'syntax': SIMPLE})
+        with pytest.raises(ValueError, match='重复'):
+            task.run_task('/memory/profile', '/memory/task', mode='single',
+                          program=[['a']], search_config={'syntax': SIMPLE}, syntax_config=SIMPLE)
+
+
+def test_resume_compares_only_explicit_syntax_keys_and_rejects_missing_policy():
+    from search import config_for, resume_config_for
+    saved = config_for({'syntax': SIMPLE})
+    assert resume_config_for(saved, {'syntax': {'loop': False}})['syntax'] == SIMPLE
+    with pytest.raises(ValueError, match='恢复|语法'):
+        resume_config_for(saved, {'syntax': {'loop': True}})
+    saved.pop('syntax')
+    with pytest.raises(ValueError, match='语法|新任务'):
+        resume_config_for(saved)
+
+
 @pytest.mark.parametrize('program,key', [
     ([['a', 'b']], 'multi_command_blocks'),
     ([dict(kind='Loop', count=2, blocks=[['a']])], 'loop'),

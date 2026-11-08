@@ -1731,6 +1731,13 @@ def run_task(input_path: str | Path, output_root: str | Path | None = None, *, p
     if mode == 'single':
         from simulation_config import load_syntax_config
         from program import check_search_syntax
+        if isinstance(search_config, dict) and 'syntax' in search_config:
+            if syntax_config is not None:
+                raise ValueError('syntax存在重复权威来源')
+            search_config = dict(search_config)
+            syntax_config = search_config.pop('syntax')
+            if syntax_config is None:
+                raise ValueError('syntax语法配置必须为对象')
         syntax_config = load_syntax_config(syntax_config=syntax_config)
         if program is not None:
             check_search_syntax(program, syntax_config)
