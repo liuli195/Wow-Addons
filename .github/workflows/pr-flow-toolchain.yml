@@ -20,12 +20,12 @@ jobs:
           python-version: '3.12'
       - run: |
           git clone --no-checkout https://github.com/liuli195/my-agent-skills $RUNNER_TEMP/myspec
-          git -C $RUNNER_TEMP/myspec checkout --detach 988d258d508325a704a4525c5b46395ec73661b5
+          git -C $RUNNER_TEMP/myspec checkout --detach f3b6235073d90c980468af654ceba318562ffd24
           tarball=$(python $RUNNER_TEMP/myspec/plugins/tool-lifecycle/pack.py myspec $RUNNER_TEMP)
           npm install --global --ignore-scripts --no-audit --no-fund "$tarball"
       - run: |
           git clone --no-checkout https://github.com/liuli195/my-agent-skills $RUNNER_TEMP/build-and-verify
-          git -C $RUNNER_TEMP/build-and-verify checkout --detach 988d258d508325a704a4525c5b46395ec73661b5
+          git -C $RUNNER_TEMP/build-and-verify checkout --detach f3b6235073d90c980468af654ceba318562ffd24
           tarball=$(python $RUNNER_TEMP/build-and-verify/plugins/tool-lifecycle/pack.py build-and-verify $RUNNER_TEMP)
           npm install --global --ignore-scripts --no-audit --no-fund "$tarball"
       - run: myspec doctor --all
