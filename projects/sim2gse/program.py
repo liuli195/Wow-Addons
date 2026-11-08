@@ -134,7 +134,7 @@ def check_search_syntax(program, syntax=None):
                     require('castsequence', source)
                 elif kind == 'Action':
                     commands = node.get('commands')
-                    if not isinstance(commands, list) or not commands:
+                    if not isinstance(commands, list) or not commands or any(not isinstance(command, dict) for command in commands):
                         raise ValueError(f'{source}: 动作缺少命令')
                     if any(command.get('kind') == 'castsequence' for command in commands):
                         require('castsequence', source)
@@ -147,6 +147,29 @@ def check_search_syntax(program, syntax=None):
 
     visit(program.get('nodes') if isinstance(program, dict) else program, 'program')
     return program
+
+
+def check_search_state(state, syntax):
+    """恢复和补发布前检查所有仍可参与计算的程序，不修改检查点。"""
+    ga = state.get('ga') or {}
+    if state.get('capabilities') and state['capabilities'].get('search_syntax') != syntax:
+        raise ValueError('检查点动作能力的冻结语法范围不符')
+    rows = [*state.get('archive', []), *ga.get('population', []), *state.get('formal_finalists', [])]
+    winner = state.get('formal_winner')
+    if winner:
+        rows.append(winner)
+    programs = [*state.get('starts', []), *((ga.get('pending') or {}).get('programs', []))]
+    for row in rows:
+        programs.append(row['program'])
+        if row.get('candidate'):
+            programs.append(row['candidate']['program'])
+    intent = state.get('formal_champion_publication_intent') or {}
+    record = intent.get('record')
+    if record:
+        programs.append(record['program'])
+        programs.extend(row['program'] for row in (record.get('evaluation') or {}).get('finalists', []))
+    for program in programs:
+        check_search_syntax(program, syntax)
 
 
 def from_action_blocks(blocks):

@@ -752,7 +752,8 @@ def test_single_resume_missing_simulation_keeps_saved_and_explicit_difference_re
     raw = b'frozen input'
     hashes = dict(input_original_sha256=hashlib.sha256(raw).hexdigest(),
                   input_effective_sha256=hashlib.sha256(raw).hexdigest())
-    case.store.state.update(hashes, formal_search_version=1,
+    from simulation_config import syntax_receipt
+    case.store.state.update(hashes, formal_search_version=1, syntax=syntax_receipt(case.search_config['syntax']),
         simulation_config=dict(target_count=5, scene='aoe', enable_omnium_talents=False))
     case.store.checkpoint()
     connection = SimpleNamespace(execute=case.store.db.execute, close=lambda: None)

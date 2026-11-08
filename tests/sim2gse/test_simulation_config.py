@@ -254,7 +254,8 @@ class SimulationConfigTests(unittest.TestCase):
                 with patch.object(result_store, 'ensure_available'), \
                         patch('simulation_config._load_document', side_effect=AssertionError('恢复不得读取新文件')), \
                         patch.object(task, '_read_resume_checkpoint', return_value=dict(
-                            formal_search_version=1, config=search.config_for())), \
+                            formal_search_version=1, config=search.config_for(),
+                            syntax=__import__('simulation_config').syntax_receipt(__import__('simulation_config').syntax_for()))), \
                         patch.object(seed_activity, 'foreground_search', nullcontext), \
                         patch.object(task, '_task_lease', lambda *args: nullcontext()), \
                         patch.object(Path, 'read_text', autospec=True,

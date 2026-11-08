@@ -24,7 +24,7 @@ RUN_SCHEMA = dict(
     burst="JSON", rule_initialization="JSON",
     run_id="VARCHAR", status="VARCHAR", phase="VARCHAR", profile="JSON",
     identity="JSON", input_original="VARCHAR", input_effective="VARCHAR",
-    config="JSON", simulation_config="JSON", engines="JSON", condition_key="VARCHAR",
+    config="JSON", syntax="JSON", simulation_config="JSON", engines="JSON", condition_key="VARCHAR",
     elapsed_seconds="DOUBLE", candidate_key="VARCHAR", candidate_data_key="VARCHAR",
     reference_data_key="VARCHAR", controlled_data_key="VARCHAR", batch_keys="VARCHAR[]",
     cache_hit_keys="VARCHAR[]", completed_batches="UBIGINT",

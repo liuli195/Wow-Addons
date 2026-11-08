@@ -53,6 +53,13 @@ def test_training_rejects_invalid_shared_policy_before_reading_materials():
                                        syntax_config={'loop': 1})
 
 
+def test_formal_task_validates_explicit_policy_before_storage():
+    import task
+    with patch('result_store.ensure_available', side_effect=AssertionError('不得访问存储')):
+        with pytest.raises(ValueError, match='语法|syntax'):
+            task.run_task('/memory/profile','/memory/formal',syntax_config={'loop':1})
+
+
 def test_simple_mutation_reaches_single_edits_and_targeted_feedback_stays_in_scope():
     from itertools import product
     import random

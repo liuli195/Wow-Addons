@@ -26,6 +26,116 @@ from task import run_task
 from search import initial_programs, TaskStore
 
 
+@pytest.fixture
+def public_formal_memory(monkeypatch, memory_ga):
+    """公开任务全流程；文件、原生报告和共享存储使用明确内存输入。"""
+    from copy import deepcopy
+    import engine, result_store, search, seed_activity, task
+    from test_search_syntax import SIMPLE
+    case=memory_ga(formal=True,search_settings={'syntax':SIMPLE})
+    case.store.state.clear()
+    files={Path('/memory/role.simc').resolve():sample_profile().encode()}
+    records={}
+    def path(p): return Path(p).resolve()
+    monkeypatch.setattr(Path,'read_bytes',lambda p:files[path(p)])
+    monkeypatch.setattr(Path,'read_text',lambda p,**kw:files[path(p)].decode())
+    monkeypatch.setattr(Path,'write_bytes',lambda p,v:files.__setitem__(path(p),v))
+    monkeypatch.setattr(Path,'write_text',lambda p,v,**kw:files.__setitem__(path(p),v.encode()))
+    monkeypatch.setattr(Path,'exists',lambda p:path(p) in files)
+    monkeypatch.setattr(Path,'is_file',lambda p:path(p) in files)
+    monkeypatch.setattr(Path,'is_dir',lambda p:any(path(p) in saved.parents for saved in files))
+    monkeypatch.setattr(Path,'mkdir',lambda *a,**kw:None)
+    monkeypatch.setattr(os,'replace',lambda a,b:files.__setitem__(path(b),files.pop(path(a))))
+    monkeypatch.setattr(task,'_task_lease',lambda *a,**k:nullcontext())
+    monkeypatch.setattr(seed_activity,'foreground_search',nullcontext)
+    monkeypatch.setattr(search,'TaskStore',lambda folder:case.store)
+    monkeypatch.setattr(case.store,'close',lambda:None)
+    monkeypatch.setattr(case.store,'recover_reports',lambda *a:None)
+    monkeypatch.setattr(engine,'identity',_fast_identity)
+    monkeypatch.setattr(engine,'reference',_fast_reference)
+    monkeypatch.setattr(engine,'prepare_loop',lambda *a,**k:(case.capabilities,case.capabilities,None))
+    monkeypatch.setattr(task,'_rule_hashes',lambda **k:{'fixed':'rules'})
+    monkeypatch.setattr(result_store,'ensure_available',lambda:None)
+    monkeypatch.setattr(result_store,'write_batch',lambda *a,**k:None)
+    monkeypatch.setattr(result_store,'_search_champion_lock',nullcontext)
+    monkeypatch.setattr(result_store,'write',lambda table,key,rows,**kw:records.__setitem__((table,key),deepcopy(rows)))
+    monkeypatch.setattr(result_store,'read_records',lambda table,key:deepcopy(records.get((table,key),[])))
+    saved_one=result_store.one
+    def one(table,field,key,**kwargs):
+        if table=='batches': return saved_one(table,field,key,**kwargs)
+        return next((deepcopy(row) for (name,_),rows in records.items() if name==table
+                     for row in rows if row.get(field)==key),None)
+    monkeypatch.setattr(result_store,'one',one)
+    case.files,case.records=files,records
+    return case
+
+
+def test_public_formal_task_filters_old_syntax_and_publishes_policy_bound_winner(public_formal_memory):
+    from program import check_search_syntax
+    from seed_training import shared_scope
+    from test_search_syntax import SIMPLE
+    case=public_formal_memory
+    key=dict(specialization_id=252,hero_talent='rider_of_the_apocalypse',target_type='single_target')
+    programs=[[dict(kind='Loop',count=2,blocks=[['outbreak']])], [['death_coil']],
+              [['scourge_strike']], [['outbreak']]]
+    case.records['seed_selected',shared_scope(key)]=[dict(candidate_id=str(i),class_name='deathknight',
+        spec='unholy',configuration_key=key,program=program,contract_version=2) for i,program in enumerate(programs)]
+    result=run_task('/memory/role.simc','/memory/formal',syntax_config=SIMPLE,
+                    simulation_config=dict(target_count=1,scene='single_target'))
+    assert result['status']=='completed'
+    rejected=next(row for row in case.store.state['seed_adaptations'] if row['candidate_id']=='0')
+    assert rejected['status']=='rejected' and 'syntax.loop' in rejected['reason']
+    check_search_syntax(result['candidate']['program'],SIMPLE)
+    for _,candidate,_ in case.calls: check_search_syntax(candidate['program'],SIMPLE)
+    publication=result['search']['formal_champion_publication']
+    assert publication['status']=='published'
+    champion=next(rows[0] for (table,_),rows in case.records.items() if table=='search_champions')
+    assert champion['evaluation']['syntax']['policy']==SIMPLE
+    assert champion['binding']['syntax']==champion['evaluation']['syntax']['digest']
+
+
+@pytest.mark.parametrize('tamper',[None,'policy','pending','receipt','capabilities'])
+def test_public_formal_resume_preserves_policy_and_rejects_tampering(monkeypatch,public_formal_memory,tamper):
+    from copy import deepcopy
+    import sequence, simulation_config, task
+    from runtime import TaskCancelled
+    from test_search_syntax import SIMPLE
+    case=public_formal_memory
+    evaluate=sequence.evaluate
+    monkeypatch.setattr(sequence,'evaluate',lambda *a,**k:(_ for _ in ()).throw(TaskCancelled('pause')))
+    result=run_task('/memory/role.simc','/memory/formal',syntax_config=SIMPLE,
+                    simulation_config=dict(target_count=1,scene='single_target'))
+    assert result['status']=='cancelled'
+    monkeypatch.setattr(sequence,'evaluate',evaluate)
+    monkeypatch.setattr(task,'_read_resume_checkpoint',lambda *a:deepcopy(case.store.state))
+    monkeypatch.setattr(simulation_config,'_load_document',lambda *a:(_ for _ in ()).throw(AssertionError('恢复不得读当前文件')))
+    if tamper=='pending': case.store.state['ga']['pending']={'programs':[[dict(kind='WaitClicks',clicks=2)]]}
+    if tamper=='receipt': case.store.state.pop('syntax')
+    if tamper=='capabilities': case.store.state['capabilities']['search_syntax']={'loop':True}
+    override={'syntax':{'loop':tamper=='policy'}}
+    count=len(case.calls)
+    if tamper:
+        with pytest.raises(ValueError,match='语法|syntax|配置'):
+            task.resume_task('/memory/formal',search_config=override)
+        assert len(case.calls)==count
+    else:
+        result=task.resume_task('/memory/formal',search_config=override)
+        assert result['status']=='completed' and result['config']['syntax']==SIMPLE
+
+
+def test_public_formal_result_rejects_lost_policy_receipt(public_formal_memory):
+    import task
+    from test_search_syntax import SIMPLE
+    case=public_formal_memory
+    run_task('/memory/role.simc','/memory/formal',syntax_config=SIMPLE,
+             simulation_config=dict(target_count=1,scene='single_target'))
+    assert task.read_task('/memory/formal')['status']=='completed'
+    saved=next(rows[0] for (table,_),rows in case.records.items() if table=='runs')
+    saved.pop('syntax')
+    with pytest.raises(ValueError,match='语法'):
+        task.read_task('/memory/formal')
+
+
 def test_mutate_fetches_parent_feedback_only_after_its_usage_gate():
     import random
     from search import mutate
