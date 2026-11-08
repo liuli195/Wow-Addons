@@ -94,6 +94,35 @@ def test_public_formal_task_filters_old_syntax_and_publishes_policy_bound_winner
     assert champion['binding']['syntax']==champion['evaluation']['syntax']['digest']
 
 
+@pytest.mark.parametrize('flag,allowed,forbidden,key',[
+    ('loop',[dict(kind='Loop',count=2,blocks=[['outbreak']])],
+     [['outbreak','use_item,slot=trinket1']],'multi_command_blocks'),
+    ('wait_clicks',[dict(kind='WaitClicks',clicks=2),['outbreak']],
+     [dict(kind='Loop',count=2,blocks=[['outbreak']])],'loop'),
+    ('castsequence',[dict(kind='CastSequence',members=['outbreak','death_coil'],reset=None)],
+     [dict(kind='Loop',count=2,blocks=[['outbreak']])],'loop'),
+    ('multi_command_blocks',[['outbreak','use_item,slot=trinket1']],
+     [dict(kind='Loop',count=2,blocks=[['outbreak']])],'loop'),
+])
+def test_public_formal_mixed_switches_admit_only_enabled_structures(public_formal_memory,flag,allowed,forbidden,key):
+    from program import check_search_syntax
+    from seed_training import shared_scope
+    from test_search_syntax import SIMPLE
+    case=public_formal_memory
+    scope=dict(specialization_id=252,hero_talent='rider_of_the_apocalypse',target_type='single_target')
+    programs=[allowed,forbidden,[['scourge_strike']],[['death_coil']]]
+    case.records['seed_selected',shared_scope(scope)]=[dict(candidate_id=str(i),class_name='deathknight',
+        spec='unholy',configuration_key=scope,program=program,contract_version=2) for i,program in enumerate(programs)]
+    policy=dict(SIMPLE,**{flag:True})
+    result=run_task('/memory/role.simc','/memory/formal',syntax_config=policy,
+                    simulation_config=dict(target_count=1,scene='single_target'))
+    assert result['status']=='completed'
+    decisions={row['candidate_id']:row for row in case.store.state['seed_adaptations']}
+    assert decisions['0']['status'] in ('accepted','duplicate')
+    assert decisions['1']['status']=='rejected' and ('syntax.'+key) in decisions['1']['reason']
+    for _,candidate,_ in case.calls: check_search_syntax(candidate['program'],policy)
+
+
 @pytest.mark.parametrize('tamper',[None,'policy','pending','receipt','capabilities'])
 def test_public_formal_resume_preserves_policy_and_rejects_tampering(monkeypatch,public_formal_memory,tamper):
     from copy import deepcopy
