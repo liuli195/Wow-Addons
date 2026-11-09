@@ -456,6 +456,8 @@ def test_training_prepare_keeps_history_missing_and_read_failure_semantics(monke
         assert {row['source_id'] for row in rows if row.get('active',True)}=={'registered','history:valid'}
         assert {call.args[2] for call in fallback.call_args_list}=={'valid_candidate','affected_candidate'}
         assert writer.call_count==1
+        # Every newly synchronized row must satisfy the nullable JSON column contract.
+        assert all(row['allowed_groups'] is None for row in rows if row['source_id'].startswith('history:'))
     assert registry==before
 
 

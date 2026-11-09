@@ -289,7 +289,7 @@ def sync_history(character, *, sources=None):
                        source=source_id, original=json.dumps(shared, ensure_ascii=False),
                        instructions='历史最佳程序；原角色成绩仅作来源证据，当前训练独立评价',
                        semantic='unsupported' if reason else 'preserved', changes=[reason] if reason else [],
-                       family='history-search', core=[], program=program if not reason else [],
+                       family='history-search', core=[], program=program if not reason else [], allowed_groups=None,
                        active=not bool(reason), unavailable_reason=reason)
             row['source_revision'] = digest(dict(row, candidate_reference=run['candidate_data_key'],
                                                 status=run['status'], search_dps=run['search_dps']))
