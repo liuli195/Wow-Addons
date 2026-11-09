@@ -10,6 +10,36 @@ from search import TaskStore, digest
 
 
 @pytest.mark.real
+def test_recovery_archive_reuses_one_copy_of_each_scoring_receipt(tmp_path):
+    import json
+    store = TaskStore(tmp_path, memory_execution=True)
+    request = dict(condition='frozen', purpose='search', times=list(range(0, 180000, 200)))
+    key = digest(request)
+    batch = dict(status='success', data_key=key, request=request, dps=42., samples=31, variance=0.)
+    record = dict(key='candidate', program=[['outbreak']], score=42., batches=[dict(batch, cached=True)])
+    store.state.update(run_id='compact-recovery', archive=[record])
+    store.put_batch(key, batch, verified=True)
+    try:
+        store.checkpoint(boundary='pause')
+        with sqlite3.connect((tmp_path / 'task.sqlite3').as_uri() + '?mode=ro&immutable=1', uri=True) as db:
+            raw = json.loads(db.execute('SELECT value FROM state_archive').fetchone()[0])
+        assert raw['batches'][0]['checkpoint_batch_key'] == key
+        assert 'request' not in raw['batches'][0]
+        saved = json.loads(db.execute('SELECT value FROM batches WHERE key=?', (key,)).fetchone()[0])
+        assert 'checkpoint_request_key' in saved['request']
+        assert 'times' not in saved['request']
+    finally:
+        store.close()
+        db.close()
+    resumed = TaskStore(tmp_path, memory_execution=True)
+    try:
+        assert resumed.state['archive'] == [record]
+        assert resumed.batch(key) == batch
+    finally:
+        resumed.close()
+
+
+@pytest.mark.real
 def test_memory_task_only_writes_explicit_recovery_boundary(tmp_path):
     folder = tmp_path / 'task'
     folder.mkdir()
@@ -35,6 +65,7 @@ def test_memory_task_only_writes_explicit_recovery_boundary(tmp_path):
     resumed = TaskStore(folder, memory_execution=True)
     try:
         assert resumed.state['counter'] == 1
+        assert 'ga' not in resumed.state  # 初始化尚未建立搜索状态，恢复不能制造空状态。
     finally:
         resumed.close()
 
@@ -186,8 +217,9 @@ def test_search_summary_rejects_corruption_without_rewriting_evidence(tmp_path, 
 
 @pytest.mark.real
 @pytest.mark.parametrize('fail', [False, True])
+@pytest.mark.parametrize('active_peers', [0, 3])
 def test_final_groups_obey_wire_budget_write_in_parallel_and_join_on_failure(
-        tmp_path, installed_result_center, monkeypatch, fail):
+        tmp_path, installed_result_center, monkeypatch, fail, active_peers):
     import copy
     import json
     import threading
@@ -197,6 +229,7 @@ def test_final_groups_obey_wire_budget_write_in_parallel_and_join_on_failure(
     from test_search import _fast_report
     result_store.DATA_ROOT.mkdir(parents=True, exist_ok=True)
     store = TaskStore(tmp_path / 'task', memory_execution=True)
+    peers = [TaskStore(tmp_path / f'peer-{index}', memory_execution=True) for index in range(active_peers)]
     character = parse_character(sample_profile())
     store.character, store.simulation_config = character, dict(target_count=1)
     store.state.update(run_id='parallel-finals', archive=[], completed_batches=0)
@@ -225,7 +258,8 @@ def test_final_groups_obey_wire_budget_write_in_parallel_and_join_on_failure(
                 batch_index=index, scenario='nominal', report=_fast_report(character, 42., 31),
                 dps=42., samples=31, variance=0.)
             # 构造输入声明的原始报告体量；验证分组和并发，不冒称大报告性能实测。
-            store.stage_report(key, row, copy.deepcopy(stored), report_bytes=9 * 1024 * 1024)
+            store.stage_report(key, row, copy.deepcopy(stored),
+                               report_bytes=(17 if active_peers else 33) * 1024 * 1024)
         if fail:
             with pytest.raises(OSError, match='injected'):
                 store.flush_reports(final=True)
@@ -238,3 +272,5 @@ def test_final_groups_obey_wire_budget_write_in_parallel_and_join_on_failure(
         assert len({thread for _, thread in calls[:2]}) == 2
     finally:
         store.close()
+        for peer in peers:
+            peer.close()

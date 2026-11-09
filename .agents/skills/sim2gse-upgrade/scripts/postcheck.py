@@ -21,12 +21,18 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def checkpoint(folder, fields):
+def checkpoint(folder, fields, *, optional=()):
     path = Path(folder).resolve() / 'task.sqlite3'
     require(path.is_file(), '任务检查点不存在: ' + str(path))
     connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
     try:
-        scalar_fields = [key for key in fields if key != 'archive']
+        seal = connection.execute("SELECT value FROM state_fields WHERE key='memory_checkpoint'").fetchone()
+        if seal and decode(seal[0]).get('version') == 2:
+            from search import TaskStore
+            state = TaskStore.load_state(connection)
+            require(set(fields) <= state.keys(), '任务检查点缺少核验字段')
+            return {key: state[key] for key in [*fields, *optional] if key in state}
+        scalar_fields = [key for key in [*fields, *optional] if key != 'archive']
         placeholders = ','.join('?' for _ in scalar_fields)
         rows = connection.execute('SELECT key,value FROM state_fields WHERE key IN (' +
                                   placeholders + ')', scalar_fields).fetchall()
@@ -34,7 +40,7 @@ def checkpoint(folder, fields):
         if 'archive' in fields:
             result['archive'] = [json.loads(value) for (value,) in connection.execute(
                 'SELECT value FROM state_archive ORDER BY ordinal')]
-        require(set(result) == set(fields), '任务检查点缺少核验字段')
+        require(set(fields) <= set(result), '任务检查点缺少核验字段')
         return result
     finally:
         connection.close()
@@ -46,8 +52,8 @@ def batch_checkpoint(folder, key):
     require(path.is_file(), '任务检查点不存在: ' + str(path))
     connection = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)
     try:
-        saved = connection.execute('SELECT value FROM batches WHERE key=?', (key,)).fetchone()
-        return json.loads(saved[0]) if saved is not None else None
+        from search import checkpoint_batch
+        return checkpoint_batch(connection, key)
     finally:
         connection.close()
 
@@ -86,7 +92,8 @@ def check_scene(scene, ready):
     require(hashlib.sha256(text.encode()).hexdigest() == environment['template'], '训练角色副本变化')
     character = replace(template_character(text), spec_id=key['specialization_id'])
     state = checkpoint(folder, ['status', 'configuration_key', 'ga', 'archive', 'capabilities',
-                                'starts', 'training_evaluation_plan', 'burst'])
+                                'starts', 'training_evaluation_plan', 'burst'],
+                       optional=('execution_storage_version', 'evidence_storage'))
     ga = state['ga']
     require(state['status'] == 'completed' and ga['phase'] == 'published' and
             ga['algorithm'] == ALGORITHM and state['configuration_key'] == key and
@@ -105,15 +112,19 @@ def check_scene(scene, ready):
             {row['candidate_id'] for row in expected}, '索引必须指向本次完整四条GA成果')
     selected = []
     for expected_row in expected:
-        row = one('seed_selected', shared_scope(key), list(SELECTED_V2_SCHEMA),
+        scope = shared_scope(key, state['capabilities']['search_syntax']) if state.get('execution_storage_version') == 3 else shared_scope(key)
+        row = one('seed_selected', scope, list(SELECTED_V2_SCHEMA),
                   {'candidate_id': expected_row['candidate_id'], 'family': 'ga'})
         row = {name: decode(value) if SELECTED_V2_SCHEMA[name] == 'JSON' else value
                for name, value in row.items()}
         require(row == expected_row, '入选四条与完整五场景复测和代表选择不一致')
         selected.append(row)
+    if state.get('execution_storage_version') == 3:
+        from population_training import verify_selected_evidence
+        verify_selected_evidence(selected)
 
     run = one('runs', scene['run_id'], ['run_id', 'status', 'engines', 'condition_key',
-              'simulation_config', 'config', 'batch_keys', 'burst'])
+              'simulation_config', 'config', 'batch_keys', 'burst', 'search_metrics'])
     require(run['status'] == 'completed' and decode(run['engines']) == ready['engines'] and
             decode(run['simulation_config'])['target_count'] == targets and
             decode(run['burst'])['definition_id'] == template['burst_definition_id'],
@@ -129,8 +140,30 @@ def check_scene(scene, ready):
     require(bool(scene['batches']), '缺少页面重新评分批次')
     scored = set()
     plan = state['formal_search']['stage_plan']['search']
+    storage = (decode(run.get('search_metrics')) or {}).get('evidence_storage')
+    archive = None
+    if storage and storage.get('version') == 3:
+        from result_store import read_search_records
+        archive = read_search_records(storage, run['run_id'], condition=run['condition_key'])
+        archived_batches = {batch['data_key']: (row, batch) for row in archive for batch in row['batches']}
     for locator in scene['batches']:
         saved = batch_checkpoint(scene['page_task'], locator['key'])
+        if archive is not None:
+            require(saved is not None and saved.get('status') == 'success' and
+                    locator['group'] == storage['archive_group'] and locator['key'] in archived_batches,
+                    '页面轻量成绩凭据或归档位置不一致')
+            source, batch = archived_batches[locator['key']]
+            request = saved['request']
+            require(digest(request) == locator['key'] and batch['request'] == request and
+                    all(batch[field] == saved[field] for field in ('dps', 'samples', 'variance')) and
+                    request['condition'] == run['condition_key'] and request['purpose'] == 'search' and
+                    request['iterations'] == plan['iterations'] and request['seed'] == plan['seeds'][0] and
+                    request['program'] == canonicalize_search_program(source['program'], state['capabilities'])['form'] and
+                    canonicalize_search_program(source['program'], state['capabilities'])['identity'] ==
+                    request['behavior_identity'] and math.isfinite(batch['dps']) and batch['dps'] > 0,
+                    '页面轻量成绩缺少冻结GA计划下的新条件评分')
+            scored.add(request['behavior_identity'])
+            continue
         require(saved is not None and saved.get('status') == 'success' and
                 saved['storage_group_key'] == locator['group'], '页面可靠批次或存储组不一致')
         row = one('batches', locator['group'], None, {'batch_key': locator['key']})

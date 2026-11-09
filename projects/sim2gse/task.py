@@ -1597,7 +1597,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                                           current_samples=sum(batch.get('samples', 0)
                                                               for batch in scored.get('batches', [])))
             store.checkpoint()
-            store.defer_persistence = False
+            if not store.memory_execution:
+                store.defer_persistence = False
             _prepare_formal_publication(store, result)
             store.save()  # Intent freezes the completed archive while heartbeats remain nonterminal.
             pointer = _store_run(destination, result, state=state)
@@ -1637,6 +1638,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 result['search_observability'] = _export_search_observability(
                     observation, include_details=observation.get('mode') == 'full')
         _save_failure(destination, result, state=state)
+        if store.memory_execution:
+            store.checkpoint(boundary='pause')
         if getattr(runtime, 'search_timeline', None) is not None:
             runtime.search_timeline.saved(result['status'])
         return result
@@ -1647,6 +1650,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
         failure = dict(status='failed', phase=state.get('phase', 'done'),
                        elapsed_seconds=runtime.elapsed_seconds, error=str(error))
         _save_failure(destination, failure, state=state)
+        if store.memory_execution:
+            store.checkpoint(boundary='pause')
         raise TaskError(str(error)) from error
     finally:
         runtime.reservation = None
@@ -2213,11 +2218,14 @@ def _batch_locations(destination, keys, *, receipts=None):
         connection = None
         try:
             connection = sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)
+            templates = connection.execute("SELECT value FROM state_fields WHERE key='checkpoint_requests'").fetchone()
+            templates = json.loads(templates[0]) if templates else {}
+            from search import _expand_checkpoint_request
             for offset in range(0, len(keys), 500):
                 chunk = keys[offset:offset + 500]
                 sql = 'SELECT key,value FROM batches WHERE key IN (' + ','.join('?' for _ in chunk) + ')'
                 for key, payload in connection.execute(sql, chunk):
-                    row = json.loads(payload)
+                    row = _expand_checkpoint_request(json.loads(payload), templates)
                     if not isinstance(row, dict):
                         raise ValueError('批次位置记录必须是对象')
                     locations[key] = row.get('storage_group_key') or row.get('data_key') or key

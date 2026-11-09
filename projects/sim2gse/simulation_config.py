@@ -195,7 +195,7 @@ FORMAL_ALGORITHM_DEFAULTS = dict(max_processes=5, coarse_iterations=32,
 SEARCH_RUNTIME_DEFAULTS = dict(iterations=128, random_seed=20260912, search_timeline=False,
     diagnostic_logging=False, diagnostics='summary', search_observability='full',
     input_interval_ms=300, reset_events=())
-EXECUTION_DEFAULTS = dict(memory_execution=True, checkpoint_interval_seconds=600, memory_limit_mb=4096)
+EXECUTION_DEFAULTS = dict(memory_execution=True, checkpoint_interval_seconds=600, memory_limit_mb=8192)
 SEARCH_RUNTIME_DEFAULTS.update(EXECUTION_DEFAULTS)
 SEARCH_DEFAULTS = dict(FORMAL_ALGORITHM_DEFAULTS, **SEARCH_RUNTIME_DEFAULTS)
 

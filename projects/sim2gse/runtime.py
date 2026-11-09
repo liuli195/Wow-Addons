@@ -210,7 +210,7 @@ class TaskRuntime:
 
     def check(self) -> None:
         if getattr(self, 'memory_execution', False):
-            check_memory_limit(getattr(self, 'memory_limit_mb', 4096))
+            check_memory_limit(getattr(self, 'memory_limit_mb', 8192))
         if self.cancel_event.is_set():
             raise TaskCancelled("任务已取消")
         if self.remaining_seconds <= 0:
