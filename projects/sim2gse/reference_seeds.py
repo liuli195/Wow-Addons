@@ -40,14 +40,22 @@ def load_plan(root):
 
 def preparation_budget(state, root):
     runtime = TaskRuntime(300, used_seconds=state['used_seconds'])
+    original_check = runtime.check
+    last_space_check = -1.
+    def check():
+        nonlocal last_space_check
+        original_check()
+        if runtime.elapsed_seconds - last_space_check >= 1:
+            last_space_check = runtime.elapsed_seconds
+            if sum(path.stat().st_size for path in Path(root).rglob('*') if path.is_file()) >= 1024 ** 3:
+                raise ValueError('本次隔离准备数据达到1GiB停止线')
+    runtime.check = check
     def checkpoint():
         state['used_seconds'] = runtime.elapsed_seconds
         state['checksum'] = digest({k: v for k, v in state.items() if k != 'checksum'})
         write_json(Path(root) / 'plan.json', state)
     def reserve(iterations):
         runtime.check()
-        if sum(path.stat().st_size for path in Path(root).rglob('*') if path.is_file()) >= 1024 ** 3:
-            raise ValueError('本次隔离准备数据达到1GiB停止线')
         if state['requested_iterations'] + iterations > 1000:
             raise ValueError('整批材料准备1000次请求迭代额度耗尽')
         state['requested_iterations'] += iterations
@@ -152,12 +160,18 @@ def prepare_plugin(args, state, sources, document):
     from gearinsight_reference import read, sources as clean_sources
     from task import _task_lease
     root = args.workspace.resolve()
-    if state['status'] in ('prepared', 'published'):
-        plugin_unchanged(state['plugin'])
-        return state
-    if args.plugin_dir is None:
-        raise ValueError('请明确指定插件资料目录')
     with _task_lease(root, lock_name='.reference-refresh.lock'):
+        latest = load_plan(root)
+        if latest['manifest'] != state['manifest']:
+            raise ValueError('阶段交接时冻结计划已变化')
+        state = latest
+        if state['status'] in ('prepared', 'published'):
+            plugin_unchanged(state['plugin'])
+            return state
+        if state['status'] == 'preparing':
+            raise ValueError('上次插件准备非正常退出，无法证明在途耗时')
+        if args.plugin_dir is None:
+            raise ValueError('请明确指定插件资料目录')
         runtime, checkpoint = preparation_budget(state, root)
         state['status'] = 'preparing'
         checkpoint()
@@ -205,8 +219,11 @@ def prepare_plugin(args, state, sources, document):
             checkpoint()
             return state
         except BaseException as error:
-            state.update(status='paused', error=str(error))
+            message = '整批材料准备300秒累计预算耗尽' if isinstance(error, BudgetExceeded) else str(error)
+            state.update(status='paused', error=message)
             checkpoint()
+            if isinstance(error, BudgetExceeded):
+                raise ValueError(message) from error
             raise
 
 
@@ -293,6 +310,7 @@ def prepare_simc(args, ready, policy, sources, document):
         state['status'] = 'preparing'
         checkpoint()
         try:
+            runtime.check()
             with isolated_center(root / 'data'):
                 result_store.write('burst_definitions', 'current_252', [definition])
                 for index, group_info in enumerate(ready['groups']):

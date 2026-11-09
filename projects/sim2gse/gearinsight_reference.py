@@ -81,7 +81,7 @@ def read(plugin_dir, destination, *, runtime=None):
                          snapshot, runtime=runtime, timeout_seconds=min(15, runtime.remaining_seconds),
                          output_dir=snapshot / 'export')
     if result.returncode:
-        raise ValueError('静态参考库导出失败: ' + result.stderr.decode('utf-8', errors='replace')[-500:])
+        raise ValueError('静态参考库导出失败: ' + result.stderr.decode('utf-8', errors='replace')[:500])
     if len(result.stdout) > MAX_INPUT:
         raise ValueError('参考库导出超过上限')
     records = json.loads(result.stdout)

@@ -54,6 +54,38 @@ def test_plugin_preflight_exports_only_static_reference_and_preserves_duplicate_
     assert '静态' in error or '格式' in error
 
 
+@pytest.mark.real
+@pytest.mark.parametrize('limit', ['input', 'depth', 'records', 'output', 'instructions'])
+def test_plugin_command_limits_fail_without_publication(tmp_path, monkeypatch, capsys, limit):
+    import result_store, seed_training as seeds
+    plugin = tmp_path / 'plugin'
+    plugin.mkdir()
+    if limit == 'input':
+        text, message = ' ' * (2 * 1024 * 1024 + 1), '读取上限'
+    elif limit == 'depth':
+        text, message = 'GearInsightRotation={' + 'x={' * 33 + '}' * 34, '嵌套过深'
+    elif limit == 'records':
+        text = 'GearInsightRotation={["DEATHKNIGHT/UNHOLY"]={specID=252,opener={' + '{seq={77575}},' * 257 + '}}}'
+        message = 'too many openers'
+    elif limit == 'output':
+        text = ('GearInsightRotation={["DEATHKNIGHT/UNHOLY"]={specID=252,large="'
+                + 'x' * (1024 * 1024 + 100) + '",opener={{seq={77575}},{seq={47541}}}}}')
+        message = 'json output limit'
+    else:
+        text = ('GearInsightRotation={["DEATHKNIGHT/UNHOLY"]={specID=252,opener={{seq={77575},tal={flat={'
+                + '1,' * 300000 + '}}}}}}')
+        message = 'reference instruction limit'
+    (plugin / 'RotationData.lua').write_text(text, encoding='utf-8')
+    (plugin / 'GearInsight_Data.toc').write_text('## Version: fixture\n', encoding='utf-8')
+    monkeypatch.setattr(result_store, 'bind_project', lambda path: None)
+    monkeypatch.setattr(result_store, 'ensure_available', lambda: None)
+    monkeypatch.setattr(seeds, 'check_training', lambda **kw: dict(groups=[]))
+    monkeypatch.setattr(result_store, 'write', lambda *a, **kw: pytest.fail('limits must not publish'))
+    assert seeds.main(['--project', str(tmp_path), 'refresh-references', '--workspace', str(tmp_path / 'run'),
+                       '--plugin-dir', str(plugin), '--check-only']) == 2
+    assert message in capsys.readouterr().err
+
+
 def test_preparation_filters_new_sources_by_actual_group_before_dedup(prepared_input):
     import seed_training as seeds
     shared = prepared_input.source('legacy', [['outbreak']])
@@ -173,9 +205,8 @@ def test_explicit_other_group_material_is_rejected(prepared_input):
                               inputs=prepared_input.inputs)
 
 
-@pytest.mark.real
-def test_refresh_command_recovers_storage_failure_and_rejects_drift_corruption_and_exhaustion(
-        tmp_path, monkeypatch, capsys, prepared_input):
+@pytest.fixture
+def refresh_environment(tmp_path, monkeypatch, prepared_input):
     """Use the real command/preparer; only filesystem/catalogue/storage boundaries are supplied."""
     import burst
     import engine
@@ -193,7 +224,7 @@ def test_refresh_command_recovers_storage_failure_and_rejects_drift_corruption_a
     config.write_text(original_config, encoding='utf-8')
     monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', config)
     monkeypatch.setattr(engine, 'identity', lambda mode: (Path('/fake-engine'), {'mode': mode}))
-    monkeypatch.setattr(burst, 'load', lambda spec: dict(spec_id=252))
+    monkeypatch.setattr(burst, 'load', lambda spec: dict(spec_id=252, excluded_spell_ids=[]))
     monkeypatch.setattr(burst, 'select_definition', lambda character: None)
     inputs = seeds._training_inputs(template, 1, use_burst=True)
     key = digest(dict(version=seeds.PREPARATION_VERSION, template=inputs['template_sha'],
@@ -208,7 +239,8 @@ def test_refresh_command_recovers_storage_failure_and_rejects_drift_corruption_a
     header['checksum'] = digest([{k: v for k, v in header.items() if k != 'checksum'}])
     source = prepared_input.source('old', [['outbreak']])
     source['source_id'] = 'manual:simc-sanlayn-a1-20261012'
-    monkeypatch.setattr(seeds, 'registry_rows', lambda: [source])
+    sources = [source]
+    monkeypatch.setattr(seeds, 'registry_rows', lambda: sources)
     monkeypatch.setattr(seeds, 'check_training', lambda **kw: dict(
         templates=[dict(template=str(template), template_sha256=inputs['template_sha'])],
         engines=inputs['engines'], training_config=simulation_config.load_training_config(),
@@ -222,10 +254,102 @@ def test_refresh_command_recovers_storage_failure_and_rejects_drift_corruption_a
         assert table != 'seed_candidates', 'preparation cannot publish the registry'
         assert json.loads((root / 'plan.json').read_text(encoding='utf-8'))['status'] == 'preparing'
         writes.append(table)
-        if table == 'seed_prepared' and writes.count('seed_prepared') == 2:
-            raise OSError('constructed write failure')
     monkeypatch.setattr(result_store, 'write', store_write)
     arguments = ['--project', str(tmp_path), 'refresh-references', '--workspace', str(root), '--simc-only']
+    from types import SimpleNamespace
+    return SimpleNamespace(root=root, config=config, original_config=original_config, arguments=arguments,
+                           sources=sources, writes=writes, write=store_write, source=prepared_input.source)
+
+
+@pytest.mark.real
+@pytest.mark.parametrize('case', ['valid_with_unknown', 'old_revision', 'all_unknown'])
+def test_joint_preparation_command_cleans_real_records_and_keeps_registry_on_failure(
+        refresh_environment, tmp_path, monkeypatch, capsys, case):
+    import hashlib
+    from copy import deepcopy
+    import reference_seeds as refresh
+    import seed_training as seeds
+    from search import digest
+    env = refresh_environment
+    legacy = []
+    for number in range(28):
+        row = env.source('plugin-old-' + str(number), [['outbreak']])
+        row['source_revision'] = 'revision-' + str(number)
+        env.sources.append(row)
+        legacy.append(dict(source_id=row['source_id'], candidate_id=row['candidate_id'],
+            source_revision=row['source_revision'], original_sha256=hashlib.sha256(row['original'].encode()).hexdigest(),
+            program_sha256=digest(row['program'])))
+    protected = [env.source('protected-' + str(n), [['outbreak']]) for n in range(2)]
+    env.sources.extend(protected)
+    adoption = tmp_path / 'adoption.json'
+    adoption.write_text(json.dumps(dict(legacy_sources=legacy,
+        protected_manual_source_ids=[r['source_id'] for r in protected])), encoding='utf-8')
+    monkeypatch.setattr(refresh, 'ADOPTION_PATH', adoption)
+    if case == 'old_revision':
+        env.sources[1]['source_revision'] = 'not-approved'
+    before = deepcopy(env.sources)
+    plugin = tmp_path / 'plugin'
+    plugin.mkdir()
+    first = '999999999' if case == 'all_unknown' else '77575,47541'
+    (plugin / 'RotationData.lua').write_text('GearInsightRotation={["DEATHKNIGHT/UNHOLY"]={specID=252,'
+        'opener={{seq={' + first + '}},{seq={999999998,77575}}}}}', encoding='utf-8')
+    (plugin / 'GearInsight_Data.toc').write_text('## Version: 1.0\n', encoding='utf-8')
+    args = [v for v in env.arguments if v != '--simc-only'] + ['--plugin-dir', str(plugin)]
+    status = seeds.main(args)
+    result = capsys.readouterr()
+    assert env.sources == before and 'seed_candidates' not in env.writes
+    state = json.loads((env.root / 'plan.json').read_text(encoding='utf-8'))
+    if case != 'valid_with_unknown':
+        assert status == 2 and state['status'] == 'paused'
+        assert ('精确接管清单' if case == 'old_revision' else '四组材料未齐') in result.err
+        return
+    assert status == 0 and state['status'] == 'prepared'
+    final = {r['source_id']: r for r in state['final_sources']}
+    assert all(final[r['source_id']] == r for r in protected)
+    assert all(final[r['source_id']]['active'] is False for r in legacy)
+    new = [r for r in final.values() if r['family'] == 'gearinsight-library-v1']
+    assert sum(r['active'] for r in new) == 1
+    assert any('未知按钮' in r['unavailable_reason'] for r in new if not r['active'])
+    assert state['final_groups'][0]['simc_behaviors'] == 3 and state['final_groups'][0]['plugin_sources'] == 1
+
+    # A second command wins the lock between stages. The stale caller must use its latest result.
+    from contextlib import contextmanager
+    import task
+    winner = deepcopy(state)
+    winner.update(used_seconds=200., winner='other-command')
+    winner['checksum'] = digest({k: v for k, v in winner.items() if k != 'checksum'})
+    stale = deepcopy(state)
+    stale['status'] = 'simc_prepared'
+    stale['checksum'] = digest({k: v for k, v in stale.items() if k != 'checksum'})
+    refresh.write_json(env.root / 'plan.json', stale)
+    original_lease = task._task_lease
+    calls = []
+    @contextmanager
+    def handoff(*a, **kw):
+        with original_lease(*a, **kw):
+            calls.append(1)
+            if len(calls) == 2:
+                refresh.write_json(env.root / 'plan.json', winner)
+            yield
+    monkeypatch.setattr(task, '_task_lease', handoff)
+    assert seeds.main(args) == 0
+    latest = json.loads(capsys.readouterr().out)
+    assert latest['winner'] == 'other-command' and latest['used_seconds'] == 200.
+
+
+@pytest.mark.real
+def test_refresh_command_recovers_storage_failure_and_rejects_drift_corruption_and_exhaustion(
+        refresh_environment, monkeypatch, capsys):
+    import result_store, seed_training as seeds
+    from search import digest
+    env = refresh_environment
+    root, config, original_config, arguments, writes = (env.root, env.config, env.original_config,
+                                                       env.arguments, env.writes)
+    def fail_once(table, key, rows, **kw):
+        env.write(table, key, rows, **kw)
+        if table == 'seed_prepared' and writes.count('seed_prepared') == 2:
+            raise OSError('constructed write failure')
+    monkeypatch.setattr(result_store, 'write', fail_once)
     assert seeds.main(arguments) == 2
     assert 'constructed write failure' in capsys.readouterr().err
     plan_path = root / 'plan.json'
@@ -256,3 +380,26 @@ def test_refresh_command_recovers_storage_failure_and_rejects_drift_corruption_a
     plan_path.write_text(json.dumps(completed), encoding='utf-8')
     assert seeds.main(arguments) == 2
     assert '预算' in capsys.readouterr().err
+
+
+@pytest.mark.real
+def test_refresh_command_stops_at_workspace_space_line(refresh_environment, monkeypatch, capsys):
+    import os
+    from pathlib import Path
+    import seed_training as seeds
+    env = refresh_environment
+    env.root.mkdir()
+    evidence = env.root / 'existing-evidence'
+    evidence.write_bytes(b'x')
+    stat = Path.stat
+    def size_boundary(path, *a, **kw):
+        value = stat(path, *a, **kw)
+        if path == evidence:
+            values = list(value)
+            values[6] = 1024 ** 3
+            return os.stat_result(values)
+        return value
+    monkeypatch.setattr(Path, 'stat', size_boundary)
+    assert seeds.main(env.arguments) == 2
+    assert '1GiB' in capsys.readouterr().err
+    assert not env.writes and evidence.read_bytes() == b'x'
