@@ -1,6 +1,10 @@
 """Manually launched seed preparation; all business records use the shared center."""
 from __future__ import annotations
 
+import sys
+if __name__ == '__main__':
+    sys.dont_write_bytecode = True
+
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import threading
@@ -13,7 +17,6 @@ import math
 from pathlib import Path
 from simulation_config import SYNTAX_UNSET
 import sqlite3
-import sys
 import uuid
 
 import result_store
@@ -914,8 +917,10 @@ def run_training(template, targets, workspace, *, use_burst=False, max_processes
     if options['search_timeline']:
         from time import monotonic
         timeline_origin = monotonic()
-    with writer_lock(), training_activity() as cancel_event:
-        sources = sync_history(template_character(Path(template).read_text(encoding='utf-8')))
+    with training_activity() as cancel_event:
+        # 材料登记只在读取/更新时持锁，训练中的独立成果不等待这把登记锁。
+        with writer_lock():
+            sources = sync_history(template_character(Path(template).read_text(encoding='utf-8')))
         return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
                              max_processes=max_processes, max_trainings=max_trainings, sources=sources,
                              search_config=search_config, new_search_config=options, training_config=parallelism,
@@ -957,12 +962,26 @@ def check_training(template=None, *, use_burst=True, training_config=None):
 def selected_contract_version(rows, syntax=None):
     """缺版本是旧成果，不从TRAINING_VERSION或程序来源猜新契约。"""
     versions = {row.get('contract_version') if row.get('contract_version') is not None else 1 for row in rows}
-    if any(type(version) is not int or version not in (1, 2) for version in versions) or len(versions) > 1:
+    if any(type(version) is not int or version not in (1, 2, 3) for version in versions) or len(versions) > 1:
         raise ValueError('不支持的训练成果契约版本')
     version = next(iter(versions), 1)
     from simulation_config import verify_syntax_receipt
     for row in rows:
         evaluation = decode(row.get('evaluation')) or {}
+        if version == 3:
+            storage = evaluation.get('evidence_storage') or {}
+            scenarios = evaluation.get('scenarios') or {}
+            if (storage.get('version') != 3 or not isinstance(storage.get('report_groups'), dict)
+                    or not storage.get('archive_group') or not storage.get('archive_digest')
+                    or set(scenarios) != {'nominal', 'jitter', 'pause', 'slow', 'phase'}):
+                raise ValueError('新版训练成果缺少完整证据直接位置')
+            for scenario in scenarios.values():
+                batches = scenario.get('batches') or []
+                if not batches or any(batch.get('storage_version') != 3
+                        or not batch.get('storage_group_key')
+                        or storage['report_groups'].get(batch.get('batch_key')) != batch['storage_group_key']
+                        for batch in batches):
+                    raise ValueError('新版训练成果的复测位置凭据不符')
         if syntax is not None or 'syntax' in evaluation:
             policy = verify_syntax_receipt(evaluation.get('syntax'), syntax if syntax is not None else SYNTAX_UNSET)
             from program import check_search_syntax
@@ -970,8 +989,8 @@ def selected_contract_version(rows, syntax=None):
             check_search_syntax(program, policy)
             if evaluation.get('program_digest') != digest(program):
                 raise ValueError('训练成果程序与冻结凭据不符')
-    if version == 2 and len(rows) != 4:
-        raise ValueError('v2训练成果必须是完整四条')
+    if version in (2, 3) and len(rows) != 4:
+        raise ValueError('新版训练成果必须是完整四条')
     return version
 
 

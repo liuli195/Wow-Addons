@@ -8,6 +8,7 @@ from ctypes import wintypes
 import os
 from pathlib import Path
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -185,6 +186,19 @@ class TaskRuntime:
         self.identities = {}
         self.phase_limit = self.budget_seconds
         self.reservation = None
+
+    @property
+    def memory_execution(self):
+        return getattr(self, '_memory_execution', False)
+
+    @memory_execution.setter
+    def memory_execution(self, enabled):
+        if type(enabled) is not bool:
+            raise ValueError('内存运行开关必须为布尔值')
+        self._memory_execution = enabled
+        if enabled:
+            # 首次选择内存运行后，后续延迟导入也不生成字节码缓存文件。
+            sys.dont_write_bytecode = True
 
     @property
     def elapsed_seconds(self) -> float:

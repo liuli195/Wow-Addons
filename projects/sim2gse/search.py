@@ -945,6 +945,8 @@ class TaskStore:
         with self.lock:
             try:
                 if memory_execution:
+                    import sys
+                    sys.dont_write_bytecode = True
                     if connection is None:
                         connection = sqlite3.connect(':memory:', check_same_thread=False)
                         previous = Path(destination) / 'task.sqlite3'
@@ -1007,6 +1009,7 @@ class TaskStore:
         self.verified_batches = {}
         self.report_buffer = []
         self.memory_reports = {}
+        self.published_report_receipts = {}
         self.unsaved_batches = {}
         if report_locations is None:
             from result_store import DATA_ROOT, ReportLocations
@@ -1192,22 +1195,23 @@ class TaskStore:
     def _memory_checkpoint(self, boundary):
         """只在显式恢复边界生成静态副本；运行中的连接始终留在内存。"""
         with self.lock:
+            self.state['execution_storage_version'] = 3
             if hasattr(self, 'runtime'):
                 from runtime import check_memory_limit
                 check_memory_limit(getattr(self.runtime, 'memory_limit_mb', 4096))
-            snapshot = _checkpoint_copy(self.state)
-            snapshot.pop('memory_checkpoint', None)
+            current_ga = self.state.get('ga', {})
+            keep = {row['key'] for row in current_ga.get('population', [])}
+            keep.update(current_ga.get('finalists', []))
+            keep.update(row['key'] for row in sorted(self.state.get('archive', []),
+                key=lambda row: (-row.get('score', 0), row['key']))[:8])
+            snapshot = {key: _checkpoint_copy(value) for key, value in self.state.items()
+                        if key not in ('archive', 'memory_checkpoint')}
+            snapshot['archive'] = [_checkpoint_copy({key: value for key, value in row.items()
+                if row['key'] in keep or key not in ('candidate', 'candidate_sha256')})
+                for row in self.state.get('archive', [])]
             ga = snapshot.get('ga', {})
             if ga.get('phase') in ('retest', 'qualified', 'complete') and boundary != 'final':
                 ga.update(phase='retest', finals={})
-            keep = {row['key'] for row in ga.get('population', [])}
-            keep.update(ga.get('finalists', []))
-            keep.update(row['key'] for row in sorted(snapshot.get('archive', []),
-                key=lambda row: (-row.get('score', 0), row['key']))[:8])
-            for row in snapshot.get('archive', []):
-                if row['key'] not in keep:
-                    row.pop('candidate', None)
-                    row.pop('candidate_sha256', None)
             all_rows = {key: json.loads(value) for key, value in self.db.execute('SELECT key,value FROM batches')}
             all_rows.update(self.verified_batches)
             all_rows.update(self.unsaved_batches)
@@ -1241,6 +1245,9 @@ class TaskStore:
                         target.executemany('INSERT INTO state_archive VALUES (?,?,?)', archive)
                         target.executemany('INSERT INTO batches VALUES (?,?)', rows)
                     self.load_state(target)
+                    if target.execute('PRAGMA page_count').fetchone()[0] * target.execute(
+                            'PRAGMA page_size').fetchone()[0] > 256 * 1024 * 1024:
+                        raise MemoryError('恢复文件超过256 MiB上限，已保留上一份恢复点')
                     target.backup(self.db)
                 finally:
                     target.close()
@@ -1255,14 +1262,16 @@ class TaskStore:
             finally:
                 temporary.unlink(missing_ok=True)
 
-    def stage_report(self, key, row, stored, *, diagnostic_logging=False, replace_group=None, report_path=None):
+    def stage_report(self, key, row, stored, *, diagnostic_logging=False, replace_group=None, report_path=None,
+                     report_bytes=None):
         with self.lock:
             if self.memory_execution:
                 row.update(batch_index=stored['batch_index'], scenario=stored['scenario'])
                 self.unsaved_batches[key] = row
                 self.verified_batches[key] = row
                 if row['request']['purpose'] not in ('search', 'feedback', 'diagnostic'):
-                    self.memory_reports[key] = dict(stored)
+                    self.memory_reports[key] = dict(stored, _wire_bytes=report_bytes or
+                        len(_json(stored['report']).encode('utf-8')))
                 if row['request']['purpose'] != 'diagnostic':
                     self.state['completed_batches'] += 1
                 return
@@ -1291,28 +1300,10 @@ class TaskStore:
 
     def flush_reports(self, *, replace_group=None, final=False):
         """Return whether this invocation committed the complete buffered state."""
-        if self.memory_execution and not getattr(self, '_publishing_memory', False):
+        if self.memory_execution:
             if not final:
                 return False
-            deferred = getattr(self, 'defer_persistence', False)
-            self.defer_persistence = False
-            self._publishing_memory = True
-            try:
-                while self.memory_reports:
-                    items = list(self.memory_reports.items())[:12]
-                    for key, stored in items:
-                        row = self.verified_batches[key]
-                        metadata = {name: value for name, value in stored.items() if name != 'report'}
-                        metadata.update(_report=stored['report'], _diagnostic_logging=self.diagnostic_logging,
-                                        _replace_group=None)
-                        self.report_buffer.append((key, row, metadata))
-                    self.flush_reports()
-                    for key, _ in items:
-                        self.memory_reports.pop(key, None)
-                return True
-            finally:
-                self.defer_persistence = deferred
-                self._publishing_memory = False
+            return self._publish_memory_reports()
         if getattr(self, 'defer_persistence', False):
             return False
         from result_store import write, _api, DATA_ROOT, prepare_batch
@@ -1421,6 +1412,70 @@ class TaskStore:
         finally:
             if self.diagnostic_logging:
                 diagnostic_finish(self, 'report.publish', publish_started)
+
+    def _publish_memory_reports(self):
+        """独立不可变分组并行保存；通过读回后才登记直接位置，不使用公共清单。"""
+        from concurrent.futures import ThreadPoolExecutor
+        from result_store import iter_group, write, prepare_batch, DataReadError, _api
+        with self.lock:
+            items = sorted(self.memory_reports.items())
+        plans, plan, byte_count = [], [], 0
+        for item in items:
+            size = item[1]['_wire_bytes']
+            if plan and (len(plan) == 64 or byte_count + size > 16 * 1024 * 1024):
+                plans.append(plan)
+                plan, byte_count = [], 0
+            plan.append(item)
+            byte_count += size
+        if plan:
+            plans.append(plan)
+        def publish(plan):
+            group = self.state['run_id'] + '_m' + digest([key for key, _ in plan])[:20]
+            expected = {key: stored for key, stored in plan}
+            def validate():
+                found = set()
+                for row in iter_group('batches', group):
+                    key = row.get('batch_key')
+                    if key not in expected or key in found:
+                        raise ValueError('最终报告组含错误或重复报告')
+                    source = expected[key]
+                    _validate_saved_batch(row, key, self.verified_batches[key], self.character,
+                        source['batch_index'], source['scenario'], self.simulation_config)
+                    found.add(key)
+                if found != set(expected):
+                    raise ValueError('最终报告组不完整')
+            try:
+                validate()
+            except DataReadError as error:
+                if not isinstance(error.__cause__, _api()['MissingKeyError']):
+                    raise
+                rows = [prepare_batch(dict({key: value for key, value in stored.items() if not key.startswith('_')},
+                    storage_group_key=group),
+                    diagnostic_logging=self.diagnostic_logging, runtime=getattr(self, 'runtime', None))
+                    for _, stored in plan]
+                write('batches', group, rows)
+                del rows
+                validate()
+            return group, [key for key, _ in plan]
+        # 每个任务最多两路独立写入，不把整批写盘藏到后台。
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            completed = list(pool.map(publish, plans))
+        with self.lock:
+            evidence = self.state.setdefault('evidence_storage', dict(version=3, report_groups={}))
+            for group, keys in completed:
+                for key in keys:
+                    row = self.verified_batches[key]
+                    row.update(storage_group_key=group, storage_version=3)
+                    self.unsaved_batches[key] = row
+                    self.published_report_receipts[key] = digest(row)
+                    evidence['report_groups'][key] = group
+                    self.memory_reports.pop(key, None)
+        self._publish_memory_archive()
+        return bool(completed)
+
+    def _publish_memory_archive(self):
+        from result_store import publish_search_records
+        publish_search_records(self.state)
 
     def _commit_report_group(self, group, number, metadata, *, checkpoint=True, clear_intents=()):
         with self.lock, self._transaction():
@@ -1605,6 +1660,8 @@ class TaskStore:
         """进程崩溃最多按尚未消耗的单批额度扣费，恢复扣除只发生一次。"""
         self.runtime = runtime
         runtime.memory_execution = self.memory_execution
+        if self.memory_execution:
+            self.state['execution_storage_version'] = 3
         runtime.memory_limit_mb = self.state.get('config', {}).get('memory_limit_mb',
             getattr(runtime, 'memory_limit_mb', 4096))
         stop = threading.Event()
@@ -1939,6 +1996,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                               input_times=times, trace=trace, runtime=runtime,
                               simulation_config=simulation_config, on_native_start=native_started,
                               **burst_options, **kwargs)
+            if store.memory_execution:
+                from runtime import check_memory_limit
+                check_memory_limit(getattr(runtime, 'memory_limit_mb', 4096))
             variance = score_variance(result['report'])
             if (type(result['summary']['dps']) not in (int, float)
                     or not math.isfinite(result['summary']['dps']) or result['summary']['dps'] < 0
@@ -1979,6 +2039,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 state['inflight'].pop(key, None)
                 state['batch_estimate'] = max(0.1, 0.8 * state['batch_estimate'] + 0.2 * (time.monotonic()-started))
                 store.stage_report(key, row, stored, diagnostic_logging=config['diagnostic_logging'],
+                                   **(dict(report_bytes=result.get('report_bytes')) if store.memory_execution else {}),
                                    replace_group=(cached.get('storage_group_key') or key)
                                    if cached and cached['status'] == 'success' else None)
                 center_stored = not any(k == key for k, _, _ in store.report_buffer)

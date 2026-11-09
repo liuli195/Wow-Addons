@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import sys
+if __name__ == '__main__':
+    sys.dont_write_bytecode = True
+
 import argparse
 from pathlib import Path
-import sys
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "projects" / "sim2gse"))

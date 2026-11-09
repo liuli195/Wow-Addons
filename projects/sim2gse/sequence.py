@@ -308,7 +308,9 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
               simulation_config=simulation_config, **start_callback,
               **(dict(profile_text=generated_text, report_kind=report_kind) if memory_io else {}))
     memory_report = None
+    memory_report_bytes = None
     if memory_io:
+        memory_report_bytes = log['report_bytes']
         memory_report, log = log['report'], log['log']
     native_blocks = []
     skipped_commands = []
@@ -450,5 +452,5 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                 failure_events=failure_events, consistent=True,
                 reset_events=reset_events,
                 castsequences=castsequences,
-                summary=summary, report=report, trace=events,
+                summary=summary, report=report, report_bytes=memory_report_bytes, trace=events,
                 game_validation='not_run', model='native_controlled')

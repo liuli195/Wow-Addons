@@ -207,7 +207,7 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
             raise NativeEvaluationError('原生内存报告不是有效JSON') from error
         if not isinstance(report, dict) or not isinstance(report.get('sim'), dict):
             raise NativeEvaluationError('原生内存报告缺少模拟对象')
-        return dict(log=before + '\n' + after, report=report)
+        return dict(log=before + '\n' + after, report=report, report_bytes=len(encoded.encode('utf-8')))
     return log
 
 

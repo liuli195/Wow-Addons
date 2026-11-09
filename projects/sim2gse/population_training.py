@@ -604,6 +604,9 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
                 breeding_reference=manifest.get('breeding_reference'),
                 ga=dict(algorithm=ALGORITHM, phase='initial', generation=0, stagnant=0,
                         population=[], pending=None, rng=rng.getstate(), finals={}))
+            if store.memory_execution:
+                from result_store import seed_selected_revision
+                store.state['seed_selection_base'] = seed_selected_revision(scope)
         if store.state.get('breeding_reference') != manifest.get('breeding_reference'):
             raise ValueError('训练参考摘要与冻结任务不符')
         if (store.state.get('ga', {}).get('algorithm') != ALGORITHM
@@ -634,7 +637,11 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
             runtime.check()
             # Evidence verification precedes the only current-snapshot replacement.
             result_store = __import__('result_store')
-            result_store.write('seed_selected', scope, selected, schema=seeds.SELECTED_V2_SCHEMA)
+            if store.memory_execution:
+                result_store.publish_seed_selected(scope, selected, store.state['seed_selection_base'],
+                    schema=seeds.SELECTED_V2_SCHEMA)
+            else:
+                result_store.write('seed_selected', scope, selected, schema=seeds.SELECTED_V2_SCHEMA)
             ga['phase'] = 'published'
             store.state['status'] = 'completed'
             if not store.memory_execution:
@@ -679,6 +686,8 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
                 if not cached or cached.get('status') != 'success':
                     raise ValueError('发布缺少可靠复测批次')
                 request = cached['request']
+                if cached.get('storage_version') == 3:
+                    row.update(storage_version=3, storage_group_key=cached['storage_group_key'])
                 expected_seed = stage_plan[scenario]['seeds'][index]
                 if (digest(request) != row['batch_key'] or request['condition'] != condition
                         or request['behavior_identity'] != identity or request['purpose'] != scenario
@@ -699,6 +708,10 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
             continue
         loss = max(((nominal - results[name]['dps']) / nominal for name in scenarios[1:]), default=0.)
         qualified.append(dict(identity=identity, nominal=nominal, loss=loss, scenarios=results))
+    if getattr(store, 'memory_execution', False) and receipts and all(
+            getattr(store, 'published_report_receipts', {}).get(key) == digest(cached)
+            for key, (cached, _, _) in receipts.items()):
+        return qualified
     missing_locations = [key for key, (cached, _, _) in receipts.items()
                          if not cached.get('storage_group_key')]
     locations = (report_locations(missing_locations)
@@ -709,8 +722,9 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
         groups.setdefault(group, {})[key] = receipt
     for group, targets in groups.items():
         saved_rows = read_many('batches', [group])
-        if len(saved_rows) > 12:
-            raise ValueError('发布报告组超过十二份；旧四条保持不变')
+        maximum = 64 if all(row[0].get('storage_version') == 3 for row in targets.values()) else 12
+        if len(saved_rows) > maximum:
+            raise ValueError('发布报告组超过对应版本上限；旧四条保持不变')
         found = set()
         for saved in saved_rows:
             key = saved.get('batch_key')
@@ -734,6 +748,7 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
     from program import canonicalize_search_program
     from simulation_config import syntax_receipt
     archive = {row['key']: row for row in store.state['archive']}
+    memory_mode = getattr(store, 'memory_execution', store.state.get('execution_storage_version') == 3)
     condition = digest(manifest)
     qualified = _retest_scores(ga, store, condition=condition,
         stage_plan=manifest['stage_plan'], config=manifest['training_config'], character=character,
@@ -759,12 +774,14 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
             class_name=character.class_name, spec=character.spec, targets=ready['simulation_config']['target_count'],
             program=program, family='ga', score=row['nominal'],
             scores=[item['dps'] for item in row['scenarios']['nominal']['batches']],
-            template_sha256=ready['template_sha'], engines=ready['engines'], contract_version=2,
+            template_sha256=ready['template_sha'], engines=ready['engines'], contract_version=3 if memory_mode else 2,
             evaluation=dict(**(dict(breeding=deepcopy(ga['breeding'])) if ga.get('breeding') else {}),
                 syntax=syntax_receipt(ready['context']['capabilities']['search_syntax']),
                 program_digest=digest(program),
                 scenarios=row['scenarios'], stability_loss=row['loss'],
                 nominal_champion=row['identity'] == nominal[0]['identity'],
                 stable_representative=row['identity'] == stable['identity']))
+        if memory_mode:
+            record['evaluation']['evidence_storage'] = deepcopy(store.state['evidence_storage'])
         result.append(record)
     return result

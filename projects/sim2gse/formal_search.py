@@ -249,7 +249,8 @@ def validate_evidence(record, state, character, *, verify_reports):
         raise InvalidRecordError('正式遗传冠军不是完整入围名单的正常复测赢家')
     if not verify_reports:
         return
-    locations = report_locations(list(receipts))
+    missing = [key for key, (cached, _) in receipts.items() if not cached.get('storage_group_key')]
+    locations = report_locations(missing) if missing else {}
     groups = {}
     for key, (cached, index) in receipts.items():
         group = cached.get('storage_group_key') or locations.get(key) or key

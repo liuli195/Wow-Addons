@@ -39,13 +39,15 @@
    // Sim-scope options
    auto options_root = root[ "options" ];
  
-@@ -1440,6 +1465,16 @@
+@@ -1440,6 +1465,18 @@
  
  void print_json_report( sim_t& sim, const ::report::json::report_configuration_t& report_configuration )
  {
 +  if ( report_configuration.destination() == "@sim2gse-summary" ||
 +       report_configuration.destination() == "@sim2gse-full" )
 +  {
++    report_timer_t timer( "S2G memory report", stdout );
++    timer.start();
 +    fmt::print( "\nS2GJSON_BEGIN\n" );
 +    print_json_pretty( stdout, sim, report_configuration );
 +    fmt::print( "\nS2GJSON_END\n" );

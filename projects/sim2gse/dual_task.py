@@ -182,6 +182,8 @@ def _worker(handle):
                 row[purpose + '_status'] = 'running'
                 _save(row)
                 runtime = formal_runtime(row['config'], cancel_event=handle.cancel_event)
+                runtime.memory_execution = row['config'].get('memory_execution', False)
+                runtime.memory_limit_mb = row['config'].get('memory_limit_mb', 4096)
                 runtime.identities = copy.deepcopy(handle.identities)
                 if row['config']['search_timeline']:
                     runtime.timeline_origin = handle.timeline_origin

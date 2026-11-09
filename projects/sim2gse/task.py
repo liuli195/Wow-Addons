@@ -7,6 +7,10 @@
 
 from __future__ import annotations
 
+import sys
+if __name__ == '__main__':
+    sys.dont_write_bytecode = True
+
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -15,7 +19,6 @@ import re
 import string
 import sqlite3
 import argparse
-import sys
 import os
 import threading
 import time
@@ -362,6 +365,11 @@ def _store_candidate(run_id: str, candidate: dict, *, search_order=None) -> tupl
 def _store_run(destination: Path, result: dict, *, state=None) -> dict:
     from result_store import RUN_SCHEMA, write as write_records
 
+    if (state is not None and state.get('execution_storage_version') == 3
+            and state.get('archive') and not state.get('evidence_storage', {}).get('archive_group')):
+        from result_store import publish_search_records
+        publish_search_records(state)
+
     profile_path = destination / 'profile.json'
     profile = json.loads(profile_path.read_text(encoding='utf-8'))
     run_id = profile.get('run_id')
@@ -433,9 +441,15 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
         for name in ('seed_adaptations', 'training_champion_snapshot',
                      'training_champion_adaptation', 'start_sources', 'formal_champion_snapshot',
                      'formal_champion_adaptation', 'formal_champion_publication', 'formal_search', 'stop_policy',
-                     'start_adaptations'):
+                     'start_adaptations', 'evidence_storage'):
             if name in state:
                 search_metrics[name] = state[name]
+    storage = search_metrics.get('evidence_storage')
+    if storage is not None:
+        if storage.get('version') != 3:
+            raise TaskError('未知的成果保存版本')
+        batch_keys = set(storage['report_groups'])
+        batch_keys.update(key for key in (reference_data_key, controlled_data_key) if isinstance(key, str))
     cache_hit_keys = sorted({row['data_key'] for record in search.get('records', [])
                              for row in record.get('batches', [])
                              if row.get('cached') and isinstance(row.get('data_key'), str)})
@@ -851,9 +865,15 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
             or binding['target_count'] != state['simulation_config']['target_count']):
         raise InvalidRecordError('正式冠军条件与当前冻结角色不符')
     contract = 1 if record.get('contract_version') is None else record['contract_version']
-    if type(contract) is not int or contract not in (1, 2):
+    if type(contract) is not int or contract not in (1, 2, 3):
         raise InvalidRecordError('正式冠军成果契约版本格式无效或未知')
-    if contract == 2 and run is None and not verify_reports:
+    if contract == 3:
+        finalists = (record.get('evaluation') or {}).get('finalists') or []
+        if not finalists or any(batch.get('storage_version') != 3
+                or not isinstance(batch.get('storage_group_key'), str) or not batch['storage_group_key']
+                for finalist in finalists for batch in finalist.get('batches', [])):
+            raise InvalidRecordError('新版正式冠军缺少复测证据直接位置')
+    if contract in (2, 3) and run is None and not verify_reports:
         # A complete cohort is bound to the separately saved source, not to a
         # self-declared subset of the champion's otherwise valid receipts.
         run = one('runs', 'run_id', record['source_run_id'], columns=['run_id', 'status', 'profile',
@@ -893,7 +913,7 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
                != record['behavior_identity']
             or canonicalize_search_program(record['program'], state['capabilities'])['identity'] != record['behavior_identity']):
         raise InvalidRecordError('正式冠军程序、导出或正式来源行为不符')
-    if contract == 2:
+    if contract in (2, 3):
         from formal_search import validate_evidence
         evaluation = record.get('evaluation') or {}
         if run is not None:
@@ -1143,7 +1163,7 @@ def _prepare_formal_publication(store, result=None):
                   source_candidate_data_key=digest(dict(run_id=state['run_id'], candidate_key=source_key)),
                   source_condition_key=state['condition'], score=winner['score'],
                   samples=sum(row['samples'] for row in winner['batches']),
-                  contract_version=2, promotion_evidence=[],
+                  contract_version=3 if state.get('evidence_storage', {}).get('version') == 3 else 2, promotion_evidence=[],
                   batch_keys=[batch['data_key'] for row in state['formal_finalists'] for batch in row['batches']],
                   evaluation=dict(search=state['formal_search'], engines=state['engines'],
                       complete_generations=state['ga']['generation'], stagnant=state['ga']['stagnant'],
@@ -1183,7 +1203,7 @@ def _restore_formal_result(store, destination, character):
         return
     record = intent['record']
     if (not state.get('formal_search') or type(record.get('contract_version')) is not int
-            or record['contract_version'] != 2):
+            or record['contract_version'] not in (2, 3)):
         raise TaskError('旧正式搜索补保存已退役；原完整成果仅可读取')
     run = one('runs', 'run_id', record['source_run_id'], columns=['run_id', 'status', 'profile',
         'condition_key', 'selected_candidate_key', 'locked_candidate_key', 'candidate_key',
@@ -1240,7 +1260,7 @@ def _publish_formal_champion(store, destination):
         return
     record = intent['record']
     if (not state.get('formal_search') or type(record.get('contract_version')) is not int
-            or record['contract_version'] != 2):
+            or record['contract_version'] not in (2, 3)):
         raise TaskError('旧正式搜索补发布已退役；原完整成果仅可读取')
     try:
         native = state['native']['identity']
@@ -1510,7 +1530,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                         state['seed_selected_snapshot'] = read_records('seed_selected', shared_scope(configuration_key))
                         contract = selected_contract_version(state['seed_selected_snapshot'])
                     state['training_champion_snapshot'] = (dict(source_kind='training_champion',
-                        status='not_applicable', reason='v2四条已包含正常冠军及稳定代表') if contract == 2 else training_champion(
+                        status='not_applicable', reason='新版四条已包含正常冠军及稳定代表') if contract in (2, 3) else training_champion(
                         character.class_name, character.spec, simulation_config, engines=identities,
                         input_interval_ms=config['input_interval_ms'], use_burst=use_burst,
                         configuration_key=configuration_key,
@@ -1949,7 +1969,7 @@ def _require_current_formal_resume(state):
     if intent:
         record = intent.get('record', {}) if isinstance(intent, dict) else {}
         if (not state.get('formal_search') or not isinstance(record, dict)
-                or type(record.get('contract_version')) is not int or record['contract_version'] != 2):
+                or type(record.get('contract_version')) is not int or record['contract_version'] not in (2, 3)):
             raise TaskError('旧正式搜索补保存和补发布已退役；原完整成果仅可读取')
     if state.get('rule_snapshot') or state.get('rule_context'):
         raise TaskError('旧规则任务身份不兼容，不能续跑；原完整成果仍可读取')
@@ -2376,6 +2396,19 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
             controlled_simulation['report'] = controlled['report']
         task_result['controlled_simulation'] = controlled_simulation
 
+    storage = search.get('evidence_storage')
+    if include_search_records and storage is not None:
+        from result_store import read_search_records
+        rows = read_search_records(storage, run_id, condition=saved['condition_key'])
+        records = []
+        for row in rows:
+            candidate = row['candidate'] or dict(identity=row['candidate_key'], source='search',
+                program=row['program'], text=None, simulation=None)
+            records.append(dict(key=row['candidate_key'], program=row['program'], score=row['score'],
+                batches=row['batches'], candidate=candidate, export_available=bool(candidate.get('text')),
+                evidence_kind='verified_score_summary'))
+        search['records'] = records
+        return task_result
     if include_search_records and search_batch_keys:
         from search import digest
         wanted = set(search_batch_keys)

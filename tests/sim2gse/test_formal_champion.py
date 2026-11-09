@@ -367,7 +367,7 @@ def test_formal_source_consumes_only_supported_explicit_contracts(version):
     assert evidence['status'] == 'completed'
 
 
-@pytest.mark.parametrize('version', [True, 0, 3, '2'])
+@pytest.mark.parametrize('version', [True, 0, 4, '2'])
 def test_formal_source_rejects_unknown_or_noninteger_contract_versions(version):
     import task
     import result_store
