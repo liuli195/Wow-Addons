@@ -88,6 +88,8 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         page = PAGE.replace(b'diagnosticLogging.checked=false',
                             b'diagnosticLogging.checked=' + (b'true' if enabled else b'false'))
         page = page.replace(b'step="1" value="200"', ('step="1" value="' + str(config['input_interval_ms']) + '"').encode())
+        for key in ('target_mutation_probability', 'random_mutation_probability', 'crossover_probability'):
+            page = page.replace(('{{' + key + '}}').encode(), format(config[key] * 100, '.15g').encode())
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -209,6 +211,9 @@ class InterfaceHandler(BaseHTTPRequestHandler):
         options['search_config'] = dict(
             defaults, input_interval_ms=interval,
             search_observability=observation_mode, diagnostic_logging=diagnostic_logging)
+        for key in ('target_mutation_probability', 'random_mutation_probability', 'crossover_probability'):
+            if key in value:
+                options['search_config'][key] = value[key]
         if 'syntax' in value:
             from simulation_config import syntax_for
             if not isinstance(value['syntax'], dict):

@@ -73,6 +73,12 @@ class SimulationConfigTests(unittest.TestCase):
                              search_timeline=False, search_observability='full'))
             with self.assertRaisesRegex(task.TaskError, '创建新任务'):
                 dual_task.resume('/memory/saved', search_config=dict(iterations=128))
+            for name, value in (('target_mutation_probability', .9),
+                                ('random_mutation_probability', .1), ('crossover_probability', .5)):
+                count = len(written)
+                with self.assertRaisesRegex(task.TaskError, '创建新任务'):
+                    dual_task.resume('/memory/saved', search_config={name:value})
+                self.assertEqual(len(written), count)
             dual_task.resume('/memory/saved', syntax_config={'loop':False})
             self.assertEqual(written[-1]['config']['syntax'],SIMPLE)
             with self.assertRaisesRegex(task.TaskError,'创建新任务'):
@@ -100,7 +106,7 @@ class SimulationConfigTests(unittest.TestCase):
         path = BytesIO()
         expected = dict(max_processes=5, max_trainings=4, coarse_iterations=32,
             retest_batches=3, retest_iterations=128, stagnation_generations=2, top_k=8,
-            tournament_size=3, crossover_probability=.8, mutation_probability=.8)
+            tournament_size=3, crossover_probability=.3, target_mutation_probability=.8, random_mutation_probability=.3)
         self.assertEqual(load_training_config(BytesIO(path.getvalue())), expected)
         path = BytesIO(('[training]\nmax_trainings=10\nmax_processes=2').encode("utf-8"))
         self.assertEqual(load_training_config(BytesIO(path.getvalue())), dict(expected, max_processes=2, max_trainings=10))
@@ -229,7 +235,9 @@ class SimulationConfigTests(unittest.TestCase):
     def test_controlled_sequence_passes_the_effective_config_to_the_engine(self) -> None:
         import sequence
         config = config_for({'target_count': 2})
-        report = {'sim': {'players': [dict(name='test', sim2gse_class='mage', sim2gse_skipped_commands=[]),
+        report = {'sim': {'players': [dict(name='test', sim2gse_class='mage', sim2gse_skipped_commands=[],
+                            sim2gse_action_summary=dict(scope=dict(allowed={'spell:1': True}, excluded={}, windows='', policy='spell:1', controlled=True), version=1, samples=1, duration_ms=180000,
+                                                       successes={}, pairs={}, outgoing={})),
                                       {'name': 'other'}], 'targets': [{}, {}],
                           'statistics': {'raid_dps': {'mean': 100.0, 'count': 1}}}}
         candidate = dict(blocks=[[dict(kind='spell', simc_action='outbreak', spell_id=1, name='outbreak')]],
@@ -349,7 +357,7 @@ class SimulationConfigTests(unittest.TestCase):
             task_options={"simulation_config": config,
                           "search_config": dict(max_processes=5, coarse_iterations=32, retest_batches=3,
                               retest_iterations=128, stagnation_generations=8, top_k=8,
-                              tournament_size=3, crossover_probability=.8, mutation_probability=.8,
+                              tournament_size=3, crossover_probability=.3, target_mutation_probability=.8, random_mutation_probability=.3,
                               iterations=128, random_seed=20260912,
                               reset_events=(), diagnostic_logging=False, diagnostics="summary",
                               search_observability="full", search_timeline=False,

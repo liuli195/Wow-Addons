@@ -37,5 +37,11 @@ void finish_static_precombat_snapshot( player_t& player,
                                        const std::vector<const action_t*>& executed );
 void write_player_report( js::JsonOutput root, const player_t& player, bool include_apl );
 void write_damage_owner( js::JsonOutput node, const stats_t& stats );
+void summary_options(player_t&);
+void summary_begin(player_t&);
+void summary_end(player_t&);
+void summary_success(action_t&);
+void summary_input(player_t&, action_t*, action_t*, unsigned, int, bool, double);
+void summary_report(js::JsonOutput, const player_t&);
 }
 #endif

@@ -37,7 +37,8 @@ TRAINING_SEARCH_DEFAULTS = {
     "reset_events": (),
 }
 # Formal search owns its defaults; training and historical evidence keep the original runtime values.
-from simulation_config import SEARCH_DEFAULTS, FORMAL_ALGORITHM_DEFAULTS
+from simulation_config import (SEARCH_DEFAULTS, FORMAL_ALGORITHM_DEFAULTS,
+                               FORMAL_V2_ALGORITHM_DEFAULTS, SEARCH_RUNTIME_DEFAULTS)
 DEFAULT_CONFIG = dict(SEARCH_DEFAULTS)
 # Only historical receipt readers may fill the original frozen defaults.
 LEGACY_DEFAULT_CONFIG = dict(TRAINING_SEARCH_DEFAULTS, total_budget_seconds=600.0, search_budget_seconds=600.0,
@@ -56,13 +57,14 @@ def verify_behavior_identity_state(state):
         raise ValueError('候选行为身份版本已变化，请创建新任务')
 
 
-def config_for(values=None, *, training=False, legacy=False, _defer_interval_alignment=False):
+def config_for(values=None, *, training=False, legacy=False, _defer_interval_alignment=False, _historical_formal_v2=False):
     from simulation_config import reject_removed_search_settings, syntax_for
-    if not legacy:
+    if not legacy and not _historical_formal_v2:
         reject_removed_search_settings(values or {})
     if type(training) is not bool:
         raise ValueError('训练配置开关必须为布尔值')
-    config = dict(LEGACY_DEFAULT_CONFIG if legacy else TRAINING_SEARCH_DEFAULTS if training else DEFAULT_CONFIG)
+    config = dict(LEGACY_DEFAULT_CONFIG if legacy else TRAINING_SEARCH_DEFAULTS if training else
+        dict(FORMAL_V2_ALGORITHM_DEFAULTS, **SEARCH_RUNTIME_DEFAULTS) if _historical_formal_v2 else DEFAULT_CONFIG)
     if not legacy:
         config['syntax'] = syntax_for()
     if values:
@@ -89,10 +91,13 @@ def config_for(values=None, *, training=False, legacy=False, _defer_interval_ali
         if type(config[key]) is not int or not 1 <= config[key] <= maximum:
             raise ValueError('搜索配置超出范围: '+key)
     if not training and not legacy:
-        for key in set(FORMAL_ALGORITHM_DEFAULTS) - {'max_processes', 'crossover_probability', 'mutation_probability'}:
+        algorithm = FORMAL_V2_ALGORITHM_DEFAULTS if _historical_formal_v2 else FORMAL_ALGORITHM_DEFAULTS
+        probabilities = {'crossover_probability','mutation_probability'} if _historical_formal_v2 else {
+            'target_mutation_probability','random_mutation_probability','crossover_probability'}
+        for key in set(algorithm) - {'max_processes', *probabilities}:
             if type(config[key]) is not int or config[key] < (4 if key == 'top_k' else 1):
                 raise ValueError('正式搜索配置必须为正整数（top_k至少4）: ' + key)
-        for key in ('crossover_probability', 'mutation_probability'):
+        for key in sorted(probabilities):
             value = config[key]
             if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
                 raise ValueError('正式搜索概率必须为0至1的有限数: ' + key)
@@ -260,7 +265,7 @@ def _copy_program(program):
 
 
 def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observation=None,
-           excluded_programs=(), feedback_getter=None):
+           excluded_programs=(), feedback_getter=None, operation_override=None):
     """执行动作块、顺序 Loop 或 WaitClicks 变异；按需取值须返回非空反馈字典。"""
     source = _copy_program(program)
     from simulation_config import syntax_for
@@ -292,7 +297,9 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
         wait_clicks='wait_clicks', castsequence='castsequence', castsequence_member='castsequence',
         castsequence_reset='castsequence', castsequence_reset_flag='castsequence')
     operations = [name for name in operations if syntax.get(operation_policy.get(name), True)]
-    sampled_operation = rng.choice(operations)
+    if operation_override is not None and operation_override not in operations:
+        raise ValueError('随机操作不在当前语法范围')
+    sampled_operation = rng.choice(operations) if operation_override is None else operation_override
     operation = sampled_operation
     position = None
 
@@ -307,14 +314,20 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
         return source
 
     suggested = None
-    def choose_value(container, key, values):
+    from breeding import apply_edit
+
+    def choose_value(container, key, values, edit_path=None):
         previous = container[key]
         allowed = []
         for value in values:
             container[key] = value
             if value != previous and program_key(source) not in excluded_programs:
                 allowed.append(value)
-        container[key] = rng.choice(allowed) if allowed else previous
+        value = rng.choice(allowed) if allowed else previous
+        if edit_path is None:
+            container[key] = value
+        else:
+            source[:] = apply_edit(source, dict(operation='replace', path=edit_path, index=key, value=value))
         return bool(allowed)
 
     def legal_block(block):
@@ -385,7 +398,7 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
                 return finish()
     if operation == "swap" and len(source) > 1:
         first, second = rng.sample(range(len(source)), 2)
-        source[first], source[second] = source[second], source[first]
+        source[:] = apply_edit(source, dict(operation='swap', index=first, target=second))
         position = {"segments": [first, second]}
     elif operation == "replace" and ordinary_indices:
         block = rng.choice(ordinary_indices)
@@ -393,29 +406,30 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
         alternatives = [name for name in available if name != source[block][action]
                         and legal_block(source[block][:action] + [name] + source[block][action + 1:])]
         if alternatives:
-            if choose_value(source[block], action, alternatives):
+            if choose_value(source[block], action, alternatives, (block,)):
                 position = {"segment": block, "action": action}
     elif operation == "insert" and len(source) < 128:
         block = rng.randrange(len(source) + 1)
-        source.insert(block, [suggested or rng.choice(available)])
+        source[:] = apply_edit(source, dict(operation='insert', index=block, value=[suggested or rng.choice(available)]))
         position = {"segment": block}
     elif operation == "delete" and len(source) > 1:
         if wait_indices and len(ordinary_indices) <= 1:
             index = rng.choice(wait_indices)
         else:
             index = rng.randrange(len(source))
-        del source[index]
+        source[:] = apply_edit(source, dict(operation="delete", index=index))
         position = {"segment": index}
     elif operation == "move" and len(source) > 2:
         start = rng.randrange(len(source) - 1)
         end = rng.randrange(start + 1, min(len(source), start + 4) + 1)
+        original = _copy_program(source)
         fragment = source[start:end]
         del source[start:end]
         targets = [target for target in range(len(source) + 1)
                    if source[:target] + fragment + source[target:] != program
                    and program_key(source[:target] + fragment + source[target:]) not in excluded_programs]
         target = rng.choice(targets) if targets else start
-        source[target:target] = fragment
+        source[:] = apply_edit(original, dict(operation="move", index=start, count=end-start, target=target))
         position = {"segments": [start, end], "target": target}
     elif operation == "block":
         if not ordinary_indices:
@@ -857,7 +871,7 @@ def _restore_checkpoint_diagnostics(state):
 
 
 def _validate_saved_batch(saved, key, cached, character, index, scenario, simulation_config):
-    from engine import check_report
+    from engine import check_report, player_report
     request = cached['request']
     report = saved['report'] if saved is not None else None
     identities = dict(batch_key=key, condition_key=request['condition'],
@@ -879,6 +893,13 @@ def _validate_saved_batch(saved, key, cached, character, index, scenario, simula
         raise ValueError('缓存诊断来源批次身份不符')
     summary = check_report(report, character, request['iterations'], simulation_config=simulation_config,
                            **(dict(allow_zero=True) if request.get('allow_zero') else {}))
+    if ('sim2gse_action_summary' in player_report(report, character)
+            or 'action_summary' in cached):
+        from action_summary import checked
+        from engine import player_report
+        counts = checked(player_report(report, character).get('sim2gse_action_summary'), summary['samples'])
+        if 'action_summary' in cached and counts != cached['action_summary']:
+            raise ValueError('缓存成功摘要与原生报告不符')
     if (summary['dps'] != cached['dps'] or summary['samples'] != cached['samples']
             or _score_variance(report, character) != cached['variance']
             or any(saved[field] != cached[field] for field in ('dps', 'samples', 'variance'))):
@@ -1540,7 +1561,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             return times, {}
         from burst import combined_inputs
         times, sources = combined_inputs(times, burst_context, config['input_interval_ms'])
-        return times, dict(burst_candidate=burst_context['candidate'], input_sources=sources)
+        return times, dict(burst_candidate=burst_context['candidate'], input_sources=sources,
+                           burst_plan=burst_context['plan'])
     prepared = {}
     candidate_compilations = 0
     diagnostic_events = []
@@ -1728,8 +1750,11 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     or not math.isfinite(result['summary']['dps']) or result['summary']['dps'] < 0
                     or type(result['summary']['samples']) is not int or result['summary']['samples'] < 1):
                 raise CandidateScoreError('候选评分均值或有效样本无效')
+            from action_summary import checked
+            counts = checked(player_report(result['report'], character).get('sim2gse_action_summary'),
+                             result['summary']['samples'])
             report_valid = True
-            row = dict(status='success', request=request, dps=result['summary']['dps'],
+            row = dict(action_summary=counts, status='success', request=request, dps=result['summary']['dps'],
                        samples=result['summary']['samples'], variance=variance, requested_iterations=iterations,
                        data_key=key,
                        feedback=feedback_from_trace(result['trace'],[a['simc_action'] for a in capabilities['actions']],
@@ -1833,7 +1858,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         return dict(candidate_key=canonical['identity'], seed=row['request']['seed'],
                     input_seed=row['request']['input_seed'], iterations=row['requested_iterations'],
                     dps=row['dps'], samples=row['samples'], batch_key=row['data_key'],
-                    cached=bool(row.get('cached')))
+                    cached=bool(row.get('cached')), action_summary=row.get('action_summary'))
 
     def feedback_training(program):
         canonical, diagnostic = training_batch(program, 'feedback', trace=True)

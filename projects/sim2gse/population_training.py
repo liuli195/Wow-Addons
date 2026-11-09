@@ -16,7 +16,9 @@ SCENARIOS = ('nominal', 'jitter', 'pause', 'slow', 'phase')
 ALGORITHM = 'ga-easimple-v1'
 
 
-def _cross(left, right, rng):
+def _cross(left, right, rng, *, observation=None):
+    if observation is not None:
+        observation['crossover_cut'] = None
     def wrapped(member):
         return (len(member) == 1 and isinstance(member[0], dict) and member[0].get('kind') == 'Loop')
     if wrapped(left) != wrapped(right):
@@ -28,6 +30,8 @@ def _cross(left, right, rng):
     if min(len(a), len(b)) < 2:
         return False
     cut = rng.randint(1, min(len(a), len(b)) - 1)
+    if observation is not None:
+        observation['crossover_cut'] = cut
     if a[cut:] == b[cut:]:
         return False
     a[cut:], b[cut:] = deepcopy(b[cut:]), deepcopy(a[cut:])
@@ -54,7 +58,7 @@ def _stage_plan(config, seed, *, scenarios=SCENARIOS):
 
 
 def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
-    """The eaSimple replacement step and varAnd are group-local, including RNG."""
+    """保留完整换代，按冻结版本选繁殖顺序；每组随机流独立。"""
     from deap import algorithms, base
     from program import canonicalize_search_program, _search_expanded_nodes
     from codec import load_targeting, prepare_block, prepare_castsequence
@@ -80,6 +84,27 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
     class Individual(list):
         pass
     ga = store.state['ga']
+    guided = 'target_mutation_probability' in config
+    coarse_summaries = {}
+    if guided:
+        from breeding import VERSION, ORDER
+        reference = store.state.get('breeding_reference')
+        if config['target_mutation_probability'] > 0:
+            from action_summary import checked, scoped
+            if not isinstance(reference, dict):
+                raise ValueError('目标变异缺少冻结参考成功摘要')
+            reference = scoped(checked(reference, reference.get('samples')), capabilities)
+            if not any(reference['successes'].values()):
+                raise ValueError('目标变异参考没有可比较普通按钮')
+        binding = dict(version=VERSION, order=ORDER, probabilities={k: config[k] for k in
+            ('target_mutation_probability', 'random_mutation_probability', 'crossover_probability')},
+            reference=digest(reference) if config['target_mutation_probability'] > 0 else None)
+        binding['order'] = list(binding['order'])
+        if ga.get('breeding') is None and (ga.get('phase') != 'initial' or store.state.get('archive')):
+            raise ValueError('繁殖策略凭据缺失，不能把旧任务换成新策略续跑')
+        if ga.get('breeding') not in (None, binding):
+            raise ValueError('繁殖策略或冻结参考已变化，不能恢复旧任务')
+        ga['breeding'] = binding
     if ga['phase'] == 'qualified':
         ga['phase'] = 'retest'  # Re-verify all frozen receipts after a failed publication; refill only missing evidence.
     rng = random.Random()
@@ -88,6 +113,8 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
     def individual(row):
         member = Individual(deepcopy(row['program']))
         member.fitness = Fitness((row['score'],))
+        if guided:
+            member.action_summary = coarse_summaries.get(row['key'])
         return member
     def clone(parent):
         child = deepcopy(parent)
@@ -97,21 +124,35 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
         return [max((rng.choice(population) for _ in range(config['tournament_size'])),
                     key=lambda member: member.fitness) for _ in range(count)]
     def mate(left, right):
-        if _cross(left, right, rng):
+        before = deepcopy(list(left)), deepcopy(list(right))
+        details = {} if observe_search else None
+        changed = _cross(left, right, rng, observation=details)
+        if changed:
             left.crossed = right.crossed = True
-            observe_child(left.parent_program, left, dict(sampled_mutation='crossover', actual_mutation='crossover'))
-            observe_child(right.parent_program, right, dict(sampled_mutation='crossover', actual_mutation='crossover'))
+        if details is not None:
+            for index, child in enumerate((left, right)):
+                partner_identity, partner_reason = observed_identity(before[1-index])
+                evidence = dict(details, sampled_mutation='crossover',
+                    actual_mutation='crossover' if changed else 'no_change',
+                    partner_identity=partner_identity, partner_illegal_reason=partner_reason)
+                if store.state['config']['search_observability'] == 'full':
+                    evidence['partner_program'] = before[1-index]
+                observe_child(before[index], child, evidence)
         return left, right
     feedback_for = None
+    def observed_identity(program):
+        try:
+            return canonicalize_search_program(program, capabilities)['identity'], None
+        except (TypeError, ValueError, KeyError) as error:
+            return None, str(error)
     def observe_child(parent, child, details):
         if not observe_search or not store.state.get('search_observability'):
             return
-        try:
-            identity = canonicalize_search_program(child, capabilities)['identity']
-            reason = None
-        except (TypeError, ValueError, KeyError) as error:
-            identity, reason = None, str(error)
-        _observe_ga(store, 'mutation', parent_identity=canonicalize_search_program(parent, capabilities)['identity'],
+        identity, reason = observed_identity(child)
+        parent_identity, parent_reason = observed_identity(parent)
+        if store.state['config']['search_observability'] == 'full':
+            details = dict(details, parent_program=deepcopy(list(parent)), child_program=deepcopy(list(child)))
+        _observe_ga(store, 'mutation', parent_identity=parent_identity, parent_illegal_reason=parent_reason,
                     candidate_identity=identity, illegal_reason=reason, **details)
     def mutation(member):
         feedback_getter = None if member.crossed else lambda: feedback_for(member.parent_program)
@@ -131,8 +172,57 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
     variation = types.FunctionType(algorithms.varAnd.__code__,
         dict(algorithms.varAnd.__globals__, random=rng), 'group_varAnd')
 
+    legacy_variation = variation
+    legal_for_guidance = None
+    last_variation_counts = None
+    def three_gates(population, toolbox, cross_probability, unused_probability=None):
+        nonlocal last_variation_counts
+        from breeding import target_mutation, random_operations
+        counts = {route + suffix: 0 for route in ('target', 'random', 'crossover')
+                  for suffix in ('_triggered', '_changed')} if store.diagnostic_logging else None
+        children = [toolbox.clone(parent) for parent in population]
+        for child in children:
+            runtime.check()
+            if rng.random() < config['target_mutation_probability']:
+                if counts is not None: counts['target_triggered'] += 1
+                changed, details = target_mutation(list(child), capabilities, rng, reference,
+                    child.action_summary, legal_for_guidance)
+                before = deepcopy(list(child))
+                child[:] = changed
+                observe_child(before, child, dict(sampled_mutation='target', **details))
+                if child != before:
+                    if counts is not None: counts['target_changed'] += 1
+                    del child.fitness.values
+            if rng.random() < config['random_mutation_probability']:
+                if counts is not None: counts['random_triggered'] += 1
+                flags = tuple(dict.fromkeys(kind for _, kind in store.state['config']['reset_events']
+                    if kind in ('target', 'combat', 'shift', 'ctrl', 'alt')))
+                operations = random_operations(child, capabilities, flags)
+                if operations:
+                    before = deepcopy(list(child))
+                    details = {}
+                    child[:] = mutate(child, capabilities, rng, operation_override=rng.choice(operations),
+                        observation=details, reset_flags=flags)
+                    observe_child(before, child, dict(details, mutation_route='random'))
+                    if child != before:
+                        if counts is not None: counts['random_changed'] += 1
+                        del child.fitness.values
+        for index in range(1, len(children), 2):
+            if rng.random() < cross_probability:
+                if counts is not None: counts['crossover_triggered'] += 1
+                before = (deepcopy(list(children[index-1])), deepcopy(list(children[index])))
+                toolbox.mate(children[index-1], children[index])
+                if counts is not None and any(child != original for child, original in zip(children[index-1:index+1], before)):
+                    counts['crossover_changed'] += 1
+                for child, original in zip(children[index-1:index+1], before):
+                    if child != original:
+                        del child.fitness.values
+        last_variation_counts = counts
+        return children
+    variation = three_gates if guided else legacy_variation
+
     def execute(*, evaluate, feedback):
-        nonlocal feedback_for
+        nonlocal feedback_for, legal_for_guidance
         def bounded_feedback(program):
             row = feedback(program)
             if len(store.report_buffer) >= 12:
@@ -150,6 +240,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                     else:
                         prepare_block(commands, target_masks)
             return canonical['identity']
+        legal_for_guidance = key
         def scores(programs, stage='search', index=0, *, record_timeline=True, allow_rejections=False):
             unique = {}
             for program in programs:
@@ -174,6 +265,8 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                     for identity, future in futures:
                         try:
                             results[identity] = future.result()
+                            if guided and stage == 'search':
+                                coarse_summaries[identity] = results[identity].get('action_summary')
                             if timeline is not None and record_timeline:
                                 row = results[identity]
                                 timeline.score(dict(key=identity, score=row['dps'], batches=[row]),
@@ -236,9 +329,11 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
             pending = ga.get('pending')
             if pending is None:
                 children = variation(select(population, len(population)), toolbox,
-                    config['crossover_probability'], config['mutation_probability'])
+                    config['crossover_probability'], config.get('mutation_probability'))
                 pending = dict(programs=[deepcopy(list(child)) for child in children],
                                regenerations=[0] * len(children), rng=rng.getstate())
+                if last_variation_counts is not None:
+                    pending['breeding_counts'] = deepcopy(last_variation_counts)
                 ga['pending'] = pending
                 store.checkpoint()
             else:
@@ -253,7 +348,11 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                         if pending['regenerations'][slot] >= 10:
                             raise ValueError(f'非法子代槽{slot}已耗尽10次额外重生: {error}') from error
                     children = variation(select(population, 2), toolbox,
-                        config['crossover_probability'], config['mutation_probability'])
+                        config['crossover_probability'], config.get('mutation_probability'))
+                    if last_variation_counts is not None:
+                        for name, value in last_variation_counts.items():
+                            counters = pending.setdefault('breeding_counts', {})
+                            counters[name] = counters.get(name, 0) + value
                     pending['programs'][slot] = deepcopy(list(children[0]))
                     pending['regenerations'][slot] += 1
                     pending['rng'] = rng.getstate()
@@ -275,6 +374,10 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
             ga.update(population=members,
                 generation=ga['generation'] + 1, rng=pending['rng'], pending=None,
                 baseline=current, stagnant=0 if improved else ga['stagnant'] + 1)
+            if pending.get('breeding_counts'):
+                counters = ga.setdefault('breeding_counts', {})
+                for name, value in pending['breeding_counts'].items():
+                    counters[name] = counters.get(name, 0) + value
             if policy:
                 ga['last_fallbacks'] = fallbacks
             if ga['stagnant'] >= config['stagnation_generations']:
@@ -401,10 +504,15 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
         inputs = seeds._training_inputs(template, targets, cancel_event=cancel_event,
             use_burst=use_burst, max_processes=config['max_processes'],
             burst_identity=burst_identity, _frozen_config=new_search_config)
+    from simulation_config import load_training_config
+    config = load_training_config(_document={'training': config})
     ready = seeds.ensure_prepared(template, targets, workspace, cancel_event=cancel_event,
         use_burst=use_burst, sources=sources, materials=materials, inputs=inputs,
         max_processes=config['max_processes'], search_config=options,
         burst_identity=burst_identity)
+    if 'mutation_probability' in config or not all(k in config for k in
+            ('target_mutation_probability', 'random_mutation_probability')):
+        raise ValueError('旧训练总变异参数已退役，未完成任务不能换策略续跑')
     context = ready['context']
     if not context or not ready['queue']:
         raise ValueError('本组没有有效训练材料')
@@ -436,14 +544,20 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
         config = manifest['training_config']
     else:
         from simulation_config import syntax_receipt
-        manifest = dict(environment=environment, training_config=config, template_path=str(Path(template).resolve()),
+        from breeding import VERSION, ORDER
+        manifest = dict(breeding=dict(version=VERSION, order=list(ORDER)),
+            environment=environment, training_config=config, template_path=str(Path(template).resolve()),
             starts=[row['program'] for row in ready['queue']], sources=ready['queue'],
+            breeding_reference=context['native'].get('action_summary'),
             search_config=ready['config'], syntax=syntax_receipt(ready['config']['syntax']),
             seed=uuid.uuid4().int % 1000000000)
         manifest['stage_plan'] = _stage_plan(config, manifest['seed'])
         folder = root / uuid.uuid4().hex
         folder.mkdir(parents=True)
         _write_json(folder / 'identity.json', manifest, atomic=True)
+    from breeding import VERSION, ORDER
+    if manifest.get('breeding') != dict(version=VERSION, order=list(ORDER)):
+        raise ValueError('训练繁殖版本或顺序缺失/不兼容，请新建任务')
     profile = folder / 'standard.simc'
     if not profile.exists():
         profile.write_text(ready['text'], encoding='utf-8')
@@ -469,8 +583,11 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
             rng = random.Random(manifest['seed'])
             store.state.update(run_id=uuid.uuid4().hex, starts=manifest['starts'], config=execution_config,
                 capabilities=context['capabilities'], configuration_key=configuration_key, burst=context['burst'],
+                breeding_reference=manifest.get('breeding_reference'),
                 ga=dict(algorithm=ALGORITHM, phase='initial', generation=0, stagnant=0,
                         population=[], pending=None, rng=rng.getstate(), finals={}))
+        if store.state.get('breeding_reference') != manifest.get('breeding_reference'):
+            raise ValueError('训练参考摘要与冻结任务不符')
         if (store.state.get('ga', {}).get('algorithm') != ALGORITHM
                 or store.state.get('starts') != manifest['starts']):
             raise ValueError('GA检查点算法或冻结初始种群身份不符')
@@ -503,7 +620,10 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
             store.checkpoint()
             if timeline is not None:
                 timeline.saved('completed')
-        return dict(status='completed', algorithm=ALGORITHM, population_size=len(manifest['starts']),
+        return dict(status='completed', algorithm=ALGORITHM, breeding=ga.get('breeding'),
+            breeding_statistics=(dict(status='collected', counts=ga.get('breeding_counts', {}))
+                if execution_config['diagnostic_logging'] else dict(status='not_collected')),
+            population_size=len(manifest['starts']),
             complete_generations=ga['generation'], configuration_key=configuration_key,
             selected=len(selected), task_path=str(folder), training_config=config,
             ineligible=ga.get('ineligible', {}), **syntax_result)
@@ -619,7 +739,8 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
             program=program, family='ga', score=row['nominal'],
             scores=[item['dps'] for item in row['scenarios']['nominal']['batches']],
             template_sha256=ready['template_sha'], engines=ready['engines'], contract_version=2,
-            evaluation=dict(syntax=syntax_receipt(ready['context']['capabilities']['search_syntax']),
+            evaluation=dict(**(dict(breeding=deepcopy(ga['breeding'])) if ga.get('breeding') else {}),
+                syntax=syntax_receipt(ready['context']['capabilities']['search_syntax']),
                 program_digest=digest(program),
                 scenarios=row['scenarios'], stability_loss=row['loss'],
                 nominal_champion=row['identity'] == nominal[0]['identity'],

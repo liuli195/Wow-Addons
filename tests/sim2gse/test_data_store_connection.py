@@ -34,6 +34,7 @@ def test_connected_consumer_reads_writes_without_old_user_installation(tmp_path,
     adapter = project / "projects/sim2gse/result_store.py"
     adapter.parent.mkdir(parents=True)
     shutil.copy2(REPOSITORY / "projects/sim2gse/result_store.py", adapter)
+    shutil.copy2(REPOSITORY / "projects/sim2gse/action_summary.py", adapter.with_name("action_summary.py"))
     connected = subprocess.run(
         [sys.executable, str(installed / "scripts/project_binding.py"), "connect", "--project", str(project)],
         text=True, capture_output=True,
@@ -41,12 +42,20 @@ def test_connected_consumer_reads_writes_without_old_user_installation(tmp_path,
     assert connected.returncode == 0, connected.stderr
     env = dict(os.environ, USERPROFILE=str(tmp_path / "empty-home"), HOME=str(tmp_path / "empty-home"))
     program = """import json,runpy,sys
+sys.path.insert(0,str(__import__('pathlib').Path(sys.argv[1]).parent))
 m=runpy.run_path(sys.argv[1]);m['ensure_available']()
 assert m['write']('measurements','one',[{'score':7,'parts':[{'value':4}]}])==1
 assert m['read_records']('measurements','one',columns=['score'],filters={'score':7})==[{'score':7}]
 assert m['read_records']('measurements','one',columns=['score'],filters={'score':8})==[]
 assert m['write']('binary_measurements','one',[{'score':8,'payload':bytes([0,255])}],schema={'score':'INTEGER','payload':'BLOB'},binary=True)==1
 assert m['read_records']('binary_measurements','one',columns=['payload'],filters={'score':8})==[{'payload':bytes([0,255])}]
+summary=dict(version=1,samples=1,duration_ms=180000,successes={'spell:1':2},pairs={},outgoing={},positions={'spell:1@0':2},witnesses={},scope=dict(allowed={'spell:1':True},excluded={},windows='',policy='spell:1',controlled=True))
+empty=dict(summary,successes={},positions={},scope=dict(allowed={'spell:2':True},excluded={},windows='',policy='spell:2',controlled=True))
+rows=[dict(batch_key=key,report={'sim':{'players':[{'name':'test','sim2gse_action_summary':value}]}}) for key,value in [('first',summary),('second',empty)]]
+assert m['write']('batches','mixed',[m['prepare_batch'](row) for row in rows])==2
+restored=m['read_records']('batches','mixed')
+assert [row['report']['sim']['players'][0]['sim2gse_action_summary'] for row in restored]==[summary,empty]
+assert m['one']('batches','batch_key','first',group_key='mixed')['report']['sim']['players'][0]['sim2gse_action_summary']==summary
 print(json.dumps(list(m['iter_rows']('SELECT score,parts[1].value AS part FROM measurements',tables=['measurements']))))
 """
     result = subprocess.run([sys.executable, "-c", program, str(adapter)], env=env,

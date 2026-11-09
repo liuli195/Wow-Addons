@@ -35,12 +35,12 @@ def test_formal_run_uses_five_workers_and_eight_stagnant_generations(memory_ga):
                 active -= 1
     starts = [[[name] for name in order] for order in permutations(('outbreak', 'death_coil', 'scourge_strike'))]
     case = memory_ga(formal=True, programs=starts, score_for=score,
-        search_settings=dict(max_processes=5, crossover_probability=0., mutation_probability=0.))
+        search_settings=dict(max_processes=5, crossover_probability=0., target_mutation_probability=0., random_mutation_probability=0.))
     result = case.run()
     assert result['status'] == 'completed'
     assert peak == 5
     assert result['search']['complete_generations'] == 8
-    assert result['search']['formal_search']['version'] == 2
+    assert result['search']['formal_search']['version'] == 3
 
 
 @pytest.mark.parametrize('file_values, overrides, expected', [
@@ -54,7 +54,8 @@ stagnation_generations=6
 top_k=4
 tournament_size=2
 crossover_probability=0.3
-mutation_probability=0.4
+target_mutation_probability=0.4
+random_mutation_probability=0.2
 iterations=141
 random_seed=567
 search_timeline=false
@@ -115,7 +116,8 @@ def test_public_run_dispatches_reference_with_runtime_file_default_priority(monk
 
 
 @pytest.mark.parametrize('reset_events', [(), ((300, 'shift'),)])
-def test_public_result_reads_frozen_v1_without_current_defaults(monkeypatch, reset_events):
+@pytest.mark.parametrize('version', [1, 2])
+def test_public_result_reads_frozen_old_version_without_current_defaults(monkeypatch, reset_events, version):
     from pathlib import Path
     from copy import deepcopy
     import json
@@ -126,13 +128,18 @@ def test_public_result_reads_frozen_v1_without_current_defaults(monkeypatch, res
     ga = dict(max_processes=2, coarse_iterations=32, retest_batches=3, retest_iterations=128,
         stagnation_generations=2, top_k=8, tournament_size=3,
         crossover_probability=.8, mutation_probability=.8)
+    if version == 2:
+        ga.update(max_processes=5, stagnation_generations=8)
     from population_training import _stage_plan
-    frozen = dict(version=1, algorithm='formal-ga-easimple-v1',
+    frozen = dict(version=version, algorithm=f'formal-ga-easimple-v{version}',
         stop_policy=dict(version=1, kind='natural_stagnation'), config=ga,
         coarse_failure_policy=dict(version=1, initial='exclude_invalid_score', offspring='retain_verified_slot'),
         stage_plan=_stage_plan(ga, 20260912, scenarios=('nominal',)))
     saved = dict.fromkeys(result_store.RUN_SCHEMA)
-    saved.update(status='completed', phase='done', config=dict(search.TRAINING_SEARCH_DEFAULTS, reset_events=reset_events),
+    from simulation_config import SEARCH_RUNTIME_DEFAULTS
+    old_config = dict(search.TRAINING_SEARCH_DEFAULTS, reset_events=reset_events) if version == 1 else dict(
+        SEARCH_RUNTIME_DEFAULTS, **ga, reset_events=reset_events)
+    saved.update(status='completed', phase='done', config=old_config,
         search_metrics=dict(formal_search=frozen), batch_keys=[], search_rounds=2)
     monkeypatch.setattr(Path, 'is_file', lambda p: p.name == 'result.json')
     monkeypatch.setattr(Path, 'read_text', lambda *a, **kw: json.dumps(dict(run_id='old-run')))
@@ -141,6 +148,21 @@ def test_public_result_reads_frozen_v1_without_current_defaults(monkeypatch, res
     result = read_task('/memory/old-run')
     assert result['status'] == 'completed'
     assert result['search']['formal_search'] == frozen
+
+
+@pytest.mark.parametrize('value', [0, False, .8])
+def test_public_formal_retires_old_mutation_key_before_profile_io(value):
+    from task import run_task
+    with pytest.raises(ValueError, match='退役'):
+        run_task('/absent/role.simc', '/absent/task', search_config=dict(mutation_probability=value))
+
+
+@pytest.mark.parametrize('name', ['target_mutation_probability','random_mutation_probability','crossover_probability'])
+@pytest.mark.parametrize('value', [False, -0.1, 1.1, float('nan'), float('inf')])
+def test_public_formal_rejects_invalid_three_gate_values_before_io(name, value):
+    from task import run_task
+    with pytest.raises(ValueError, match=name):
+        run_task('/absent/role.simc', '/absent/task', search_config={name:value})
 
 
 def test_training_file_projection_keeps_only_preexisting_timeline_setting():

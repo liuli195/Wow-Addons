@@ -360,6 +360,11 @@ def read(destination, *, active=None, include_rule_initialization=True):
     destination = Path(destination).resolve()
     row = _load(destination)
     natural = type(row.get('formal_search_version')) is int and row['formal_search_version'] == 1
+    try:
+        task._require_current_formal_resume(row)
+        current_breeding = True
+    except task.TaskError:
+        current_breeding = False
     current_syntax = 'syntax' in row['config'] or row.get('syntax') is not None
     syntax_summary = '历史任务未记录语法范围，仅可查看。'
     if current_syntax:
@@ -369,11 +374,11 @@ def read(destination, *, active=None, include_rule_initialization=True):
         except ValueError as error:
             raise task.TaskError(str(error)) from error
         syntax_summary = describe_syntax(row['config']['syntax'])
-    recoverable = natural and current_syntax and row['status'] in ('cancelled', 'partial', 'failed', 'interrupted')
+    recoverable = current_breeding and current_syntax and row['status'] in ('cancelled', 'partial', 'failed', 'interrupted')
     if row['status'] in ('starting', 'running', 'stopping') and not (active if active is not None else _is_running(destination) if natural else False):
-        row.update(status='interrupted', error=('执行进程已退出，可以继续未完成的任务' if natural and current_syntax else
+        row.update(status='interrupted', error=('执行进程已退出，可以继续未完成的任务' if current_breeding and current_syntax else
                    '旧正式搜索已退役，任务仅可查看；请创建新GA任务'))
-        recoverable = natural and current_syntax
+        recoverable = current_breeding and current_syntax
     budget = None if natural else row['config']['total_budget_seconds']
     scenes, exports = [], {}
     elapsed, completed, active_progress = 0., 0, 0.
@@ -401,6 +406,9 @@ def read(destination, *, active=None, include_rule_initialization=True):
             for name in ('seed_adaptations', 'training_champion_snapshot', 'training_champion_adaptation', 'start_sources',
                          'formal_champion_snapshot', 'formal_champion_adaptation', 'formal_champion_publication',
                          'formal_champion_publication_verification', 'formal_search', 'start_adaptations'):
+                if name in search:
+                    scene[name] = search[name]
+            for name in ('breeding', 'breeding_statistics', 'observability'):
                 if name in search:
                     scene[name] = search[name]
         if status == 'completed':
@@ -435,7 +443,12 @@ def read(destination, *, active=None, include_rule_initialization=True):
             f'已完成{completed}/{len(SCENES)}个循环；其余场景或导出尚未完成，不能视为完整双场成果。')
     else:
         result_note = '旧正式搜索已退役，任务仅可查看。原结果未进行最终独立复测；爆发独立按键，游戏效果尚待验证。'
+    if natural and not current_breeding:
+        result_note += ' 旧繁殖版本仅可查看，不能继续计算。'
     return dict(status=row['status'], phase=row['phase'], error=row['error'], scenes=scenes,
+                breeding_policy=(dict(order=['target','random','crossover'], probabilities={key:row['config'][key] for key in
+                    ('target_mutation_probability','random_mutation_probability','crossover_probability')})
+                    if current_breeding else None),
                 syntax=row['config'].get('syntax'), syntax_summary=syntax_summary,
                 start_rejection_count=sum(task.start_rejection_count(scene) for scene in scenes),
                 exports=exports, recoverable=recoverable, collection_text=row['collection_text'], collection_ready=bool(row['collection_text']),

@@ -36,7 +36,9 @@ def memory_ga(monkeypatch):
                   [[[name] for name in order] for order in permutations(
                       ('outbreak', 'death_coil', 'scourge_strike'))])
         config = dict(TRAINING_DEFAULTS, top_k=4, max_processes=1,
-                      crossover_probability=0., mutation_probability=0.)
+                      crossover_probability=0., target_mutation_probability=0., random_mutation_probability=0.)
+        if set(settings or {}) - set(config):
+            raise ValueError('训练样例包含未知参数')
         config.update(settings or {})
         # Overrides must not be duplicated in dict's keyword construction.
         search_values = dict(max_processes=1)
@@ -77,6 +79,7 @@ def memory_ga(monkeypatch):
                 return native(profile, candidate, folder, **options)
             score = 100. if score_for is None else score_for(candidate, options)
             report = _fast_report(character, score, max(1, options['iterations'] - 1))
+            report['sim']['targets'] *= options['simulation_config']['target_count']
             summary = engine.check_report(report, character, options['iterations'],
                 simulation_config=options['simulation_config'], allow_zero=True)
             return dict(report=report, summary=summary, trace=[])
@@ -104,11 +107,15 @@ def memory_ga(monkeypatch):
             if timeline is not None: runtime.search_timeline=timeline
             if formal and runner is None:
                 from formal_search import run as run_formal
+                summary = _fast_report(character, 100., 99)['sim']['players'][0]['sim2gse_action_summary']
+                summary.update(successes={'spell:1001':99})
+                summary['scope']['allowed'] = {'spell:1001': True}
                 return run_formal(profile=Path('/memory/standard.simc'), character=character,
-                    capabilities=capabilities, reference=dict(dps=100., identity=dict(resource='runic_power')),
+                    capabilities=capabilities, reference=dict(dps=100., identity=dict(resource='runic_power'), action_summary=summary),
                     destination=Path('/memory/ga'), runtime=runtime, config=search_config,
                     condition_key=condition, store=store, simulation_config=ready['simulation_config'])
-            execute = training._evolution(store, capabilities, runtime, config) if runner is None else runner
+            default_execute = training._evolution(store, capabilities, runtime, config)
+            execute = default_execute if runner is None else runner
             return optimize(profile=Path('/memory/standard.simc'), character=character,
                 capabilities=capabilities, reference=dict(identity=dict(resource='runic_power')),
                 destination=Path('/memory/ga'), runtime=runtime, config=search_config,
@@ -326,7 +333,7 @@ def test_public_illegal_slot_uses_first_child_and_ten_persistent_extra_regenerat
             return super().randrange(*args)
     program = ([['outbreak'],dict(kind='WaitClicks',clicks=4095)] if overflow=='clicks'
                else [['scourge_strike']*12,['outbreak']])
-    case=memory_ga(programs=[program],settings=dict(mutation_probability=1.))
+    case=memory_ga(programs=[program],settings=dict(random_mutation_probability=1.))
     monkeypatch.setattr(population_training,'random',SimpleNamespace(Random=BoundaryRandom))
     for resume in (False,True):
         if resume: case.store.state=case.store.load_state(case.store.db)
@@ -506,7 +513,7 @@ def test_public_resume_verifies_coarse_before_breeding_and_keeps_temporary_read_
     import population_training
     import result_store
     from runtime import TaskCancelled
-    case=memory_ga(settings=dict(mutation_probability=1.))
+    case=memory_ga(settings=dict(random_mutation_probability=1.))
     def pause(**callbacks):
         for program in case.starts: callbacks['evaluate'](program,'search',0)
         raise TaskCancelled('pause before breeding')
@@ -597,7 +604,7 @@ def test_public_run_training_defaults_really_cross_and_mutate_without_global_rng
     class BoundaryRandom(real_random):
         _randbelow=real_random._randbelow
         def random(self): return .5
-    case=memory_ga(settings=dict(crossover_probability=.8,mutation_probability=.8))
+    case=memory_ga(settings=dict(crossover_probability=.8,random_mutation_probability=.8))
     monkeypatch.setattr(population_training,'random',SimpleNamespace(Random=BoundaryRandom))
     ga=case.run()
     coarse=[folder for folder,_,options in case.calls if options['iterations']==32]
@@ -615,9 +622,11 @@ def test_training_simple_policy_closes_children_and_publication(memory_ga):
     # 两技能、长度1～4，共30条。变异与交叉都实际执行，不用复制补起点。
     programs = [[[name] for name in order] for size in range(1,5)
                 for order in product(('outbreak','death_coil'), repeat=size)]
-    case = memory_ga(programs=programs, settings=dict(mutation_probability=1., crossover_probability=1.),
-                     search_settings={'syntax': SIMPLE})
+    case = memory_ga(programs=programs, settings=dict(random_mutation_probability=1., crossover_probability=1.),
+                     search_settings={'syntax': SIMPLE, 'diagnostic_logging': True})
     ga = case.run()
+    assert ga['breeding_counts']['random_triggered'] > 0
+    assert ga['breeding_counts']['random_changed'] > 0
     assert ga['generation'] >= 2
     for _, candidate, _ in case.calls:
         check_search_syntax(candidate['program'], SIMPLE)
@@ -662,55 +671,49 @@ def test_public_ga_timeline_switch_exports_existing_scores_without_extra_evaluat
     else: assert writes==[]
 
 
-def test_public_feedback_commits_at_twelve_and_replays_same_generation_rng(monkeypatch,memory_ga):
+def test_public_pending_generation_reuses_coarse_receipts_without_resampling(monkeypatch,memory_ga):
     from copy import deepcopy
     from itertools import islice,product
-    import population_training
+    import random
     from runtime import TaskCancelled
-    from search import digest
     programs=[[[name] for name in order] for order in islice(product(('outbreak','death_coil','scourge_strike'),repeat=4),70)]
-    case=memory_ga(programs=programs,settings=dict(mutation_probability=1.))
-    # Native scoring remains a report input; this probe concerns the existing
-    # bounded feedback checkpoint callback, not physical report publication.
+    case=memory_ga(programs=programs,formal=True,search_settings=dict(
+        target_mutation_probability=0., random_mutation_probability=1., crossover_probability=0.))
+    # Real SQLite checkpoints; compiler/report publication remain explicit IO inputs.
     real_stage,real_checkpoint=case.store.stage_report,case.store.checkpoint
-    real_mutate=population_training.mutate
-    mutations,checkpoints=[],[]
-    mode=1
+    checkpoints=[]
     def staged(key,row,stored,**kwargs):
         real_stage(key,row,stored,**kwargs)
-        if row['request']['purpose']=='feedback': case.store.report_buffer.append((key,row,{}))
+        if case.store.state['ga']['pending'] is not None:
+            case.store.report_buffer.append((key,row,{}))
     def checkpoint():
         size=len(case.store.report_buffer)
-        feedback=sum(options['iterations']==2 for _,_,options in case.calls)
-        pending=case.store.state['ga']['pending'] is not None
-        if feedback and case.store.state['ga']['phase']=='breed': checkpoints.append((size,feedback,pending))
         case.store.report_buffer.clear()  # Explicit report publisher IO boundary.
         real_checkpoint()
-        if feedback and case.store.state['ga']['phase']=='breed' and (mode==1 or pending):
+        if size:
+            checkpoints.append(size)
             raise TaskCancelled('checkpoint interruption')
-    def mutation(program,capabilities,rng,**kwargs):
-        before=digest(rng.getstate())
-        result=real_mutate(program,capabilities,rng,**kwargs)
-        mutations.append((deepcopy(list(program)),before,deepcopy(result),digest(rng.getstate())))
-        return result
     monkeypatch.setattr(case.store,'stage_report',staged)
     monkeypatch.setattr(case.store,'checkpoint',checkpoint)
-    monkeypatch.setattr(population_training,'mutate',mutation)
     with pytest.raises(TaskCancelled): case.run()
-    assert checkpoints[0]==(12,12,False) and max(row[0] for row in checkpoints)<=12
+    assert checkpoints == [12]
     paused=case.store.load_state(case.store.db)['ga']
-    assert paused['generation']==0 and paused['pending'] is None
-    first=deepcopy(mutations)
-    mutations.clear()
+    frozen=deepcopy(paused['pending'])
+    assert paused['generation']==0 and len(frozen['programs'])==70
     case.store.state=case.store.load_state(case.store.db)
-    mode=2
+    base_random = random.Random
+    class NoResampling(base_random):
+        _randbelow=base_random._randbelow
+        def random(self):
+            raise AssertionError('恢复已冻结子代时不得重抽繁殖概率')
+    monkeypatch.setattr(random,'Random',NoResampling)
     with pytest.raises(TaskCancelled): case.run()
-    assert mutations[:len(first)]==first
-    feedback=[folder for folder,_,options in case.calls if options['iterations']==2]
-    assert len(feedback)==len(set(feedback))>12
-    assert max(row[0] for row in checkpoints)<=12
     resumed=case.store.load_state(case.store.db)['ga']
-    assert resumed['generation']==0 and len(resumed['pending']['programs'])==70
+    assert resumed['generation']==0 and resumed['pending']==frozen
+    assert checkpoints==[12,12]
+    folders=[folder for folder,_,options in case.calls]
+    assert len(folders)==len(set(folders))
+    assert all(options['iterations']!=2 for _,_,options in case.calls)
 
 
 def test_formal_resume_can_switch_observation_detail_without_changing_computation(memory_ga):
@@ -731,6 +734,27 @@ def test_formal_resume_can_switch_observation_detail_without_changing_computatio
     assert case.store.state['formal_search'] == frozen
     assert case.store.state['search_observability']['details']
     assert case.store.state['search_observability']['summary']['mutation_attempts'] > history['summary']['mutation_attempts']
+
+
+def test_formal_invalid_child_has_same_outcome_with_observation_on_and_off(monkeypatch, memory_ga):
+    import population_training
+    from copy import deepcopy
+    outcomes = []
+    for enabled in (False, True):
+        case = memory_ga(formal=True, programs=[[['outbreak'], ['death_coil']], [['scourge_strike']]],
+            search_settings=dict(target_mutation_probability=0., random_mutation_probability=1.,
+                crossover_probability=1., diagnostic_logging=enabled, search_observability='full'))
+        calls = 0
+        def temporary_invalid(program, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return [['missing_action']] if calls == 1 else deepcopy(list(program))
+        monkeypatch.setattr(population_training, 'mutate', temporary_invalid)
+        result = case.run()
+        outcomes.append((result['candidate'], result['search_result'],
+            [(candidate['program'], options['seed'], options['iterations']) for _,candidate,options in case.calls],
+            case.store.state['ga']['rng']))
+    assert outcomes[0] == outcomes[1]
 
 
 def test_formal_master_off_retains_expected_detail_without_collecting_new_logs(memory_ga):

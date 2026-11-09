@@ -386,8 +386,31 @@ def _resource_cost_row(original, *, restore):
     return row
 
 
+def _action_summary_report(report, *, restore=False):
+    """变长按钮映射作为已有报告内的小段JSON文本保存，避免分组列合并补空值。"""
+    players = []
+    for original in report['sim']['players']:
+        player = dict(original)
+        summary = player.get('sim2gse_action_summary')
+        if summary is not None:
+            if restore and isinstance(summary, str):
+                from action_summary import checked
+                try:
+                    decoded = json.loads(summary)
+                    player['sim2gse_action_summary'] = checked(decoded, decoded.get('samples'))
+                except (ValueError, TypeError, AttributeError) as error:
+                    raise InvalidRecordError('报告成功摘要存储损坏') from error
+            elif not restore and isinstance(summary, dict):
+                player['sim2gse_action_summary'] = json.dumps(summary, ensure_ascii=False,
+                    sort_keys=True, separators=(',', ':'), allow_nan=False)
+        elif restore:
+            player.pop('sim2gse_action_summary', None)  # Historical report without the field.
+        players.append(player)
+    return dict(report, sim=dict(report['sim'], players=players))
+
+
 def _restore_batch(row):
-    return dict(row, report=_state_value_report(row['report'], restore=True)) if isinstance(row.get('report'), dict) else row
+    return dict(row, report=_action_summary_report(_state_value_report(row['report'], restore=True), restore=True)) if isinstance(row.get('report'), dict) else row
 
 
 def write_batch(key: str, row: dict, *, diagnostic_logging=False, runtime=None) -> int:
@@ -424,7 +447,7 @@ def prepare_batch(row: dict, *, diagnostic_logging=False, runtime=None) -> dict:
                         if name not in {'action_sequence', 'action_sequence_precombat'}})
                        for player in report['sim']['players']]
             row = dict(row, report=dict(report, sim=dict(report['sim'], players=players)))
-        return dict(row, report=_report_columns(_state_value_report(row['report'])))
+        return dict(row, report=_report_columns(_state_value_report(_action_summary_report(row['report']))))
     finally:
         if logging:
             diagnostic_finish(runtime, 'report.prepare', started, rows=1)

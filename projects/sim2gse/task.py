@@ -422,7 +422,8 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
             batch_keys.add(data_key)
     search_metric_names = ('batch_requests', 'batch_cache_hits', 'native_batch_starts',
                            'canonicalized_duplicates', 'configuration_key',
-                           'effective_population_size', 'coarse_rejections', 'last_fallbacks')
+                           'effective_population_size', 'coarse_rejections', 'last_fallbacks',
+                           'breeding', 'breeding_statistics')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
     initialization = result.get('rule_initialization') or (state or {}).get('rule_initialization')
     if initialization:
@@ -638,7 +639,8 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
     candidate = compile_program(gse_program or from_action_blocks(select(capabilities, program)),
                                 destination / 'export', identity=native['identity'], runtime=runtime,
                                 capabilities=capabilities, context=gse_context)
-    burst_options = (dict(input_sources=input_sources, burst_candidate=burst_candidate)
+    burst_options = (dict(input_sources=input_sources, burst_candidate=burst_candidate,
+                          burst_plan=definition['plan'])
                      if burst_candidate is not None else {})
     controlled = evaluate(destination / "input.simc", candidate, destination / "controlled", character=character,
                           input_times=times, runtime=runtime,
@@ -1447,7 +1449,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 try:
                     native = reference(destination/'input.simc', destination/'reference', character, runtime=runtime,
                                        iterations=config['iterations'], seed=config['random_seed'],
-                                       simulation_config=simulation_config)
+                                       simulation_config=simulation_config,
+                                       summary_excluded_spell_ids=definition['excluded_spell_ids'] if definition else ())
                 finally:
                     if not config['diagnostic_logging']:
                         from engine import discard_diagnostic_files
@@ -1929,6 +1932,11 @@ def _read_resume_checkpoint(output_root):
 def _require_current_formal_resume(state):
     if not isinstance(state, dict) or type(state.get('formal_search_version')) is not int or state['formal_search_version'] != 1:
         raise TaskError('旧正式任务恢复契约已退役，身份不兼容；原完整成果仍可读取，请创建新任务')
+    frozen = state.get('formal_search')
+    if frozen is not None:
+        from formal_search import VERSION
+        if not isinstance(frozen, dict) or type(frozen.get('version')) is not int or frozen['version'] != VERSION:
+            raise TaskError('旧正式繁殖版本不能续跑；完整成果仍可读取，请创建新任务')
     intent = state.get('formal_champion_publication_intent')
     if intent:
         record = intent.get('record', {}) if isinstance(intent, dict) else {}
@@ -1942,6 +1950,9 @@ def _require_current_formal_resume(state):
         reject_removed_search_settings(state.get('config') or {})
     except ValueError as error:
         raise TaskError('旧搜索能力已移除，身份不兼容，请创建新任务: ' + str(error)) from error
+    if not all(key in (state.get('config') or {}) for key in
+            ('target_mutation_probability', 'random_mutation_probability', 'crossover_probability')):
+        raise TaskError('旧正式繁殖配置已退役，身份不兼容；原完整成果仅可查看，请创建新任务')
     from simulation_config import verify_syntax_receipt
     try:
         verify_syntax_receipt(state.get('syntax'), (state.get('config') or {}).get('syntax'))
@@ -2243,7 +2254,7 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         from formal_search import contract_for
         frozen = search['formal_search']
         if (not isinstance(frozen, dict) or type(frozen.get('version')) is not int
-                or frozen.get('version') not in (1, 2)
+                or frozen.get('version') not in (1, 2, 3)
                 or frozen != contract_for(decode(saved['config']), version=frozen.get('version'))):
             raise TaskError('正式遗传搜索成果版本或冻结评分契约不符，不能按新语义读取')
     if pointer.get('formal_champion_publication'):

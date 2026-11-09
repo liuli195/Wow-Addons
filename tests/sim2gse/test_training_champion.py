@@ -8,9 +8,9 @@ from test_burst import reviewed_fixture
 @pytest.fixture
 def unchanged_offspring(monkeypatch):
     """曲线开关对照固定子代，只比较观测开关而不引入随机差异。"""
-    import population_training
-    monkeypatch.setattr(population_training, '_cross', lambda *args, **kwargs: False)
-    monkeypatch.setattr(population_training, 'mutate', lambda program, *args, **kwargs: deepcopy(list(program)))
+    from search import DEFAULT_CONFIG
+    for key in ('target_mutation_probability','random_mutation_probability','crossover_probability'):
+        monkeypatch.setitem(DEFAULT_CONFIG,key,0.)
     yield
 
 

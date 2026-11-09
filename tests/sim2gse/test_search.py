@@ -258,12 +258,16 @@ def _fast_capabilities():
 
 
 def _fast_reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912,
-                    simulation_config=None, import_spell_ids=(), import_spell_names=()):
+                    simulation_config=None, import_spell_ids=(), import_spell_names=(), summary_excluded_spell_ids=()):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / "native.json").write_text(json.dumps(_fast_report(character, 100.0, max(1, iterations-1))),
-                                         encoding="utf-8")
-    return dict(static_snapshot=static_snapshot(), dps=100.0, metric="dps", personal_dps=100.0, samples=max(1, iterations-1), seconds=180,
+    report = _fast_report(character, 100.0, max(1, iterations-1))
+    summary = report['sim']['players'][0]['sim2gse_action_summary']
+    summary['successes'] = {'spell:1001': max(1, iterations-1)}
+    summary['scope']['allowed'] = {'spell:1001': True}
+    summary['scope']['excluded'] = {f'spell:{i}': True for i in summary_excluded_spell_ids}
+    (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")
+    return dict(action_summary=summary, static_snapshot=static_snapshot(), dps=100.0, metric="dps", personal_dps=100.0, samples=max(1, iterations-1), seconds=180,
                 identity=dict(class_id=6, spec_id=252, spec=character.spec, race=character.race,
                               role=character.fields.get("role", "attack"), resource="runic_power"),
                 action_sequence=[{"name": "use_item,slot=trinket1", "queue_failed": False}],
@@ -292,6 +296,8 @@ def _fast_report(character, score, samples):
         "role": character.fields.get('role', 'attack'),
         "sim2gse_spec_id": character.spec_id or 252, "race": character.race,
         "talents": character.fields["talents"], "sim2gse_resource": "runic_power",
+        "sim2gse_action_summary": dict(scope=dict(allowed={}, excluded={}, windows='', policy='@apl', controlled=False), version=1, samples=samples, duration_ms=samples * 180000,
+                                       successes={}, pairs={}, outgoing={}),
         "gear": {{'shoulder': 'shoulders', 'wrist': 'wrists'}.get(slot, slot):
                  {'encoded_item': item.raw} for slot, item in character.equipment.items()},
         "collected_data": {"dps": {"mean": score, "count": samples, "variance": 0}, "fight_length": {"mean": 180},
@@ -305,7 +311,7 @@ def _fast_report(character, score, samples):
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                    seed=20260912, trace=True, mode="controlled", input_times=None,
                    runtime=None, score_offset=0, simulation_config=None, reset_events=None,
-                   on_native_start=None, score=None, rule_observation_request=None, allow_zero=False):
+                   on_native_start=None, score=None, rule_observation_request=None, allow_zero=False, burst_plan=None):
     """构造稳定报告，保留 search.optimize 的选择、缓存和发布逻辑。"""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -499,7 +505,7 @@ class SearchAndValidationTests(TestCase):
         def score(candidate,options):
             blocks=[[row['simc_action'] for row in block] for block in candidate['blocks']]
             return (200. if blocks==preferred else 100.) if options['iterations']==32 else (50. if blocks==preferred else 150.)
-        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,target_mutation_probability=0.,random_mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=[preferred,[['death_coil']]],score_for=score)
             result=case.run()
         preferred_key=canonicalize_search_program(preferred,case.capabilities)['identity']
@@ -534,7 +540,7 @@ class SearchAndValidationTests(TestCase):
                 return 100.
             finally:
                 with lock: active-=1
-        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,target_mutation_probability=0.,random_mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=starts,score_for=score,search_settings=dict(max_processes=2))
             result=case.run()
         self.assertEqual(result['status'],'completed')
@@ -554,7 +560,7 @@ class SearchAndValidationTests(TestCase):
                 interrupted[0]=True
                 cancel.set()
             return 100.
-        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,target_mutation_probability=0.,random_mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=[[['outbreak']],[['death_coil']]],score_for=score)
             with self.assertRaises(TaskCancelled):
                 case.run(runtime=TaskRuntime(float('inf'),cancel_event=cancel))
@@ -587,7 +593,7 @@ class SearchAndValidationTests(TestCase):
         action='use_item,slot=trinket1'
         equivalents=[[dict(kind='Loop',count=2,blocks=[[action]])],[[action],[action]]]
         compiles=[]
-        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,target_mutation_probability=0.,random_mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=equivalents)
             starts,_=freeze_starts(case.starts,case.capabilities,TaskRuntime(float('inf')))
             case.store.state['starts']=starts
@@ -657,7 +663,7 @@ class SearchAndValidationTests(TestCase):
     def test_resume_rejects_checkpoint_from_an_old_behavior_identity_version(self):
         from copy import deepcopy
         from search import DEFAULT_CONFIG as FORMAL_DEFAULTS
-        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,target_mutation_probability=0.,random_mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=[[['outbreak']],[['death_coil']]])
             result=case.run()
             before=deepcopy(result['search_result'])
@@ -681,7 +687,7 @@ class SearchAndValidationTests(TestCase):
             if search_program==[['outbreak']]:
                 result['form']=dict(result['form'],clicks=[['death_coil']])
             return result
-        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,target_mutation_probability=0.,random_mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=[[['outbreak']],[['death_coil']]])
             with patch.object(program,'canonicalize_search_program',side_effect=wrong_form):
                 with self.assertRaisesRegex(CandidateError,'标准形式与编译计划不一致'):
@@ -852,7 +858,7 @@ class SearchAndValidationTests(TestCase):
         from runtime import TaskRuntime
         from search import DEFAULT_CONFIG as FORMAL_DEFAULTS
         starts=[[['outbreak']],[['death_coil']]]
-        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,mutation_probability=0.):
+        with patch.dict(FORMAL_DEFAULTS,crossover_probability=0.,target_mutation_probability=0.,random_mutation_probability=0.):
             case=self.memory_ga(formal=True,programs=starts+[starts[0],[['missing_action']]])
             frozen,decisions=freeze_starts(case.starts,case.capabilities,TaskRuntime(float('inf')))
             case.store.state.update(starts=frozen,start_adaptations=decisions)
@@ -873,3 +879,78 @@ if __name__ == "__main__":
     import unittest
 
     unittest.main()
+
+
+
+@pytest.mark.parametrize('targets, scene', [(1,'single_target'), (5,'aoe')])
+def test_public_formal_task_uses_current_reference_and_independent_breeding(public_formal_memory, targets, scene):
+    case = public_formal_memory
+    result = run_task('/memory/role.simc', '/memory/formal',
+        simulation_config=dict(target_count=targets,scene=scene),
+        search_config=dict(target_mutation_probability=.8,random_mutation_probability=.3,crossover_probability=.3))
+    assert result['status'] == 'completed'
+    assert result['search']['formal_search']['version'] == 3
+    assert case.store.state['ga']['breeding']['order'] == ['target','random','crossover']
+    assert case.store.state['breeding_reference'] == result['native_reference']['action_summary']
+    assert case.store.state['simulation_config']['target_count'] == targets
+    assert set(result['final']['scenarios']) == {'nominal'}
+    assert result['candidate']['text'] == 'verified compiler fixture'
+    assert result['candidate']['program'] == case.store.state['formal_winner']['candidate']['program']
+    assert result['candidate']['simulation'] == 'passed_native_model'
+    assert all(options['iterations'] != 2 for _,_,options in case.calls)
+
+
+@pytest.mark.parametrize('version', [1, 2])
+def test_public_formal_resume_rejects_old_breeding_without_rescoring(monkeypatch, public_formal_memory, version):
+    from copy import deepcopy
+    import sequence, task
+    from runtime import TaskCancelled
+    monkeypatch.setattr(sequence, 'evaluate', lambda *a, **k: (_ for _ in ()).throw(TaskCancelled('pause')))
+    result = run_task('/memory/role.simc', '/memory/formal',
+        simulation_config=dict(target_count=1, scene='single_target'))
+    assert result['status'] == 'cancelled'
+    case = public_formal_memory
+    case.store.state['formal_search']['version'] = version
+    before = deepcopy(case.store.state)
+    monkeypatch.setattr(task, '_read_resume_checkpoint', lambda *a: deepcopy(before))
+    with pytest.raises(ValueError, match='旧正式繁殖版本'):
+        task.resume_task('/memory/formal')
+    assert case.store.state == before and not case.calls
+
+
+def test_public_formal_history_explains_each_current_crossover_input(public_formal_memory):
+    import task
+    result = run_task('/memory/role.simc', '/memory/formal',
+        simulation_config=dict(target_count=1, scene='single_target'),
+        search_config=dict(target_mutation_probability=1., random_mutation_probability=1.,
+            crossover_probability=1., diagnostic_logging=True, search_observability='full'))
+    events = result['search']['observability']['details']
+    crosses = [row for row in events if row.get('sampled_mutation') == 'crossover']
+    assert crosses
+    for row in crosses:
+        before, partner, after = row['parent_program'], row['partner_program'], row['child_program']
+        cut = row['crossover_cut']
+        if row['actual_mutation'] == 'crossover':
+            assert after == before[:cut] + partner[cut:]
+        else:
+            assert after == before
+    assert any(row.get('sampled_mutation') == 'target' and 'parent_program' in row for row in events)
+    reread = task.read_task('/memory/formal')
+    assert reread['search']['breeding'] == result['search']['breeding']
+    assert reread['search']['breeding_statistics'] == result['search']['breeding_statistics']
+
+
+def test_public_formal_observation_keeps_illegal_child_regeneration(monkeypatch, public_formal_memory):
+    import population_training
+    calls = 0
+    def temporary_invalid(program, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return [['missing_action']] if calls == 1 else list(program)
+    monkeypatch.setattr(population_training, 'mutate', temporary_invalid)
+    result = run_task('/memory/role.simc', '/memory/formal',
+        simulation_config=dict(target_count=1, scene='single_target'),
+        search_config=dict(target_mutation_probability=0., random_mutation_probability=1.,
+            crossover_probability=1., diagnostic_logging=True, search_observability='full'))
+    assert result['status'] == 'completed' and calls > 1
+    assert any(row.get('illegal_reason') for row in result['search']['observability']['details'])

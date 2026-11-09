@@ -1,0 +1,63 @@
+--- a/engine/action/action.cpp
++++ b/engine/action/action.cpp
+@@ -4,6 +4,7 @@
+ // ==========================================================================
+ 
+ #include "action/action.hpp"
++#include "sim2gse/catalogue.hpp"
+ 
+ #include "action/action_state.hpp"
+ #include "action/dot.hpp"
+@@ -1927,6 +1928,8 @@
+   if ( !dual && ( !player->first_cast || !harmful ) )
+     stats->add_execute( time_to_execute, target );
+ 
++  sim2gse::summary_success(*this);
++
+   if ( pre_execute_state )
+     action_state_t::release( pre_execute_state );
+ 
+--- a/engine/player/player.cpp
++++ b/engine/player/player.cpp
+@@ -6138,6 +6138,7 @@
+ 
+ void player_t::combat_begin()
+ {
++  sim2gse::summary_begin(*this);
+   if ( !precombat_initialized )
+     precombat_init();
+ 
+@@ -6302,6 +6303,7 @@
+  */
+ void player_t::datacollection_end()
+ {
++  sim2gse::summary_end(*this);
+   // This checks if the actor was arisen at least once during this iteration.
+   if ( !requires_data_collection() )
+     return;
+@@ -10070,6 +10072,7 @@
+     // Enable to report use_item ability
+     // if ( ! dual ) stats -> add_execute( time_to_execute );
+ 
++    if (triggered) sim2gse::summary_success(*this);
+     update_ready();
+ 
+     // Start the shared cooldown
+@@ -13252,6 +13254,7 @@
+   add_option( opt_bool( "enable_spell_queue", enable_spell_queue ) );
+   add_option( opt_timespan( "spell_queue_window", spell_queue_window ) );
+   add_option( opt_bool( "scale_player", scale_player ) );
++  sim2gse::summary_options(*this);
+   add_option( opt_func( "spec", parse_specialization ) );
+   add_option( opt_func( "specialization", parse_specialization ) );
+   add_option( opt_func( "stat_timelines", parse_stat_timelines ) );
+--- a/engine/class_modules/sc_death_knight.cpp
++++ b/engine/class_modules/sc_death_knight.cpp
+@@ -7775,6 +7775,7 @@
+   void execute() override
+   {
+     player->main_hand_attack->schedule_execute();
++    sim2gse::summary_success(*this);
+     if ( player->off_hand_attack )
+     {
+       player->off_hand_attack->schedule_execute();

@@ -129,7 +129,10 @@ def prepare_loop(native, character, folder, runtime, *, definition=None, interva
     from dataclasses import replace
     folder = Path(folder)
     all_capabilities = inspect(native, folder / 'capabilities')
+    from action_summary import scoped
     if definition is None:
+        if 'action_summary' in native:
+            native['action_summary'] = scoped(native['action_summary'], all_capabilities)
         return all_capabilities, all_capabilities, None
     from burst import compile_context, input_times, search_capabilities
     character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
@@ -138,7 +141,10 @@ def prepare_loop(native, character, folder, runtime, *, definition=None, interva
     context = compile_context(definition, character, all_capabilities, native['identity'],
                               folder / 'burst-export', runtime, interval_ms=interval_ms)
     context['interval_ms'] = interval_ms
-    return all_capabilities, search_capabilities(all_capabilities, context['candidate']['blocks']), context
+    capabilities = search_capabilities(all_capabilities, context['candidate']['blocks'])
+    if 'action_summary' in native:
+        native['action_summary'] = scoped(native['action_summary'], capabilities)
+    return all_capabilities, capabilities, context
 
 
 def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_seconds=30,
@@ -436,11 +442,15 @@ def _profile_with_import_queries(profile, folder, spell_ids, spell_names=()):
 
 
 def reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912,
-              simulation_config=None, import_spell_ids=(), import_spell_names=()):
+              simulation_config=None, import_spell_ids=(), import_spell_names=(), summary_excluded_spell_ids=()):
     folder = Path(folder)
     runtime = runtime or TaskRuntime()
     probe_profile = _profile_with_import_queries(profile, folder, import_spell_ids, import_spell_names)
+    if any(type(i) is not int or i <= 0 for i in summary_excluded_spell_ids):
+        raise ValueError('成功摘要爆发排除身份无效')
     run(profile, folder, options=[f'iterations={iterations}', f'seed={seed}',
+        'sim2gse_summary_buttons=@apl',
+        'sim2gse_summary_exclude=' + '/'.join(f'spell:{i}' for i in sorted(set(summary_excluded_spell_ids))),
         'json2=native.pending.json'], runtime=runtime, simulation_config=simulation_config)
     try:
         report = json.loads((folder / 'native.pending.json').read_text(encoding='utf-8'))
@@ -451,8 +461,12 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
         raise ValueError('原生未提供此角色的伤害模拟：' + messages)
     result = dict(check_report(report, character, iterations, simulation_config=simulation_config),
                   mode='native_free_selection')
-    replace_file(folder / 'native.pending.json', folder / 'native.json')
     player = player_report(report, character)
+    from action_summary import checked
+    result['action_summary'] = checked(player.get('sim2gse_action_summary'), result['samples'],
+        expected_scope=dict(policy='@apl', controlled=False, windows='',
+                            excluded={f'spell:{i}': True for i in summary_excluded_spell_ids}))
+    replace_file(folder / 'native.pending.json', folder / 'native.json')
     result['action_sequence'] = player['collected_data'].get('action_sequence', [])
     result['precombat_sequence'] = player['collected_data'].get('action_sequence_precombat', [])
     result['static_snapshot'] = player.get('sim2gse_static_snapshot')

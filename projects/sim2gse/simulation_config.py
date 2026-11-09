@@ -118,7 +118,7 @@ def load_config(path: str | Path | BinaryIO | TextIO | None = None) -> dict:
 
 TRAINING_DEFAULTS = dict(max_processes=5, max_trainings=4, coarse_iterations=32,
     retest_batches=3, retest_iterations=128, stagnation_generations=2, top_k=8,
-    tournament_size=3, crossover_probability=0.8, mutation_probability=0.8)
+    tournament_size=3, crossover_probability=0.3, target_mutation_probability=0.8, random_mutation_probability=0.3)
 
 
 def load_training_config(path: str | Path | BinaryIO | TextIO | None = None, *, max_processes=None, max_trainings=None,
@@ -126,12 +126,15 @@ def load_training_config(path: str | Path | BinaryIO | TextIO | None = None, *, 
     """启动读取的GA白名单；普通搜索的资源和采样上限不变。"""
     import math
     section = (_load_document(path) if _document is None else _document).get("training", {})
+    if isinstance(section, dict) and 'mutation_probability' in section:
+        raise ValueError('训练mutation_probability已退役，请改用target_mutation_probability和random_mutation_probability')
     if not isinstance(section, dict) or set(section) - set(TRAINING_DEFAULTS):
         raise ValueError("[training] 包含未知GA配置")
     values = dict(TRAINING_DEFAULTS, **section)
     values.update({key: value for key, value in dict(max_processes=max_processes,
         max_trainings=max_trainings).items() if value is not None})
-    for key in set(values) - {'crossover_probability', 'mutation_probability'}:
+    probabilities = {'crossover_probability', 'target_mutation_probability', 'random_mutation_probability'}
+    for key in set(values) - probabilities:
         if type(values[key]) is not int or values[key] < 1:
             raise ValueError('训练配置必须为正整数: ' + key)
     if values['max_processes'] > 16 or values['max_trainings'] > 10:
@@ -140,7 +143,7 @@ def load_training_config(path: str | Path | BinaryIO | TextIO | None = None, *, 
         raise ValueError('训练并发与评分并发乘积不得超过20')
     if values['top_k'] < 4:
         raise ValueError('训练top_k必须至少为4')
-    for key in ('crossover_probability', 'mutation_probability'):
+    for key in sorted(probabilities):
         value = values[key]
         if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
             raise ValueError('训练概率必须为0至1的有限数: ' + key)
@@ -154,6 +157,8 @@ RETIRED_SEARCH_SETTINGS = ('total_budget_seconds', 'search_budget_seconds', 'can
 
 
 def reject_removed_search_settings(values):
+    if 'mutation_probability' in values:
+        raise ValueError('mutation_probability旧总变异概率已退役，请改用target_mutation_probability和random_mutation_probability')
     removed = set(REMOVED_SEARCH_SETTINGS) & set(values)
     if removed:
         raise ValueError('搜索能力及开关已移除，请删除旧配置: ' + ', '.join(sorted(removed)))
@@ -162,9 +167,13 @@ def reject_removed_search_settings(values):
         raise ValueError('旧正式搜索参数已退役，请删除旧配置: ' + ', '.join(sorted(retired)))
 
 
-FORMAL_ALGORITHM_DEFAULTS = dict(max_processes=5, coarse_iterations=32,
+# Only historical completed v2 receipts use these fixed values.
+FORMAL_V2_ALGORITHM_DEFAULTS = dict(max_processes=5, coarse_iterations=32,
     retest_batches=3, retest_iterations=128, stagnation_generations=8, top_k=8,
     tournament_size=3, crossover_probability=0.8, mutation_probability=0.8)
+FORMAL_ALGORITHM_DEFAULTS = dict(max_processes=5, coarse_iterations=32,
+    retest_batches=3, retest_iterations=128, stagnation_generations=8, top_k=8,
+    tournament_size=3, target_mutation_probability=0.8, random_mutation_probability=0.3, crossover_probability=0.3)
 SEARCH_RUNTIME_DEFAULTS = dict(iterations=128, random_seed=20260912, search_timeline=False,
     diagnostic_logging=False, diagnostics='summary', search_observability='full',
     input_interval_ms=300, reset_events=())
@@ -215,6 +224,8 @@ def load_training_search_config(path=None, *, syntax_config=SYNTAX_UNSET, _docum
         syntax_config = overrides.pop('syntax')
     syntax = load_syntax_config(syntax_config=syntax_config, document=document)
     reject_removed_search_settings(overrides)
+    if 'mutation_probability' in overrides:
+        raise ValueError('训练mutation_probability已退役，请改用训练区的target_mutation_probability和random_mutation_probability')
     unsupported = set(overrides) - {'search_timeline', 'diagnostic_logging', 'diagnostics',
                                     'search_observability', 'input_interval_ms', 'reset_events'}
     if unsupported:

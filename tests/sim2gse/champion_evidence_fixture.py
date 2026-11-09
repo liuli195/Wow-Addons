@@ -5,7 +5,7 @@ import json
 
 
 def formal_cohort(*, target_count=1, source_run_id='source-run', programs=None,
-                  condition='frozen-condition', config=None, search_version=2):
+                  condition='frozen-condition', config=None, search_version=None):
     """两名完整入围者、各三份128次请求和127有效样本的外部报告输入。"""
     from test_character_export import sample_profile
     from test_search import _fast_capabilities, _fast_report
@@ -15,12 +15,14 @@ def formal_cohort(*, target_count=1, source_run_id='source-run', programs=None,
     from simulation_config import config_for as simulation_config_for
     from task import parse_character
 
+    if search_version is None:
+        search_version = 3 if config is not None and 'target_mutation_probability' in config else 2
     character = replace(parse_character(sample_profile()), spec_id=252)
     state = dict(condition=condition, input_effective_sha256='frozen-character',
         capabilities=_fast_capabilities(), engines=dict(baseline='source-base', controlled='source-controlled'),
         simulation_config=simulation_config_for(dict(target_count=target_count,
             scene='single_target' if target_count == 1 else 'aoe')),
-        config=dict(config) if config is not None else config_for(dict(input_interval_ms=200)))
+        config=dict(config) if config is not None else config_for(dict(input_interval_ms=200), _historical_formal_v2=search_version == 2))
     contract = deepcopy(contract_for(state['config'], version=search_version))
     finalists, reports = [], []
     programs = programs or [[['outbreak']], [['death_coil']]]

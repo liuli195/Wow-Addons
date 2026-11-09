@@ -17,7 +17,7 @@ from sequence import evaluate
 from test_character_export import sample_profile
 
 
-@pytest.mark.parametrize('enabled,outcome', [(False, 'without_trace'), (True, 'with_trace'), (True, 'invalid_trace')])
+@pytest.mark.parametrize('enabled,outcome', [(False, 'without_trace'), (True, 'with_trace'), (True, 'invalid_trace'), (False, 'missing_positions'), (False, 'foreign_position')])
 def test_evaluation_timing_preserves_report_and_trace_contract(monkeypatch, enabled, outcome):
     import runtime
     import sequence
@@ -28,6 +28,13 @@ def test_evaluation_timing_preserves_report_and_trace_contract(monkeypatch, enab
     candidate = dict(blocks=[[dict(kind='spell', spell_id=77575, name='Outbreak', simc_action='outbreak')]],
                      compiled_steps=[dict(type='spell', spell=77575)])
     report = _fast_report(character, 100.0, 1)
+    report['sim']['players'][0]['sim2gse_action_summary']['scope'] = dict(
+        allowed={'spell:77575': True}, excluded={}, windows='', policy='spell:77575', controlled=True)
+    if outcome in ('missing_positions', 'foreign_position'):
+        summary = report['sim']['players'][0]['sim2gse_action_summary']
+        summary['successes'] = {'spell:77575': 2}
+        if outcome == 'foreign_position':
+            summary['positions'] = {'spell:77575@99': 2}
     trace = '\n'.join('S2GSE\t' + '\t'.join(map(str, [ms, event, 1, 0, action, 0, 0, 100,
             0, 1, signature, 0, -1, -1])) for ms, event, action, signature in [
                 (0, 'input', '-', '-'), (1, 'dispatch', 'outbreak', 'outbreak'),
@@ -47,6 +54,10 @@ def test_evaluation_timing_preserves_report_and_trace_contract(monkeypatch, enab
     monkeypatch.setattr(runtime.time, 'perf_counter', performance_clock)
     arguments = dict(character=character, iterations=2, input_times=[0],
                      trace=outcome != 'without_trace', runtime=task_runtime)
+    if outcome in ('missing_positions', 'foreign_position'):
+        with pytest.raises(ValueError, match='成功摘要'):
+            evaluate(source, candidate, Path('unused-result'), **arguments)
+        return
     if outcome == 'invalid_trace':
         with pytest.raises(ValueError, match='原生来源轨迹字段数量不一致'):
             evaluate(source, candidate, Path('unused-result'), **arguments)
@@ -89,12 +100,14 @@ class NativeTraceContractTests(unittest.TestCase):
                         if burst:
                             self.assertEqual(options['sim2gse_burst_offset'], str(loop))
                             self.assertEqual(options['sim2gse_sources'], 'loop/burst')
+                            self.assertEqual(options['sim2gse_summary_windows'], '300,600')
                         raise RuntimeError('native boundary reached')
                     with patch('sequence.run', side_effect=boundary), self.assertRaisesRegex(
                             RuntimeError, 'native boundary reached'):
                         evaluate(source, candidate(loop), root / f'{loop}-{burst}', character=character,
                             input_times=[0, 300], burst_candidate=candidate(burst) if burst else None,
-                            input_sources=['loop', 'burst'] if burst else None)
+                            input_sources=['loop', 'burst'] if burst else None,
+                            burst_plan=dict(start_ms=300, repeat_ms=180000, window_ms=300) if burst else None)
             for loop, burst in ((4097, 1), (1, 4097)):
                 with self.subTest(loop=loop, burst=burst), patch('sequence.run') as native:
                     with self.assertRaisesRegex(ValueError, '4096'):
@@ -117,7 +130,9 @@ class NativeTraceContractTests(unittest.TestCase):
             sim2gse_spec_id=252, sim2gse_class_id=6, sim2gse_spec='unholy', race=character.race,
             role='attack', sim2gse_resource='runic_power', talents=character.fields['talents'],
             gear={slot: dict(encoded_item=item.raw) for slot, item in character.equipment.items()},
-            collected_data=dict(dps=dict(mean=100., count=1), fight_length=dict(mean=180.)))
+            collected_data=dict(dps=dict(mean=100., count=1), fight_length=dict(mean=180.)),
+            sim2gse_action_summary=dict(scope=dict(allowed={'spell:47541': True, 'spell:63560': True}, excluded={}, windows='', policy='spell:47541/spell:63560', controlled=True), version=1, samples=1, duration_ms=180000,
+                successes={'spell:63560': 1}, pairs={}, outgoing={}, positions={'spell:63560@0': 1}))
         report = dict(sim=dict(players=[player], targets=[{}], options=dict(dbc=dict(
             Live=dict(build_level=69933, wow_version='12.1.0.69933'), version_used='Live'))))
         events = [

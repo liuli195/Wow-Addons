@@ -314,6 +314,7 @@ void finish_static_precombat_snapshot( player_t& p, const std::vector<const acti
 
 void write_player_report( js::JsonOutput root, const player_t& p, bool include_apl )
 {
+  summary_report(root, p);
   if ( !p.sim2gse_static_snapshot_json.empty() )
   {
     rapidjson::Document snapshot;

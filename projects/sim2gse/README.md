@@ -62,12 +62,19 @@ python projects/sim2gse/task.py curves --damage 任务目录 batch:已有批次�
 新配置明确拒绝11个旧正式搜索参数：`total_budget_seconds`、`search_budget_seconds`、`candidate_limit`、`round_candidate_limit`、`no_improvement_rounds`、`batch_targets`、`validation_batches`、`final_batches`、`final_iterations`、`trace_search`、`scenarios`，即使值为false也不接受。`iterations`仍控制自由选招参考评价，不控制GA粗评/复测；并发、随机种子、按键间隔、Reset事件及现有诊断/曲线设置继续生效。正式评分只用冻结正常场景，修饰键Reset仍要求与正常点击对齐；训练五场景不接受该修饰键事件。历史只读解码保留原字段，不能通过它启用旧搜索。
 
 
-正式 `[search]` 配置与 `[training]` 独立；新任务直接运行参数优先于文件，文件优先于内置默认，显式 `false` 不表示未提供。正式9项算法默认：`max_processes=5`、`coarse_iterations=32`、`retest_batches=3`、`retest_iterations=128`、`stagnation_generations=8`、`top_k=8`、`tournament_size=3`、`crossover_probability=0.8`、`mutation_probability=0.8`。正式并发不超过5。
+正式 `[search]` 配置与 `[training]` 独立；新任务直接运行参数优先于文件，文件优先于内置默认，显式 `false` 不表示未提供。正式10项算法默认：`max_processes=5`、`coarse_iterations=32`、`retest_batches=3`、`retest_iterations=128`、`stagnation_generations=8`、`top_k=8`、`tournament_size=3`、`target_mutation_probability=0.8`（目标变异概率）、`random_mutation_probability=0.3`（随机变异概率）、`crossover_probability=0.3`（交叉概率）。正式并发不超过5。
 
-另8项运行默认：`iterations=128`、`random_seed=20260912`、`search_timeline=false`、`diagnostic_logging=false`、`diagnostics="summary"`、`search_observability="full"`、`input_interval_ms=300`、`reset_events=[]`。17项均可写入 `[search]`。诊断模式是期望细分，日志总闸默认仍关闭、不实际采集；仅开启总闸才按期望细分记录，显式off或summary不升级。页面与双场内置间隔为200毫秒，单场为300；仅在文件和运行参数均未提供时采用内置值。页面明确选择优先于运行参数，随后是文件与内置默认。恢复观测仅本次明确选择覆盖，否则保留保存值（false也是明确选择）。算法参数在新任务创建时冻结，恢复不从当前文件热改计算设置。
+另8项运行默认：`iterations=128`、`random_seed=20260912`、`search_timeline=false`、`diagnostic_logging=false`、`diagnostics="summary"`、`search_observability="full"`、`input_interval_ms=300`、`reset_events=[]`。18项均可写入 `[search]`。诊断模式是期望细分，日志总闸默认仍关闭、不实际采集；仅开启总闸才按期望细分记录，显式off或summary不升级。页面与双场内置间隔为200毫秒，单场为300；仅在文件和运行参数均未提供时采用内置值。页面明确选择优先于运行参数，随后是文件与内置默认。恢复观测仅本次明确选择覆盖，否则保留保存值（false也是明确选择）。算法参数在新任务创建时冻结，恢复不从当前文件热改计算设置。
 
-训练10项默认和原有上限不变：评分并发不超过16，训练并发与评分并发乘积不超过20，默认4×5；训练仅沿用 `[search] search_timeline` 文件开关，不读取正式计算或其它观测字段。正式遗传成果的新内嵌契约为v2；已完成v1遗传成果及更旧搜索成果仍使用原常量和配置默认只读验真（旧搜索并发上限2），不会以新默认重释历史结果。
+训练11项计算参数保留原有上限：评分并发不超过16，训练并发与评分并发乘积不超过20，默认4×5；训练仅沿用 `[search] search_timeline` 文件开关，不读取正式计算或其它观测字段。正式遗传成果的新内嵌契约为v3；已完成v1/v2遗传成果及更旧搜索成果仍使用原常量和配置默认只读验真（旧搜索并发上限2），不会以新默认重释历史结果。
 
 训练公开 `run_training`／准备入口只接受实际支持的运行项：`input_interval_ms`、`reset_events`、`diagnostic_logging`、`diagnostics`（`off`／`summary`）、`search_observability="off"` 和 `search_timeline`。爆发／非爆发内置间隔仍为200／300毫秒，明确间隔直接生效。新训练未显式开启日志则关闭；仅开启总闸时默认基础摘要，明确 `diagnostics="off"` 不被提升。CLI（命令行）`run`／`prepare` 使用 `--diagnostic-logging`／`--no-diagnostic-logging` 明确选择；同一次调用不可同时通过专用 `diagnostic_logging` 参数和 `search_config` 指定总闸（即使相同也报错）。完整事件与非off过程观测不支持，计算前明确拒绝。
 
-训练不接受 `search_config` 中的 `iterations`、`random_seed`、`max_processes` 或正式算法参数：准备参考固定100次，训练随机种子来自原组清单生成机制，训练并发只能走专用参数／`[training]`。运行明确值优先于训练文件，再取训练内置默认；文件只兼容既有共享曲线，不新增日志文件来源。恢复沿原清单的计算、种子、按键间隔、Reset及训练十项；本次明确计算值与原清单冲突则拒绝，合法的新文件计算值只影响新任务。恢复观测只覆盖本次明确项，否则沿最新可靠检查点的观测值（尚无检查点配置时回退原清单），不会在多次恢复时跳回初始观测；仅重新开启总闸不会将保存的 `diagnostics="off"` 提升成摘要，需明确指定 `summary`。非法当前配置文件仍明确报错，不作坏文件恢复。
+训练不接受 `search_config` 中的 `iterations`、`random_seed`、`max_processes` 或正式算法参数：准备参考固定100次，训练随机种子来自原组清单生成机制，训练并发只能走专用参数／`[training]`。运行明确值优先于训练文件，再取训练内置默认；文件只兼容既有共享曲线，不新增日志文件来源。恢复沿原清单的计算、种子、按键间隔、Reset及训练计算参数；本次明确计算值与原清单冲突则拒绝，合法的新文件计算值只影响新任务。恢复观测只覆盖本次明确项，否则沿最新可靠检查点的观测值（尚无检查点配置时回退原清单），不会在多次恢复时跳回初始观测；仅重新开启总闸不会将保存的 `diagnostics="off"` 提升成摘要，需明确指定 `summary`。非法当前配置文件仍明确报错，不作坏文件恢复。
+
+
+训练和正式搜索分别在原同一配置文件的 `[training]`（训练段）及 `[search]`（正式搜索段）设置三概率，默认均为目标80%、随机30%、交叉30%。每条子代先独立抽目标，再独立抽随机；最后每对独立抽交叉，奇数末条不交叉。每项须为0至1的有限数，布尔值无效；不要求合计为1。页面填写百分数并优先使用页面选择，继续未完任务仍沿用原概率。旧 `mutation_probability`（总变异概率）已退役，显式0、false或0.8均报错，不隐式换算。
+
+目标变异比较同角色、英雄天赋及目标数参考的真实成功频率和相邻成功关系，提出一次增加、删除、替换、移动或交换。已有技能频率不足时，两种都合法便各50%选择增加一处或移动一处；不按尝试成功率分流。频率与顺序各提一项，有相同编辑合并证据，不同编辑等机会选一项，没有可靠建议则跳过。三步中间不额外评分，仍以完成后的原伤害评分排名。训练的五场景四代表、正式正常复测及独立爆发导出保留，四项复杂语法仍由原配置控制。
+
+必要成功摘要和正在处理的恢复凭据始终保存；完整父子过程仅在正式搜索原观测范围内采集，训练不新增完整过程历史。旧完整结果按冻结版本只读验真；旧未完繁殖任务不能套新概率继续计算，请创建新任务。
