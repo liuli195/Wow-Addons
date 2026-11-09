@@ -89,12 +89,14 @@ class NativeTraceContractTests(unittest.TestCase):
                         if burst:
                             self.assertEqual(options['sim2gse_burst_offset'], str(loop))
                             self.assertEqual(options['sim2gse_sources'], 'loop/burst')
+                            self.assertEqual(options['sim2gse_summary_windows'], '300,600')
                         raise RuntimeError('native boundary reached')
                     with patch('sequence.run', side_effect=boundary), self.assertRaisesRegex(
                             RuntimeError, 'native boundary reached'):
                         evaluate(source, candidate(loop), root / f'{loop}-{burst}', character=character,
                             input_times=[0, 300], burst_candidate=candidate(burst) if burst else None,
-                            input_sources=['loop', 'burst'] if burst else None)
+                            input_sources=['loop', 'burst'] if burst else None,
+                            burst_plan=dict(start_ms=300, repeat_ms=180000, window_ms=300) if burst else None)
             for loop, burst in ((4097, 1), (1, 4097)):
                 with self.subTest(loop=loop, burst=burst), patch('sequence.run') as native:
                     with self.assertRaisesRegex(ValueError, '4096'):
@@ -117,7 +119,9 @@ class NativeTraceContractTests(unittest.TestCase):
             sim2gse_spec_id=252, sim2gse_class_id=6, sim2gse_spec='unholy', race=character.race,
             role='attack', sim2gse_resource='runic_power', talents=character.fields['talents'],
             gear={slot: dict(encoded_item=item.raw) for slot, item in character.equipment.items()},
-            collected_data=dict(dps=dict(mean=100., count=1), fight_length=dict(mean=180.)))
+            collected_data=dict(dps=dict(mean=100., count=1), fight_length=dict(mean=180.)),
+            sim2gse_action_summary=dict(scope=dict(allowed={'spell:63560': True}, excluded={}, windows='', policy='@apl', controlled=False), version=1, samples=1, duration_ms=180000,
+                successes={'spell:63560': 1}, pairs={}, outgoing={}))
         report = dict(sim=dict(players=[player], targets=[{}], options=dict(dbc=dict(
             Live=dict(build_level=69933, wow_version='12.1.0.69933'), version_used='Live'))))
         events = [

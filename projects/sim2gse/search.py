@@ -857,7 +857,7 @@ def _restore_checkpoint_diagnostics(state):
 
 
 def _validate_saved_batch(saved, key, cached, character, index, scenario, simulation_config):
-    from engine import check_report
+    from engine import check_report, player_report
     request = cached['request']
     report = saved['report'] if saved is not None else None
     identities = dict(batch_key=key, condition_key=request['condition'],
@@ -879,6 +879,13 @@ def _validate_saved_batch(saved, key, cached, character, index, scenario, simula
         raise ValueError('缓存诊断来源批次身份不符')
     summary = check_report(report, character, request['iterations'], simulation_config=simulation_config,
                            **(dict(allow_zero=True) if request.get('allow_zero') else {}))
+    if ('sim2gse_action_summary' in player_report(report, character)
+            or 'action_summary' in cached):
+        from action_summary import checked
+        from engine import player_report
+        counts = checked(player_report(report, character).get('sim2gse_action_summary'), summary['samples'])
+        if 'action_summary' in cached and counts != cached['action_summary']:
+            raise ValueError('缓存成功摘要与原生报告不符')
     if (summary['dps'] != cached['dps'] or summary['samples'] != cached['samples']
             or _score_variance(report, character) != cached['variance']
             or any(saved[field] != cached[field] for field in ('dps', 'samples', 'variance'))):
@@ -1540,7 +1547,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             return times, {}
         from burst import combined_inputs
         times, sources = combined_inputs(times, burst_context, config['input_interval_ms'])
-        return times, dict(burst_candidate=burst_context['candidate'], input_sources=sources)
+        return times, dict(burst_candidate=burst_context['candidate'], input_sources=sources,
+                           burst_plan=burst_context['plan'])
     prepared = {}
     candidate_compilations = 0
     diagnostic_events = []
@@ -1728,8 +1736,11 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     or not math.isfinite(result['summary']['dps']) or result['summary']['dps'] < 0
                     or type(result['summary']['samples']) is not int or result['summary']['samples'] < 1):
                 raise CandidateScoreError('候选评分均值或有效样本无效')
+            from action_summary import checked
+            counts = checked(player_report(result['report'], character).get('sim2gse_action_summary'),
+                             result['summary']['samples'])
             report_valid = True
-            row = dict(status='success', request=request, dps=result['summary']['dps'],
+            row = dict(action_summary=counts, status='success', request=request, dps=result['summary']['dps'],
                        samples=result['summary']['samples'], variance=variance, requested_iterations=iterations,
                        data_key=key,
                        feedback=feedback_from_trace(result['trace'],[a['simc_action'] for a in capabilities['actions']],

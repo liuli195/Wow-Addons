@@ -663,7 +663,8 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
         profile = setup / 'standard.simc'
         profile.write_text(text, encoding='utf-8')
         native = reference(profile, setup / 'reference', character, runtime=runtime,
-                           iterations=100, simulation_config=simulation_config)
+                           iterations=100, simulation_config=simulation_config,
+                           summary_excluded_spell_ids=definition['excluded_spell_ids'] if definition else ())
         actual_character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
         all_capabilities, capabilities, burst_context = prepare_loop(native, actual_character, setup, runtime,
                                                      definition=definition, interval_ms=config['input_interval_ms'])

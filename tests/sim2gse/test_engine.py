@@ -248,6 +248,8 @@ class ImportQueryProfileTests(unittest.TestCase):
         original = 'deathknight=Probe\nspec=unholy\n'
         baseline = dict(sim=dict(players=[dict(name='Probe', sim2gse_class='death_knight',
             collected_data={'dps': {'mean': 42}},
+            sim2gse_action_summary=dict(scope=dict(allowed={}, excluded={}, windows='', policy='@apl', controlled=False), version=1, samples=7, duration_ms=1260000,
+                                       successes={}, pairs={}, outgoing={}),
             sim2gse_import_actions=[dict(spell_id=999999, simc_action='must_not_leak_from_dps')])]))
         probe = dict(sim=dict(players=[dict(name='Probe', sim2gse_class='death_knight',
             collected_data={'dps': {'mean': 1}}, sim2gse_import_actions=query_candidates)]))

@@ -148,6 +148,7 @@ void controller_t::start( player_t& owner )
 {
   owner_ = &owner;
   if ( !enabled() ) return;
+  summary_input(owner, nullptr, nullptr, 0, -1, false, 0);
 
     for (const auto& [at, flag] : sim2gse_castsequence_reset_events)
     {
@@ -640,6 +641,9 @@ void controller_t::handle_event(const char* event, action_t* a, unsigned origin)
   }
   if (native_execute && command)
   {
+    summary_input(*owner_, a, command, origin, static_cast<int>(step_for_origin(origin)),
+                  !burst_inputs_.empty() && burst_inputs_.at(origin - 1),
+                  input_times_.at(origin - 1).total_millis());
     sim2gse_executed_actions.emplace(origin, command);
     const auto step = step_for_origin(origin);
     const auto sequence = sim2gse_castsequence_members.find(step);

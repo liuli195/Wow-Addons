@@ -137,7 +137,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
              mode='controlled', input_times=None, gcd_states=None, failed_actions=None,
              failure_events=None, reset_events=None,
              runtime=None, simulation_config=None, on_native_start=None,
-             burst_candidate=None, input_sources=None, allow_zero=False):
+             burst_candidate=None, input_sources=None, allow_zero=False, burst_plan=None):
     runtime = runtime or TaskRuntime()
     simulation_config = config_for(simulation_config)
     runtime.check()
@@ -219,6 +219,9 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     feedback = ('' if gcd_states is None else
                 'sim2gse_gcd_states=' + '/'.join(f'{start},{duration}'
                                                   for start, duration in gcd_states) + '\n')
+    if input_sources is not None:
+        from action_summary import window_text
+        feedback += 'sim2gse_summary_windows=' + window_text(burst_plan) + '\n'
     feedback += ('' if failed_actions is None else
                  'sim2gse_failed_actions=' + '/'.join(value or '-' for value in failed_actions) + '\n')
     feedback += ('' if failure_events is None else
@@ -342,6 +345,9 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
             raise CandidateError('合法候选没有有效伤害')
         summary = check_report(report, character, iterations, simulation_config=simulation_config,
                                **(dict(allow_zero=True) if allow_zero else {}))
+        from action_summary import checked
+        summary['action_summary'] = checked(player_report(report, character).get('sim2gse_action_summary'),
+                                            summary['samples'])
     finally:
         if logging:
             diagnostic_finish(runtime, 'evaluation.report_read_validate', started)

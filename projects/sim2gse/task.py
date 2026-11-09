@@ -638,7 +638,8 @@ def _run_single(input_path, destination, character, *, program, phase_ms, runtim
     candidate = compile_program(gse_program or from_action_blocks(select(capabilities, program)),
                                 destination / 'export', identity=native['identity'], runtime=runtime,
                                 capabilities=capabilities, context=gse_context)
-    burst_options = (dict(input_sources=input_sources, burst_candidate=burst_candidate)
+    burst_options = (dict(input_sources=input_sources, burst_candidate=burst_candidate,
+                          burst_plan=definition['plan'])
                      if burst_candidate is not None else {})
     controlled = evaluate(destination / "input.simc", candidate, destination / "controlled", character=character,
                           input_times=times, runtime=runtime,
@@ -1447,7 +1448,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 try:
                     native = reference(destination/'input.simc', destination/'reference', character, runtime=runtime,
                                        iterations=config['iterations'], seed=config['random_seed'],
-                                       simulation_config=simulation_config)
+                                       simulation_config=simulation_config,
+                                       summary_excluded_spell_ids=definition['excluded_spell_ids'] if definition else ())
                 finally:
                     if not config['diagnostic_logging']:
                         from engine import discard_diagnostic_files

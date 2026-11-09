@@ -258,7 +258,7 @@ def _fast_capabilities():
 
 
 def _fast_reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912,
-                    simulation_config=None, import_spell_ids=(), import_spell_names=()):
+                    simulation_config=None, import_spell_ids=(), import_spell_names=(), summary_excluded_spell_ids=()):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "native.json").write_text(json.dumps(_fast_report(character, 100.0, max(1, iterations-1))),
@@ -292,6 +292,8 @@ def _fast_report(character, score, samples):
         "role": character.fields.get('role', 'attack'),
         "sim2gse_spec_id": character.spec_id or 252, "race": character.race,
         "talents": character.fields["talents"], "sim2gse_resource": "runic_power",
+        "sim2gse_action_summary": dict(scope=dict(allowed={}, excluded={}, windows='', policy='@apl', controlled=False), version=1, samples=samples, duration_ms=samples * 180000,
+                                       successes={}, pairs={}, outgoing={}),
         "gear": {{'shoulder': 'shoulders', 'wrist': 'wrists'}.get(slot, slot):
                  {'encoded_item': item.raw} for slot, item in character.equipment.items()},
         "collected_data": {"dps": {"mean": score, "count": samples, "variance": 0}, "fight_length": {"mean": 180},
@@ -305,7 +307,7 @@ def _fast_report(character, score, samples):
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                    seed=20260912, trace=True, mode="controlled", input_times=None,
                    runtime=None, score_offset=0, simulation_config=None, reset_events=None,
-                   on_native_start=None, score=None, rule_observation_request=None, allow_zero=False):
+                   on_native_start=None, score=None, rule_observation_request=None, allow_zero=False, burst_plan=None):
     """构造稳定报告，保留 search.optimize 的选择、缓存和发布逻辑。"""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
