@@ -181,7 +181,7 @@ search_observability='full'
 search_timeline=true
 '''))
     assert values == dict(iterations=100, max_processes=2, random_seed=20260912,
-        memory_execution=True, checkpoint_interval_seconds=600, memory_limit_mb=4096,
+        memory_execution=True, checkpoint_interval_seconds=600, memory_limit_mb=8192,
         input_interval_ms=300, reset_events=(), diagnostic_logging=False,
         diagnostics='off', search_observability='off', search_timeline=True,
         syntax=dict(multi_command_blocks=True, loop=True, wait_clicks=True, castsequence=True))

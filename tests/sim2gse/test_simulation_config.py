@@ -367,7 +367,7 @@ class SimulationConfigTests(unittest.TestCase):
             port=0,
             task_options={"simulation_config": config,
                           "search_config": dict(max_processes=5, coarse_iterations=32, retest_batches=3,
-                              memory_execution=True, checkpoint_interval_seconds=600, memory_limit_mb=4096,
+                              memory_execution=True, checkpoint_interval_seconds=600, memory_limit_mb=8192,
                               retest_iterations=128, stagnation_generations=8, top_k=8,
                               tournament_size=3, crossover_probability=.3, target_mutation_probability=.8, random_mutation_probability=.3,
                               iterations=128, random_seed=20260912,
