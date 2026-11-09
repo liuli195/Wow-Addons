@@ -192,6 +192,7 @@ def registry_rows():
         row.setdefault('active', True)
         row.setdefault('unavailable_reason', '')
         row.setdefault('source_revision', digest(row))
+        row.setdefault('allowed_groups', None)
         if 'allowed_groups' in row:
             row['allowed_groups'] = decode(row['allowed_groups'])
     return rows
