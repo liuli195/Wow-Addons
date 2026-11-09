@@ -4,7 +4,7 @@
 
 **Blocked by（阻塞任务）：**01：模拟来源补齐；02：插件刷新与联合发布。
 
-**Execution（执行）：**同一批四组完整训练已完成并核验16条结果；本次时间效率详见../training-observation.md。待本票记录限定独立审查。
+**Execution（执行）：**同一批四组完整训练已完成并核验16条结果；本次时间效率详见../training-observation.md。固定范围873d917e...32a0973a规范、需求两轴独立审查均无阻塞。
 
 **Status（状态）：**ready-for-agent
 
