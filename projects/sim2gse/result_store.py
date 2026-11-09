@@ -410,7 +410,7 @@ def _action_summary_report(report, *, restore=False):
 
 
 def _restore_batch(row):
-    return dict(row, report=_action_summary_report(_state_value_report(row['report'], restore=True))) if isinstance(row.get('report'), dict) else row
+    return dict(row, report=_action_summary_report(_state_value_report(row['report'], restore=True), restore=True)) if isinstance(row.get('report'), dict) else row
 
 
 def write_batch(key: str, row: dict, *, diagnostic_logging=False, runtime=None) -> int:
