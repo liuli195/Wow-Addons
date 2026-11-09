@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import random
 
-from runtime import TaskRuntime, replace_file
+from runtime import BudgetExceeded, TaskRuntime, replace_file
 from search import digest
 
 VERSION = 'reference-seeds-weighted-v1'
@@ -53,18 +53,20 @@ def generated_source(program, group, identity, index):
     return dict(row, source_revision=digest(row))
 
 
-def prepare_simc(args, ready, policy, sources):
+def prepare_simc(args, ready, policy, sources, document):
     import result_store
     import seed_training as seeds
     from action_summary import checked, scoped
     from program import canonicalize_search_program
     from task import _rule_hashes, _task_lease
     from weighted_seeds import generate
+    from simulation_config import load_training_search_config
     from burst import load as load_burst
     definition = load_burst(252)
     root = args.workspace.resolve()
     root.mkdir(parents=True, exist_ok=True)
     manifest = dict(version=VERSION, policy=policy, seed=args.seed, setup=ready, sources=digest(sources),
+                    configuration=document,
                     burst_definition=definition,
                     rules=_rule_hashes(relative_to=Path(__file__).resolve().parents[2]),
                     implementation={name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
@@ -77,6 +79,8 @@ def prepare_simc(args, ready, policy, sources):
                 raise ValueError('准备计划校验损坏，不能恢复')
             if state['manifest'] != manifest:
                 raise ValueError('冻结来源、配置、角色或实现已变化，请创建新计划')
+            if state['status'] == 'preparing':
+                raise ValueError('上次进程非正常退出，无法证明在途耗时；保留计划，拒绝重置预算')
         else:
             state = dict(manifest=manifest, status='preparing', published=False, used_seconds=0.,
                          requested_iterations=0, native_attempts=0, groups=[], generated=[])
@@ -111,8 +115,10 @@ def prepare_simc(args, ready, policy, sources):
                     if progress['status'] == 'prepared':
                         continue
                     template = Path(group_info['template'])
+                    inputs = seeds._training_inputs(template, targets, use_burst=True,
+                        _frozen_config=load_training_search_config(_document=document, _default_interval_ms=200))
                     original = seeds.ensure_prepared(template, targets, root / 'workspace',
-                        sources=sources, use_burst=True, runtime=runtime)
+                        sources=sources, use_burst=True, runtime=runtime, inputs=inputs)
                     if not original['queue'] or not original['context']:
                         raise ValueError('当前组没有有效原材料，不能初始化')
                     context = original['context']
@@ -145,7 +151,7 @@ def prepare_simc(args, ready, policy, sources):
                     new = [generated_source(p, group, provenance, number + 1) for number, p in enumerate(generated)]
                     all_new = [row for row in state['generated'] if row['allowed_groups'] != [group]] + new
                     prepared = seeds.ensure_prepared(template, targets, root / 'workspace',
-                        sources=[*sources, *all_new], use_burst=True, runtime=runtime)
+                        sources=[*sources, *all_new], use_burst=True, runtime=runtime, inputs=inputs)
                     count = len({r['behavior_id'] for r in prepared['entries']
                                  if r['status'] == 'ready' and simc_source(r)})
                     if count < policy['reference_seed_target']:
@@ -157,17 +163,21 @@ def prepare_simc(args, ready, policy, sources):
                 state['status'] = 'simc_prepared'
                 checkpoint()
         except BaseException as error:
-            state.update(status='paused', error=str(error))
+            message = '整批材料准备300秒累计预算耗尽' if isinstance(error, BudgetExceeded) else str(error)
+            state.update(status='paused', error=message)
             checkpoint()
+            if isinstance(error, BudgetExceeded):
+                raise ValueError(message) from error
             raise
         return state
 
 
 def run(args):
     import seed_training as seeds
-    from simulation_config import load_reference_seed_config
-    policy = load_reference_seed_config()
-    ready = seeds.check_training(use_burst=True)
+    from simulation_config import load_reference_seed_config, load_training_config, _load_document
+    document = _load_document()
+    policy = load_reference_seed_config(document=document)
+    ready = seeds.check_training(use_burst=True, training_config=load_training_config(_document=document))
     if args.check_only:
         return dict(status='preflight', target=policy['reference_seed_target'],
                     mode=policy['reference_seed_mode'], groups=ready['groups'],
@@ -177,4 +187,4 @@ def run(args):
     sources = seeds.registry_rows()
     if args.apply_plan or not args.simc_only:
         raise ValueError('联合插件发布阶段尚未完成')
-    return prepare_simc(args, ready, policy, sources)
+    return prepare_simc(args, ready, policy, sources, document)

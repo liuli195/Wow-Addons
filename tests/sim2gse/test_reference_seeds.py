@@ -71,3 +71,78 @@ def test_explicit_other_group_material_is_rejected(prepared_input):
     with pytest.raises(ValueError, match='适用范围'):
         seeds.ensure_prepared('/profile', 1, '/memory', sources=[row], materials=[row],
                               inputs=prepared_input.inputs)
+
+
+@pytest.mark.real
+def test_refresh_command_recovers_storage_failure_and_rejects_drift_corruption_and_exhaustion(
+        tmp_path, monkeypatch, capsys, prepared_input):
+    """Use the real command/preparer; only filesystem/catalogue/storage boundaries are supplied."""
+    import burst
+    import engine
+    import result_store
+    import seed_training as seeds
+    import simulation_config
+    from search import digest
+    from pathlib import Path
+    root = tmp_path / 'refresh'
+    template = tmp_path / 'role.simc'
+    template.write_text(prepared_input.inputs['text'], encoding='utf-8')
+    config = tmp_path / 'config.toml'
+    original_config = ('[training]\nreference_seed_mode="weighted-v1"\nreference_seed_target=3\n'
+        '[syntax]\nmulti_command_blocks=false\nloop=false\nwait_clicks=false\ncastsequence=false\n')
+    config.write_text(original_config, encoding='utf-8')
+    monkeypatch.setattr(simulation_config, 'DEFAULT_PATH', config)
+    monkeypatch.setattr(engine, 'identity', lambda mode: (Path('/fake-engine'), {'mode': mode}))
+    monkeypatch.setattr(burst, 'load', lambda spec: dict(spec_id=252))
+    monkeypatch.setattr(burst, 'select_definition', lambda character: None)
+    inputs = seeds._training_inputs(template, 1, use_burst=True)
+    key = digest(dict(version=seeds.PREPARATION_VERSION, template=inputs['template_sha'],
+        engines=inputs['engines'], simulation=inputs['simulation_config'], definition=None,
+        semantics=seeds.semantic_versions(), config=seeds._identity_config(inputs['config'])))
+    header = prepared_input.header
+    header['config_key'] = key
+    native = header['context']['native']
+    native.update(samples=1, action_summary=dict(version=1, samples=1, duration_ms=180000,
+        successes={'spell:1001': 1}, pairs={}, outgoing={}, positions={}, witnesses={},
+        scope=dict(allowed={'spell:1001': True}, excluded={}, windows='none', policy='fixture', controlled=False)))
+    header['checksum'] = digest([{k: v for k, v in header.items() if k != 'checksum'}])
+    source = prepared_input.source('old', [['outbreak']])
+    source['source_id'] = 'manual:simc-sanlayn-a1-20261012'
+    monkeypatch.setattr(seeds, 'registry_rows', lambda: [source])
+    monkeypatch.setattr(seeds, 'check_training', lambda **kw: dict(groups=[dict(template=str(template),
+        configuration_key=dict(specialization_id=252, hero_talent='rider_of_the_apocalypse',
+                               target_type='single_target'))]))
+    monkeypatch.setattr(result_store, 'bind_project', lambda path: None)
+    monkeypatch.setattr(result_store, 'ensure_available', lambda: None)
+    writes = []
+    def store_write(table, key, rows, **kw):
+        assert table != 'seed_candidates', 'preparation cannot publish the registry'
+        writes.append(table)
+        if table == 'seed_prepared' and writes.count('seed_prepared') == 2:
+            raise OSError('constructed write failure')
+    monkeypatch.setattr(result_store, 'write', store_write)
+    arguments = ['--project', str(tmp_path), 'refresh-references', '--workspace', str(root), '--simc-only']
+    assert seeds.main(arguments) == 2
+    assert 'constructed write failure' in capsys.readouterr().err
+    plan_path = root / 'plan.json'
+    paused = json.loads(plan_path.read_text(encoding='utf-8'))
+    assert paused['status'] == 'paused' and len(paused['groups'][0]['generation']['programs']) == 2
+    assert seeds.main(arguments) == 0
+    completed = json.loads(capsys.readouterr().out)
+    assert completed['status'] == 'simc_prepared' and completed['groups'][0]['simc_behaviors'] == 3
+    assert [r['program'] for r in completed['generated']] == paused['groups'][0]['generation']['programs']
+    assert completed['requested_iterations'] == paused['requested_iterations'] == 0
+    assert result_store.DATA_ROOT != root / 'data'
+    config.write_text(original_config.replace('loop=false', 'loop=true'), encoding='utf-8')
+    assert seeds.main(arguments) == 2
+    assert '配置' in capsys.readouterr().err
+    config.write_text(original_config, encoding='utf-8')
+    plan_path.write_text(json.dumps(dict(completed, checksum='broken')), encoding='utf-8')
+    assert seeds.main(arguments) == 2
+    assert '校验损坏' in capsys.readouterr().err
+    completed.update(status='paused', used_seconds=300)
+    completed['groups'][0]['status'] = 'preparing'
+    completed['checksum'] = digest({k: v for k, v in completed.items() if k != 'checksum'})
+    plan_path.write_text(json.dumps(completed), encoding='utf-8')
+    assert seeds.main(arguments) == 2
+    assert '预算' in capsys.readouterr().err

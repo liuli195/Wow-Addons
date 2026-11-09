@@ -181,6 +181,10 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
     writes=Mock()
     monkeypatch.setattr(result_store,'write',writes)
     monkeypatch.setattr(seed_training,'registry_rows',Mock(return_value=[]))
+    with pytest.raises(ValueError, match='新增材料必须提供明确适用组'):
+        seed_training.register('/memory/cleaned.json')
+    source['allowed_groups'] = [dict(specialization_id=252,hero_talent='rider_of_the_apocalypse',
+                                     target_type='single_target',target_count=1)]
     first=seed_training.register('/memory/cleaned.json')
     table,key,rows=writes.call_args.args
     assert (table,key)==('seed_candidates','registry') and len(rows)==1 and rows[0]['label']=='ABC-C'
