@@ -96,8 +96,9 @@ def test_postcheck_reads_the_real_incremental_archive_layout_without_writing(mon
 
 @pytest.mark.parametrize('tamper_plan', [False, True])
 @pytest.mark.parametrize('storage_version', [2, 3])
+@pytest.mark.parametrize('serialized_snapshot', [False, True])
 def test_postcheck_verifies_current_ga_to_page_evidence_and_rejects_changed_plan(
-        memory_ga, monkeypatch, tamper_plan, storage_version):
+        memory_ga, monkeypatch, tamper_plan, storage_version, serialized_snapshot):
     from copy import deepcopy
     import hashlib
     import sqlite3
@@ -179,6 +180,11 @@ def test_postcheck_verifies_current_ga_to_page_evidence_and_rejects_changed_plan
         run['batch_keys'] = [key for key, row in page.reports.items() if row['purpose'] != 'search']
         scene['batches'] = [dict(key=row['batch_key'], group='page-archive') for row in coarse]
         trained.store.checkpoint()
+        page.store.checkpoint()
+    if serialized_snapshot:
+        from seed_training import SELECTED_V2_SCHEMA
+        page.store.state['seed_selected_snapshot'] = [{name: json.dumps(value) if
+            SELECTED_V2_SCHEMA.get(name) == 'JSON' else value for name, value in row.items()} for row in selected]
         page.store.checkpoint()
     original_connect = sqlite3.connect
     def connect(path, **kwargs):

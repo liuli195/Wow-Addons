@@ -1,6 +1,6 @@
 # 04：整链路性能、恢复与兼容验收
 
-Status（状态）：ready-for-agent
+Status（状态）：ready-for-human
 Blocked by（阻塞任务）：03。
 
 ## 交付范围

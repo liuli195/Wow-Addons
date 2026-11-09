@@ -73,6 +73,9 @@ def check_scene(scene, ready):
     from task import _rule_hashes, parse_character
     from engine import ROOT
     from formal_search import contract_for
+    def selected_record(row):
+        return {name: decode(value) if SELECTED_V2_SCHEMA.get(name) == 'JSON' else value
+                for name, value in row.items()}
 
     targets, folder = scene['targets'], Path(scene['training_task'])
     manifest = json.loads((folder / 'identity.json').read_text(encoding='utf-8'))
@@ -115,8 +118,7 @@ def check_scene(scene, ready):
         scope = shared_scope(key, state['capabilities']['search_syntax']) if state.get('execution_storage_version') == 3 else shared_scope(key)
         row = one('seed_selected', scope, list(SELECTED_V2_SCHEMA),
                   {'candidate_id': expected_row['candidate_id'], 'family': 'ga'})
-        row = {name: decode(value) if SELECTED_V2_SCHEMA[name] == 'JSON' else value
-               for name, value in row.items()}
+        row = selected_record(row)
         require(row == expected_row, '入选四条与完整五场景复测和代表选择不一致')
         selected.append(row)
     if state.get('execution_storage_version') == 3:
@@ -177,7 +179,8 @@ def check_scene(scene, ready):
                               decode(run['simulation_config']))
         scored.add(request['behavior_identity'])
     for row in selected:
-        frozen = [item for item in state['seed_selected_snapshot'] if item['candidate_id'] == row['candidate_id']]
+        frozen = [selected_record(item) for item in state['seed_selected_snapshot']
+                  if item['candidate_id'] == row['candidate_id']]
         require(frozen == [row], '页面未冻结本次入选记录')
         adaptations = [item for item in state['seed_adaptations'] if item['candidate_id'] == row['candidate_id']]
         require(len(adaptations) == 1 and adaptations[0]['status'] in ('accepted', 'duplicate'),
