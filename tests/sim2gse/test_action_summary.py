@@ -14,7 +14,7 @@ from task import TaskError, run_task
 NATIVE_REFERENCE = engine.reference
 
 
-@pytest.mark.parametrize('invalid', ['duration', 'missing', 'pairs', 'positions', 'valid'])
+@pytest.mark.parametrize('invalid', ['duration', 'missing', 'pairs', 'positions', 'scope', 'valid'])
 def test_public_task_rejects_corrupt_success_summary_before_search(public_formal_memory, monkeypatch, invalid):
     case = public_formal_memory
     monkeypatch.setattr(engine, 'reference', NATIVE_REFERENCE)
@@ -28,12 +28,14 @@ def test_public_task_rejects_corrupt_success_summary_before_search(public_formal
                                        duration_ms=0, successes={}, pairs={}, outgoing={}))
         if invalid == 'missing':
             report['sim']['players'][0].pop('sim2gse_action_summary')
-        elif invalid in ('pairs', 'positions', 'valid'):
+        elif invalid in ('pairs', 'positions', 'scope', 'valid'):
             report['sim']['players'][0]['sim2gse_action_summary'].update(
                 duration_ms=max(1, iterations - 1) * 180000,
                 scope=dict(allowed={'spell:77575': True}, excluded={}, windows='', policy='@apl', controlled=False),
                 successes={'spell:77575': 2}, pairs={'spell:77575>spell:77575': 1},
                 outgoing={'spell:77575': 1})
+        if invalid == 'scope':
+            report['sim']['players'][0]['sim2gse_action_summary']['scope']['windows'] = 'broken'
         if invalid == 'pairs':
             report['sim']['players'][0]['sim2gse_action_summary']['outgoing'] = {}
         if invalid == 'positions':

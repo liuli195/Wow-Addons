@@ -219,9 +219,12 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     feedback = ('' if gcd_states is None else
                 'sim2gse_gcd_states=' + '/'.join(f'{start},{duration}'
                                                   for start, duration in gcd_states) + '\n')
-    if input_sources is not None:
-        from action_summary import window_text
-        feedback += 'sim2gse_summary_windows=' + window_text(burst_plan) + '\n'
+    from action_summary import candidate_scope, window_text
+    windows = window_text(burst_plan) if input_sources is not None else ''
+    summary_scope, summary_positions = candidate_scope(candidate, burst_candidate, windows)
+    feedback += 'sim2gse_summary_buttons=' + summary_scope['policy'] + '\n'
+    feedback += 'sim2gse_summary_exclude=\n'
+    feedback += 'sim2gse_summary_windows=' + windows + '\n'
     feedback += ('' if failed_actions is None else
                  'sim2gse_failed_actions=' + '/'.join(value or '-' for value in failed_actions) + '\n')
     feedback += ('' if failure_events is None else
@@ -347,7 +350,8 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                                **(dict(allow_zero=True) if allow_zero else {}))
         from action_summary import checked
         summary['action_summary'] = checked(player_report(report, character).get('sim2gse_action_summary'),
-                                            summary['samples'])
+                                            summary['samples'], expected_scope=summary_scope,
+                                            position_buttons=summary_positions)
     finally:
         if logging:
             diagnostic_finish(runtime, 'evaluation.report_read_validate', started)

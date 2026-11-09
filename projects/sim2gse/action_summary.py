@@ -17,7 +17,7 @@ def window_text(plan):
     return '/'.join(f'{at},{min(180000, at + width)}' for at in range(start, 180000, repeat))
 
 
-def checked(value, samples):
+def checked(value, samples, *, expected_scope=None, position_buttons=None):
     """原始整数计数与有效评分场数一致才可作为引导数据。"""
     if not isinstance(value, dict) or type(value.get('version')) is not int or value['version'] != VERSION:
         raise ValueError('原生成功摘要版本缺失或不支持')
@@ -40,6 +40,8 @@ def checked(value, samples):
             or set(value['successes']) - set(scope['allowed'])
             or set(value['successes']) & set(scope['excluded'])):
         raise ValueError('原生成功摘要按钮范围身份无效')
+    if expected_scope is not None and any(scope.get(k) != v for k, v in expected_scope.items()):
+        raise ValueError('原生成功摘要与本次请求范围身份不符')
     successes = value['successes']
     outgoing = Counter()
     for pair, count in value['pairs'].items():
@@ -57,8 +59,11 @@ def checked(value, samples):
         if (not separator or re.fullmatch(r'(0|[1-9][0-9]*)', step) is None
                 or button not in successes or type(count) is not int or count < 0):
             raise ValueError('原生成功摘要来源位置无效')
+        if position_buttons is not None and button not in position_buttons.get(int(step), set()):
+            raise ValueError('原生成功摘要位置不属于当前程序')
         positions[button] += count
-    if any(n != successes.get(k) for k, n in positions.items()):
+    if (any(n != successes.get(k) for k, n in positions.items())
+            or scope['controlled'] and dict(positions) != successes):
         raise ValueError('原生成功摘要来源次数不符')
     witnesses = value.get('witnesses', {})
     if not isinstance(witnesses, dict) or any(
@@ -66,6 +71,11 @@ def checked(value, samples):
             or not isinstance(v, list) or len(v) != 3
             or any(type(i) is not int or i < 0 for i in v) for k, v in witnesses.items()):
         raise ValueError('原生成功摘要相邻见证无效')
+    if position_buttons is not None and any(
+            key.split('>')[0] not in position_buttons.get(steps[0], set())
+            or key.split('>')[1] not in position_buttons.get(steps[2], set())
+            or not position_buttons.get(steps[1]) for key, steps in witnesses.items()):
+        raise ValueError('原生成功摘要见证不属于当前程序')
     return value
 
 
@@ -87,3 +97,19 @@ def scoped(value, capabilities):
     # A middle witness could refer to an excluded skill. Reference witnesses are
     # empty; candidate summaries already exclude burst at the original input.
     return result
+
+
+def button_key(command):
+    return (f"spell:{command.get('base_spell_id', command['spell_id'])}"
+            if command['kind'] == 'spell' else command['simc_action'])
+
+
+def candidate_scope(candidate, burst_candidate=None, windows=''):
+    commands = candidate['blocks'] + (burst_candidate['blocks'] if burst_candidate else [])
+    allowed = sorted({button_key(c) for block in commands for c in block})
+    scope = dict(allowed=dict.fromkeys(allowed, True), excluded={}, windows=windows,
+                 policy='/'.join(allowed), controlled=True)
+    # Runtime clicks are rebound to this candidate, never to an earlier source tree.
+    positions = {i: {button_key(c) for c in block} for i, block in enumerate(candidate['blocks'])
+                 if i >= candidate.get('precombat_count', 0)}
+    return scope, positions

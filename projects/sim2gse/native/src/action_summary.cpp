@@ -27,7 +27,8 @@ struct summary_t
   std::set<std::pair<unsigned, std::string>> completed;
   std::map<std::string, unsigned> successes, pairs, outgoing, positions;
   std::map<std::string, std::vector<int>> witnesses;
-  point_t previous, before_previous;
+  point_t previous, before_previous, pending;
+  bool pending_valid = false;
   unsigned samples = 0;
   unsigned long long duration_ms = 0;
   bool controlled = false;
@@ -62,6 +63,27 @@ unsigned segment_for(const summary_t& s, double at)
   }
   return segment;
 }
+void finish_point(summary_t& s)
+{
+  if (!s.pending_valid) return;
+  const auto current = s.pending;
+  if (!s.previous.button.empty() && s.previous.segment == current.segment)
+  {
+    ++s.pairs[s.previous.button + ">" + current.button];
+    ++s.outgoing[s.previous.button];
+    if (!s.before_previous.button.empty() && s.before_previous.segment == current.segment &&
+        s.before_previous.step >= 0 && s.previous.step >= 0 && current.step >= 0)
+    {
+      const auto witness_key = s.before_previous.button + ">" + current.button;
+      if (!s.witnesses.count(witness_key))
+        s.witnesses[witness_key] = {s.before_previous.step, s.previous.step, current.step};
+    }
+  }
+  s.before_previous = s.previous;
+  s.previous = current;
+  s.pending_valid = false;
+}
+
 bool effective(const player_t& p)
 {
   return p.sim->iterations <= 1 || p.sim->current_iteration > 0;
@@ -81,7 +103,7 @@ void summary_begin(player_t& p)
   if (p.is_pet()) return;
   auto& s = summaries[&p];
   s.inputs.clear(); s.completed.clear(); s.previous = {}; s.before_previous = {};
-  s.allowed.clear(); s.excluded.clear(); s.windows.clear(); s.controlled = false; s.last_at = -1;
+  s.allowed.clear(); s.excluded.clear(); s.windows.clear(); s.controlled = false; s.last_at = -1; s.pending_valid = false;
   if (s.buttons_text != "@apl")
     for (const auto& key : util::string_split(s.buttons_text, "/")) s.allowed.insert(key);
   if (s.buttons_text.empty() || s.buttons_text == "@apl")
@@ -130,16 +152,23 @@ void summary_success(action_t& action)
       throw std::runtime_error("unknown player summary button: " + key);
     s.allowed.insert(key);
   }
+  if (input && !s.completed.emplace(input->origin, key).second) return;
+  const double at = p.sim->current_time().total_millis();
+  if (at > s.last_at) finish_point(s);
+  else
+  {
+    s.pending_valid = false;
+    s.previous = {}; s.before_previous = {};
+  }
   if ((input && input->burst) || s.excluded.count(key))
   {
-    s.previous = {}; s.before_previous = {};
+    s.previous = {}; s.before_previous = {}; s.pending_valid = false;
+    s.last_at = at;
     return;
   }
-  if (input && !s.completed.emplace(input->origin, key).second) return;
   ++s.successes[key];
   const int step = input ? input->step : -1;
   if (step >= 0) ++s.positions[key + "@" + std::to_string(step)];
-  const double at = p.sim->current_time().total_millis();
   if (at <= s.last_at)
   {
     s.previous = {}; s.before_previous = {};
@@ -153,26 +182,15 @@ void summary_success(action_t& action)
     s.previous = {}; s.before_previous = {};
     return; // Count delayed success but never bridge its original window.
   }
-  if (!s.previous.button.empty() && s.previous.segment == segment)
-  {
-    ++s.pairs[s.previous.button + ">" + key];
-    ++s.outgoing[s.previous.button];
-    if (!s.before_previous.button.empty() && s.before_previous.segment == segment &&
-        s.before_previous.step >= 0 && s.previous.step >= 0 && step >= 0)
-    {
-      const auto witness_key = s.before_previous.button + ">" + key;
-      if (!s.witnesses.count(witness_key))
-        s.witnesses[witness_key] = {s.before_previous.step, s.previous.step, step};
-    }
-  }
-  s.before_previous = s.previous;
-  s.previous = {key, step, segment};
+  s.pending = {key, step, segment};
+  s.pending_valid = true;
 }
 
 void summary_end(player_t& p)
 {
   if (p.is_pet() || !effective(p)) return;
   auto& s = summaries[&p];
+  finish_point(s);
   ++s.samples;
   s.duration_ms += static_cast<unsigned long long>(p.sim->current_time().total_millis());
 }

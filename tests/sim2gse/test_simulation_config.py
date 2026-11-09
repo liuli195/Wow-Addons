@@ -230,7 +230,7 @@ class SimulationConfigTests(unittest.TestCase):
         import sequence
         config = config_for({'target_count': 2})
         report = {'sim': {'players': [dict(name='test', sim2gse_class='mage', sim2gse_skipped_commands=[],
-                            sim2gse_action_summary=dict(scope=dict(allowed={}, excluded={}, windows='', policy='@apl', controlled=False), version=1, samples=1, duration_ms=180000,
+                            sim2gse_action_summary=dict(scope=dict(allowed={'spell:1': True}, excluded={}, windows='', policy='spell:1', controlled=True), version=1, samples=1, duration_ms=180000,
                                                        successes={}, pairs={}, outgoing={})),
                                       {'name': 'other'}], 'targets': [{}, {}],
                           'statistics': {'raid_dps': {'mean': 100.0, 'count': 1}}}}

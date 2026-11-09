@@ -463,7 +463,9 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
                   mode='native_free_selection')
     player = player_report(report, character)
     from action_summary import checked
-    result['action_summary'] = checked(player.get('sim2gse_action_summary'), result['samples'])
+    result['action_summary'] = checked(player.get('sim2gse_action_summary'), result['samples'],
+        expected_scope=dict(policy='@apl', controlled=False, windows='',
+                            excluded={f'spell:{i}': True for i in summary_excluded_spell_ids}))
     replace_file(folder / 'native.pending.json', folder / 'native.json')
     result['action_sequence'] = player['collected_data'].get('action_sequence', [])
     result['precombat_sequence'] = player['collected_data'].get('action_sequence_precombat', [])
