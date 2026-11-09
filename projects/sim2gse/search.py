@@ -260,7 +260,7 @@ def _copy_program(program):
 
 
 def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observation=None,
-           excluded_programs=(), feedback_getter=None):
+           excluded_programs=(), feedback_getter=None, operation_override=None):
     """执行动作块、顺序 Loop 或 WaitClicks 变异；按需取值须返回非空反馈字典。"""
     source = _copy_program(program)
     from simulation_config import syntax_for
@@ -292,7 +292,9 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
         wait_clicks='wait_clicks', castsequence='castsequence', castsequence_member='castsequence',
         castsequence_reset='castsequence', castsequence_reset_flag='castsequence')
     operations = [name for name in operations if syntax.get(operation_policy.get(name), True)]
-    sampled_operation = rng.choice(operations)
+    if operation_override is not None and operation_override not in operations:
+        raise ValueError('随机操作不在当前语法范围')
+    sampled_operation = rng.choice(operations) if operation_override is None else operation_override
     operation = sampled_operation
     position = None
 
@@ -307,14 +309,20 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
         return source
 
     suggested = None
-    def choose_value(container, key, values):
+    from breeding import apply_edit
+
+    def choose_value(container, key, values, edit_path=None):
         previous = container[key]
         allowed = []
         for value in values:
             container[key] = value
             if value != previous and program_key(source) not in excluded_programs:
                 allowed.append(value)
-        container[key] = rng.choice(allowed) if allowed else previous
+        value = rng.choice(allowed) if allowed else previous
+        if edit_path is None:
+            container[key] = value
+        else:
+            source[:] = apply_edit(source, dict(operation='replace', path=edit_path, index=key, value=value))
         return bool(allowed)
 
     def legal_block(block):
@@ -385,7 +393,7 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
                 return finish()
     if operation == "swap" and len(source) > 1:
         first, second = rng.sample(range(len(source)), 2)
-        source[first], source[second] = source[second], source[first]
+        source[:] = apply_edit(source, dict(operation='swap', index=first, target=second))
         position = {"segments": [first, second]}
     elif operation == "replace" and ordinary_indices:
         block = rng.choice(ordinary_indices)
@@ -393,29 +401,30 @@ def mutate(program, capabilities, rng, *, feedback=None, reset_flags=(), observa
         alternatives = [name for name in available if name != source[block][action]
                         and legal_block(source[block][:action] + [name] + source[block][action + 1:])]
         if alternatives:
-            if choose_value(source[block], action, alternatives):
+            if choose_value(source[block], action, alternatives, (block,)):
                 position = {"segment": block, "action": action}
     elif operation == "insert" and len(source) < 128:
         block = rng.randrange(len(source) + 1)
-        source.insert(block, [suggested or rng.choice(available)])
+        source[:] = apply_edit(source, dict(operation='insert', index=block, value=[suggested or rng.choice(available)]))
         position = {"segment": block}
     elif operation == "delete" and len(source) > 1:
         if wait_indices and len(ordinary_indices) <= 1:
             index = rng.choice(wait_indices)
         else:
             index = rng.randrange(len(source))
-        del source[index]
+        source[:] = apply_edit(source, dict(operation="delete", index=index))
         position = {"segment": index}
     elif operation == "move" and len(source) > 2:
         start = rng.randrange(len(source) - 1)
         end = rng.randrange(start + 1, min(len(source), start + 4) + 1)
+        original = _copy_program(source)
         fragment = source[start:end]
         del source[start:end]
         targets = [target for target in range(len(source) + 1)
                    if source[:target] + fragment + source[target:] != program
                    and program_key(source[:target] + fragment + source[target:]) not in excluded_programs]
         target = rng.choice(targets) if targets else start
-        source[target:target] = fragment
+        source[:] = apply_edit(original, dict(operation="move", index=start, count=end-start, target=target))
         position = {"segments": [start, end], "target": target}
     elif operation == "block":
         if not ordinary_indices:
@@ -1844,7 +1853,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         return dict(candidate_key=canonical['identity'], seed=row['request']['seed'],
                     input_seed=row['request']['input_seed'], iterations=row['requested_iterations'],
                     dps=row['dps'], samples=row['samples'], batch_key=row['data_key'],
-                    cached=bool(row.get('cached')))
+                    cached=bool(row.get('cached')), action_summary=row.get('action_summary'))
 
     def feedback_training(program):
         canonical, diagnostic = training_batch(program, 'feedback', trace=True)

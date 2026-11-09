@@ -109,7 +109,7 @@ def test_training_cli_override_repairs_partial_config_without_precheck_losing_it
     import population_training,seed_training,simulation_config
     from unittest.mock import Mock
     monkeypatch.setattr(simulation_config,'_load_document',lambda path=None:dict(training=dict(max_trainings=10,top_k=4,
-        crossover_probability=0.,mutation_probability=0.)))
+        crossover_probability=0.,target_mutation_probability=0.,random_mutation_probability=0.)))
     monkeypatch.setattr(population_training,'_unfinished',lambda *args,**kwargs:iter(()))
     execute=Mock(side_effect=lambda *args,**kwargs:dict(status='prepared' if kwargs['prepare_only'] else 'completed',
         training_config=kwargs['training_config']))
@@ -539,7 +539,7 @@ def public_training_memory(monkeypatch, training_cli, prepared_input, memory_ga)
     monkeypatch.setattr(seed_training, 'sync_history', lambda *args, **kwargs: deepcopy(sources))
     monkeypatch.setattr(seed_training, 'registry_rows', lambda: deepcopy(sources))
     monkeypatch.setattr(simulation_config, '_load_document', lambda path=None: dict(training=dict(
-        max_processes=1, max_trainings=1, top_k=4, crossover_probability=0., mutation_probability=0.)))
+        max_processes=1, max_trainings=1, top_k=4, crossover_probability=0., target_mutation_probability=0., random_mutation_probability=0.)))
     files = {}
     monkeypatch.setattr(Path, 'mkdir', lambda *args, **kwargs: None)
     monkeypatch.setattr(Path, 'write_text', lambda path, text, **kwargs: files.__setitem__(path, text))
@@ -692,7 +692,7 @@ def test_public_training_uses_only_shared_file_curve_and_explicit_choice_wins(
     import seed_training, simulation_config
     case = public_training_memory
     monkeypatch.setattr(simulation_config, '_load_document', lambda path=None: dict(
-        training=dict(max_processes=1, max_trainings=1, top_k=4, crossover_probability=0., mutation_probability=0.),
+        training=dict(max_processes=1, max_trainings=1, top_k=4, crossover_probability=0., target_mutation_probability=0., random_mutation_probability=0.),
         search=dict(search_timeline=True, diagnostic_logging=True, diagnostics='full',
                     search_observability='full', iterations=128, random_seed=345, max_processes=5)))
     options = {} if explicit is None else {'search_timeline': explicit}
@@ -755,3 +755,337 @@ def test_training_memory_io_recognizes_windows_paths(public_training_memory):
     assert manifest in Path.glob(manifest.parents[2], '*/*/identity.json')
     uri = 'file:' + manifest.with_name('task.sqlite3').as_posix() + '?mode=ro'
     assert sqlite3.connect(uri, uri=True) is public_training_memory.store.db
+
+
+
+def test_public_training_uses_independent_probability_settings(public_training_memory):
+    import seed_training
+    case = public_training_memory
+    result = seed_training.run_training(case.template, 1, '/memory/work')
+    assert result['status'] == 'completed'
+    assert result['training_config']['target_mutation_probability'] == 0.
+    assert result['training_config']['random_mutation_probability'] == 0.
+    assert 'mutation_probability' not in result['training_config']
+
+
+
+@pytest.fixture
+def guided_training_memory(public_training_memory, monkeypatch):
+    from copy import deepcopy
+    import result_store, simulation_config
+    case = public_training_memory
+    case.guidance_reference = dict(version=1, samples=99, duration_ms=17820000,
+        successes={'spell:1001':99}, pairs={}, outgoing={}, positions={}, witnesses={},
+        scope=dict(allowed={'spell:1001':True}, excluded={}, windows='', policy='@apl', controlled=False))
+    case.guidance_probabilities = dict(target_mutation_probability=1., random_mutation_probability=1., crossover_probability=1.)
+    read_records = result_store.read_records
+    def reference_input(table, key):
+        rows = read_records(table, key)
+        if table == 'seed_prepared':
+            for row in rows:
+                if row.get('kind') == 'context':
+                    native = row['context']['native']
+                    native['action_summary'] = deepcopy(case.guidance_reference)
+            from search import digest
+            for row in rows:
+                if row.get('kind') == 'context':
+                    row['checksum'] = digest([{k:v for k,v in item.items() if k != 'checksum'} for item in rows])
+        return deepcopy(rows)
+    monkeypatch.setattr(result_store, 'read_records', reference_input)
+    document = simulation_config._load_document
+    monkeypatch.setattr(simulation_config, '_load_document', lambda path=None:
+        dict(document(path), training=dict(document(path)['training'], **case.guidance_probabilities)))
+    return case
+
+
+def test_public_training_executes_target_then_random_then_crossover(monkeypatch, guided_training_memory):
+    import random
+    from types import SimpleNamespace
+    import population_training, seed_training, sequence
+    from runtime import TaskCancelled
+    from test_search_syntax import SIMPLE
+    case = guided_training_memory
+    base_random = random.Random
+    class BoundaryRandom(base_random):
+        _randbelow = base_random._randbelow
+        def random(self): return 0.
+        def choice(self, values):
+            if values and hasattr(values[0], 'fitness'):
+                draws = getattr(self, 'selection_draws', 0)
+                self.selection_draws = draws + 1
+                return values[0 if (draws // 3) % 2 == 0 else -1]
+            return values[0]
+        def sample(self, values, count):
+            assert count == 2
+            return [values[0], values[2]]
+        def randint(self, start, end): return start
+    monkeypatch.setattr(population_training, 'random', SimpleNamespace(Random=BoundaryRandom))
+    evaluate = sequence.evaluate
+    def pause_after_variation(*args, **kwargs):
+        if case.store.state['ga']['pending'] is not None:
+            raise TaskCancelled('inspect complete pending children')
+        return evaluate(*args, **kwargs)
+    monkeypatch.setattr(sequence, 'evaluate', pause_after_variation)
+    with pytest.raises(TaskCancelled, match='pending children'):
+        seed_training.run_training(case.template, 1, '/memory/work', syntax_config=SIMPLE)
+    ga = case.store.load_state(case.store.db)['ga']
+    assert ga['generation'] == 0 and ga['pending'] is not None
+    assert ga['breeding']['order'] == ['target', 'random', 'crossover']
+    assert ga['breeding']['probabilities'] == dict(target_mutation_probability=1.,
+        random_mutation_probability=1., crossover_probability=1.)
+    assert ga['pending']['programs'][0] == [['death_coil'], ['scourge_strike'], ['outbreak'], ['outbreak']]
+    assert ga['pending']['programs'][1] == [['death_coil'], ['outbreak'], ['outbreak'], ['scourge_strike']]
+    assert all(options['iterations'] != 2 for _, _, options in case.calls)
+
+
+
+def test_public_guided_training_completes_four_representatives_and_reuses_scores(guided_training_memory):
+    import seed_training
+    from test_search_syntax import SIMPLE
+    case = guided_training_memory
+    case.guidance_probabilities.update(target_mutation_probability=.8,
+        random_mutation_probability=.3, crossover_probability=.3)
+    result = seed_training.run_training(case.template, 1, '/memory/work', syntax_config=SIMPLE)
+    assert result['status'] == 'completed' and result['selected'] == 4
+    ga = case.store.state['ga']
+    assert ga['phase'] == 'published' and ga['generation'] >= 2
+    assert ga['breeding']['order'] == ['target', 'random', 'crossover']
+    assert all(set(scenes) == {'nominal', 'jitter', 'pause', 'slow', 'phase'} for scenes in ga['finals'].values())
+    assert all(options['iterations'] != 2 for _, _, options in case.calls)
+    assert len(case.calls) == len({folder for folder, _, _ in case.calls})
+    assert 'breeding_counts' not in ga
+
+
+@pytest.mark.parametrize('gate_draw', [2, 3, 13])
+def test_public_guided_training_replays_uncommitted_operations(monkeypatch, guided_training_memory, gate_draw):
+    import random
+    from types import SimpleNamespace
+    import population_training, seed_training
+    from runtime import TaskCancelled
+    from test_search_syntax import SIMPLE
+    case = guided_training_memory
+    base_random = random.Random
+    paused_rng = []
+    armed = [True]
+    class InterruptedRandom(base_random):
+        _randbelow = base_random._randbelow
+        def random(self):
+            self.gate_draws = getattr(self, 'gate_draws', 0) + 1
+            if armed[0] and self.gate_draws == gate_draw:
+                paused_rng.append(case.store.state['ga']['rng'])
+                raise TaskCancelled('between independent gates')
+            return super().random()
+    monkeypatch.setattr(population_training, 'random', SimpleNamespace(Random=InterruptedRandom))
+    with pytest.raises(TaskCancelled, match='independent gates'):
+        seed_training.run_training(case.template, 1, '/memory/work', syntax_config=SIMPLE)
+    saved = case.store.load_state(case.store.db)['ga']
+    assert saved['generation'] == 0 and saved['pending'] is None
+    assert json.dumps(saved['rng']) == json.dumps(paused_rng[0])
+    reference = case.store.state['breeding_reference']
+    armed[0] = False
+    result = seed_training.run_training(case.template, 1, '/memory/work')
+    assert result['status'] == 'completed' and result['selected'] == 4
+    assert case.store.state['breeding_reference'] == reference
+    assert all(options['iterations'] != 2 for _, _, options in case.calls)
+
+
+
+@pytest.mark.parametrize('key', ['target_mutation_probability', 'random_mutation_probability', 'crossover_probability'])
+@pytest.mark.parametrize('value', [False, True, -.1, 1.1, float('inf'), float('nan'), '0.8'])
+def test_public_training_rejects_invalid_independent_probabilities_before_io(monkeypatch, key, value):
+    import seed_training, simulation_config
+    monkeypatch.setattr(simulation_config, '_load_document', lambda *a, **kw: dict(training={key:value}))
+    monkeypatch.setattr(Path, 'read_text', lambda *a, **kw: pytest.fail('invalid probability started IO'))
+    with pytest.raises(ValueError, match=key):
+        seed_training.run_training('/memory/template', 1, '/memory/work')
+
+
+@pytest.mark.parametrize('value', [0., False, .8])
+def test_public_training_rejects_retired_total_probability_even_when_zero(monkeypatch, value):
+    import seed_training, simulation_config
+    monkeypatch.setattr(simulation_config, '_load_document', lambda *a, **kw: dict(training={'mutation_probability':value}))
+    monkeypatch.setattr(Path, 'read_text', lambda *a, **kw: pytest.fail('retired setting started IO'))
+    with pytest.raises(ValueError, match='mutation_probability.*退役'):
+        seed_training.run_training('/memory/template', 1, '/memory/work')
+
+
+
+@pytest.mark.parametrize('family, expected', [
+    ('insert', [['outbreak'], ['scourge_strike'], ['death_coil'], ['outbreak']]),
+    ('move', [['outbreak'], ['scourge_strike'], ['death_coil']])])
+def test_public_insufficient_frequency_selects_operation_before_landing(monkeypatch, guided_training_memory, family, expected):
+    from copy import deepcopy
+    import random
+    from types import SimpleNamespace
+    import population_training, seed_training, sequence
+    from runtime import TaskCancelled
+    from test_search_syntax import SIMPLE
+    case = guided_training_memory
+    case.guidance_probabilities.update(random_mutation_probability=0., crossover_probability=0.)
+    original = deepcopy(case.starts)
+    choices = []
+    base_random = random.Random
+    class FamilyRandom(base_random):
+        _randbelow = base_random._randbelow
+        def random(self): return 0.
+        def choice(self, values):
+            if values and hasattr(values[0], 'fitness'): return values[-1]
+            if len(values) == 2 and all(isinstance(group, list) and group and isinstance(group[0], dict)
+                                      and 'operation' in group[0] for group in values):
+                choices.append([(group[0]['operation'], len(group)) for group in values])
+                return next(group for group in values if group[0]['operation'] == family)
+            return values[0]
+    monkeypatch.setattr(population_training, 'random', SimpleNamespace(Random=FamilyRandom))
+    checkpoint = case.store.checkpoint
+    def stop(*args, **kwargs):
+        checkpoint(*args, **kwargs)
+        if case.store.state['ga']['pending'] is not None: raise TaskCancelled('inspect family')
+    monkeypatch.setattr(case.store, 'checkpoint', stop)
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work', syntax_config=SIMPLE)
+    assert choices[0] == [('insert', 4), ('move', 2)]
+    assert case.store.state['ga']['pending']['programs'][0] == expected
+    assert case.starts == original
+
+
+
+@pytest.mark.parametrize('rule, reference_pairs, candidate_pairs', [
+    ('reverse', {'1>2':6,'1>3':3,'2>1':1,'2>3':8,'3>1':1,'3>2':8},
+                {'1>2':1,'1>3':8,'2>1':6,'2>3':3,'3>1':8,'3>2':1}),
+    ('repeat', {'1>1':1,'1>2':4,'1>3':4,'2>1':4,'2>3':4,'3>1':4,'3>2':4},
+               {'1>1':3,'1>2':4,'1>3':1,'2>1':4,'2>3':4,'3>1':4,'3>2':4}),
+    ('connection', {'1>2':8,'1>3':1,'2>1':8,'2>3':1,'3>1':4,'3>2':4},
+                   {'1>2':1,'1>3':8,'2>1':8,'2>3':1,'3>1':4,'3>2':4}),
+])
+def test_public_training_short_sequence_rules_keep_frequency_unchanged(
+        monkeypatch, guided_training_memory, rule, reference_pairs, candidate_pairs):
+    from collections import Counter
+    import random
+    from types import SimpleNamespace
+    import population_training, seed_training, sequence
+    from runtime import TaskCancelled
+    from test_search_syntax import SIMPLE
+    case = guided_training_memory
+    case.guidance_probabilities.update(random_mutation_probability=0., crossover_probability=0.)
+    def summary(samples, coefficients, positions=None):
+        pairs = {'spell:100'+a+'>spell:100'+b: n*samples for pair,n in coefficients.items()
+                 for a,b in [pair.split('>')]}
+        outgoing = Counter()
+        for pair, count in pairs.items(): outgoing[pair.split('>')[0]] += count
+        keys = ['spell:1001','spell:1002','spell:1003']
+        return dict(version=1, samples=samples, duration_ms=samples*180000,
+            successes={key:10*samples for key in keys}, pairs=pairs, outgoing=dict(outgoing),
+            positions=positions or {}, witnesses={}, scope=dict(allowed=dict.fromkeys(keys,True),
+                excluded={},windows='',policy='/'.join(keys) if positions else '@apl',controlled=bool(positions)))
+    case.guidance_reference = summary(99, reference_pairs)
+    base_random = random.Random
+    class LastParent(base_random):
+        _randbelow = base_random._randbelow
+        def random(self): return 0.
+        def choice(self, values):
+            return values[2] if values and hasattr(values[0], 'fitness') else values[0]
+    monkeypatch.setattr(population_training, 'random', SimpleNamespace(Random=LastParent))
+    evaluate = sequence.evaluate
+    def native_report(profile, candidate, folder, **kwargs):
+        result = evaluate(profile, candidate, folder, **kwargs)
+        samples = result['summary']['samples']
+        positions = {f"spell:{command['spell_id']}@{index}":10*samples
+            for index, block in enumerate(candidate['blocks']) for command in block}
+        value = summary(samples, candidate_pairs, positions)
+        if rule == 'connection':
+            steps = {command['spell_id']:index for index,block in enumerate(candidate['blocks']) for command in block}
+            value['witnesses'] = {'spell:1001>spell:1002':[steps[1001],steps[1003],steps[1002]]}
+        result['report']['sim']['players'][0]['sim2gse_action_summary'] = value
+        return result
+    monkeypatch.setattr(sequence, 'evaluate', native_report)
+    checkpoint = case.store.checkpoint
+    def pause():
+        checkpoint()
+        if case.store.state['ga']['pending'] is not None: raise TaskCancelled('inspect sequence')
+    monkeypatch.setattr(case.store, 'checkpoint', pause)
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work', syntax_config=SIMPLE)
+    assert case.store.state['ga']['pending']['programs'][0] == [['outbreak'],['death_coil'],['scourge_strike']]
+
+
+
+@pytest.mark.parametrize('kind', ['Loop', 'CastSequence'])
+def test_public_target_edits_one_complex_source_instead_of_one_expanded_copy(monkeypatch, guided_training_memory, kind):
+    from copy import deepcopy
+    import random
+    from types import SimpleNamespace
+    import population_training, seed_training
+    from runtime import TaskCancelled
+    from test_search_syntax import SIMPLE
+    case = guided_training_memory
+    case.guidance_probabilities.update(random_mutation_probability=0., crossover_probability=0.)
+    node = (dict(kind='Loop', count=3, blocks=[['scourge_strike'],['death_coil'],['outbreak']])
+            if kind == 'Loop' else dict(kind='CastSequence', members=['scourge_strike','death_coil','outbreak'], reset=None))
+    source = deepcopy(case.sources[0])
+    source['program'] = [node]
+    original_node = deepcopy(node)
+    case.sources[:] = [source]
+    base_random = random.Random
+    class SourceRandom(base_random):
+        _randbelow = base_random._randbelow
+        def random(self): return 0.
+        def choice(self, values):
+            if len(values) == 2 and all(isinstance(group,list) and group and isinstance(group[0],dict)
+                                      and 'operation' in group[0] for group in values):
+                return next(group for group in values if group[0]['operation'] == 'move')
+            return values[0]
+    monkeypatch.setattr(population_training, 'random', SimpleNamespace(Random=SourceRandom))
+    checkpoint = case.store.checkpoint
+    def pause():
+        checkpoint()
+        if case.store.state['ga']['pending'] is not None: raise TaskCancelled('inspect source edit')
+    monkeypatch.setattr(case.store, 'checkpoint', pause)
+    policy = dict(SIMPLE, **({'loop':True} if kind == 'Loop' else {'castsequence':True}))
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work', syntax_config=policy)
+    child, = case.store.state['ga']['pending']['programs'][0]
+    assert child['kind'] == kind
+    if kind == 'Loop':
+        assert child['count'] == 3 and child['blocks'] == [['outbreak'],['scourge_strike'],['death_coil']]
+    else:
+        assert child['members'] == ['outbreak','scourge_strike','death_coil'] and child['reset'] is None
+    assert source['program'] == [original_node] and node == original_node
+
+
+
+@pytest.mark.parametrize('probability', [0., 1.])
+def test_public_training_distinguishes_zero_reference_from_missing_and_keeps_previous_library(
+        monkeypatch, guided_training_memory, probability):
+    from unittest.mock import Mock
+    import seed_training, result_store
+    case = guided_training_memory
+    case.guidance_reference['successes'] = {}
+    case.guidance_probabilities.update(target_mutation_probability=probability,
+        random_mutation_probability=0., crossover_probability=0.)
+    writer = Mock(wraps=result_store.write)
+    monkeypatch.setattr(result_store, 'write', writer)
+    if probability:
+        with pytest.raises(ValueError, match='没有可比较普通按钮'):
+            seed_training.run_training(case.template, 1, '/memory/work')
+        assert not case.calls
+        assert not any(call.args[0] == 'seed_selected' for call in writer.call_args_list)
+    else:
+        result = seed_training.run_training(case.template, 1, '/memory/work')
+        assert result['status'] == 'completed' and result['selected'] == 4
+
+
+def test_public_training_collects_three_gate_counts_without_full_process_history(guided_training_memory):
+    import seed_training
+    from test_search_syntax import SIMPLE
+    case = guided_training_memory
+    result = seed_training.run_training(case.template, 1, '/memory/work', syntax_config=SIMPLE,
+        diagnostic_logging=True)
+    assert result['status'] == 'completed'
+    ga = case.store.state['ga']
+    size, generations = len(ga['population']), ga['generation']
+    assert ga['breeding_counts']['target_triggered'] == size * generations
+    assert ga['breeding_counts']['random_triggered'] == size * generations
+    assert ga['breeding_counts']['crossover_triggered'] == (size//2) * generations
+    assert 0 < ga['breeding_counts']['target_changed'] <= ga['breeding_counts']['target_triggered']
+    assert 'search_observability' not in case.store.state
+    assert all(options['iterations'] != 2 for _, _, options in case.calls)

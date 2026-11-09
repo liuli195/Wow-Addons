@@ -838,7 +838,8 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
                   expected_key=None, new_search_config=None):
     from population_training import run_group
     from simulation_config import load_training_config
-    config = training_config or load_training_config(max_processes=max_processes, max_trainings=max_trainings)
+    config = (load_training_config(_document={'training': training_config}) if training_config is not None
+              else load_training_config(max_processes=max_processes, max_trainings=max_trainings))
     return run_group(template, targets, workspace, cancel_event=cancel_event or threading.Event(),
         use_burst=use_burst, sources=sources if sources is not None else registry_rows(), config=config,
         prepare_only=prepare_only, materials=materials, diagnostic_logging=diagnostic_logging,
@@ -879,6 +880,8 @@ def check_training(template=None, *, use_burst=True, training_config=None):
     from engine import identity, training_templates
     from burst import select_definition, talent_hash
     from simulation_config import load_training_config
+    config = (load_training_config() if training_config is None else
+              load_training_config(_document={'training': training_config}))
     paths = (Path(template).resolve(),) if template is not None else training_templates()
     engines = {mode: identity(mode)[1] for mode in ('baseline', 'controlled')}
     templates, groups = [], []
@@ -899,7 +902,6 @@ def check_training(template=None, *, use_burst=True, training_config=None):
             for target in ('single_target', 'aoe'):
                 groups.append(dict(template=str(path), configuration_key=dict(
                     specialization_id=252, hero_talent=hero, target_type=target)))
-    config = load_training_config() if training_config is None else training_config
     return dict(status='ready', **templates[0], templates=templates, groups=groups,
         engines=engines, use_burst=use_burst, training_config=config,
         final_requested_iterations_per_group=config['top_k'] * 5 * config['retest_batches'] * config['retest_iterations'])

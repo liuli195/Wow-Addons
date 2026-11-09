@@ -36,7 +36,7 @@ def memory_ga(monkeypatch):
                   [[[name] for name in order] for order in permutations(
                       ('outbreak', 'death_coil', 'scourge_strike'))])
         config = dict(TRAINING_DEFAULTS, top_k=4, max_processes=1,
-                      crossover_probability=0., mutation_probability=0.)
+                      crossover_probability=0., target_mutation_probability=0., random_mutation_probability=0.)
         config.update(settings or {})
         # Overrides must not be duplicated in dict's keyword construction.
         search_values = dict(max_processes=1)
@@ -108,7 +108,8 @@ def memory_ga(monkeypatch):
                     capabilities=capabilities, reference=dict(dps=100., identity=dict(resource='runic_power')),
                     destination=Path('/memory/ga'), runtime=runtime, config=search_config,
                     condition_key=condition, store=store, simulation_config=ready['simulation_config'])
-            execute = training._evolution(store, capabilities, runtime, config) if runner is None else runner
+            default_execute = training._evolution(store, capabilities, runtime, config)
+            execute = default_execute if runner is None else runner
             return optimize(profile=Path('/memory/standard.simc'), character=character,
                 capabilities=capabilities, reference=dict(identity=dict(resource='runic_power')),
                 destination=Path('/memory/ga'), runtime=runtime, config=search_config,
@@ -326,7 +327,7 @@ def test_public_illegal_slot_uses_first_child_and_ten_persistent_extra_regenerat
             return super().randrange(*args)
     program = ([['outbreak'],dict(kind='WaitClicks',clicks=4095)] if overflow=='clicks'
                else [['scourge_strike']*12,['outbreak']])
-    case=memory_ga(programs=[program],settings=dict(mutation_probability=1.))
+    case=memory_ga(programs=[program],settings=dict(random_mutation_probability=1.))
     monkeypatch.setattr(population_training,'random',SimpleNamespace(Random=BoundaryRandom))
     for resume in (False,True):
         if resume: case.store.state=case.store.load_state(case.store.db)
@@ -506,7 +507,7 @@ def test_public_resume_verifies_coarse_before_breeding_and_keeps_temporary_read_
     import population_training
     import result_store
     from runtime import TaskCancelled
-    case=memory_ga(settings=dict(mutation_probability=1.))
+    case=memory_ga(settings=dict(random_mutation_probability=1.))
     def pause(**callbacks):
         for program in case.starts: callbacks['evaluate'](program,'search',0)
         raise TaskCancelled('pause before breeding')
@@ -597,7 +598,7 @@ def test_public_run_training_defaults_really_cross_and_mutate_without_global_rng
     class BoundaryRandom(real_random):
         _randbelow=real_random._randbelow
         def random(self): return .5
-    case=memory_ga(settings=dict(crossover_probability=.8,mutation_probability=.8))
+    case=memory_ga(settings=dict(crossover_probability=.8,random_mutation_probability=.8))
     monkeypatch.setattr(population_training,'random',SimpleNamespace(Random=BoundaryRandom))
     ga=case.run()
     coarse=[folder for folder,_,options in case.calls if options['iterations']==32]
@@ -615,7 +616,7 @@ def test_training_simple_policy_closes_children_and_publication(memory_ga):
     # 两技能、长度1～4，共30条。变异与交叉都实际执行，不用复制补起点。
     programs = [[[name] for name in order] for size in range(1,5)
                 for order in product(('outbreak','death_coil'), repeat=size)]
-    case = memory_ga(programs=programs, settings=dict(mutation_probability=1., crossover_probability=1.),
+    case = memory_ga(programs=programs, settings=dict(random_random_mutation_probability=1., crossover_probability=1.),
                      search_settings={'syntax': SIMPLE})
     ga = case.run()
     assert ga['generation'] >= 2
@@ -669,7 +670,7 @@ def test_public_feedback_commits_at_twelve_and_replays_same_generation_rng(monke
     from runtime import TaskCancelled
     from search import digest
     programs=[[[name] for name in order] for order in islice(product(('outbreak','death_coil','scourge_strike'),repeat=4),70)]
-    case=memory_ga(programs=programs,settings=dict(mutation_probability=1.))
+    case=memory_ga(programs=programs,formal=True,search_settings=dict(mutation_probability=1., crossover_probability=0.))
     # Native scoring remains a report input; this probe concerns the existing
     # bounded feedback checkpoint callback, not physical report publication.
     real_stage,real_checkpoint=case.store.stage_report,case.store.checkpoint
