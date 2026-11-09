@@ -129,6 +129,58 @@ def memory_ga(monkeypatch):
         store.diagnostic_logging_override = False
         store.close()
 
+def test_v3_selected_independently_reads_full_source_cohort(monkeypatch, memory_ga):
+    from copy import deepcopy
+    import hashlib
+    from types import SimpleNamespace
+    import population_training as training
+    import result_store
+    from search import digest
+    from test_character_export import sample_profile
+    text = sample_profile()
+    environment = dict(template=hashlib.sha256(text.encode()).hexdigest(), engines={},
+                       simulation=dict(target_count=1, scene='single_target'))
+    case = memory_ga(manifest_fields=dict(seed=20260912, environment=environment))
+    ga = case.run()
+    records = {}
+    read_many = result_store.read_many
+    monkeypatch.setattr(result_store, 'write', lambda table, key, rows, **kwargs:
+                        records.__setitem__((table, key), deepcopy(rows)))
+    monkeypatch.setattr(result_store, 'read_records', lambda table, key:
+                        deepcopy(records.get((table, key), [])))
+    monkeypatch.setattr(result_store, 'read_many', lambda table, keys, **kwargs:
+        read_many(table, keys, **kwargs) if table == 'batches' else
+        [deepcopy(row) for key in keys for row in records.get((table, key), [])])
+    receipts = {}
+    groups = {}
+    for identity in ga['finalists']:
+        for batches in ga['finals'][identity].values():
+            for row in batches.values():
+                key = row['batch_key']
+                receipts[key] = dict(case.store.batch(key), storage_version=3, storage_group_key=key)
+                groups[key] = key
+    state = dict(case.store.state, capabilities=case.capabilities,
+                 evidence_storage=dict(version=3, report_groups=groups))
+    archive = [dict(run_id=state['run_id'], candidate_key=row['key'], search_order=index,
+        program=row['program'], program_digest=digest(row['program']), score=row['score'],
+        batches=row['batches'], candidate=None) for index, row in enumerate(state['archive'])]
+    records['search_records', 'archive'] = archive
+    state['evidence_storage'].update(archive_group='archive', archive_digest=digest(archive),
+                                     archive_count=len(archive))
+    store = SimpleNamespace(memory_execution=True, state=state, batch=receipts.get,
+                            published_report_receipts={})
+    manifest = case.manifest
+    ready = dict(case.ready, text=text, template_sha=environment['template'])
+    key = dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target')
+    training._publish_seed_evidence(ga, store, manifest, case.character, ready)
+    selected = training._selected(ga, store, manifest, case.character, ready, key)
+    training.verify_selected_evidence(selected)
+    missing = next(iter(receipts))
+    case.reports.pop(missing)
+    with pytest.raises(ValueError, match='完整复测报告'):
+        training.verify_selected_evidence(selected)
+
+
 def test_public_check_freezes_both_verified_heroes_and_four_groups(monkeypatch):
     from unittest.mock import mock_open, patch
     import engine

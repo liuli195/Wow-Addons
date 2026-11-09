@@ -755,6 +755,29 @@ def test_three_public_training_calls_keep_latest_checkpoint_observation_when_omi
     assert all(call[2]['reset_events'] == [(500, 'target')] for call in case.calls)
 
 
+def test_public_training_command_releases_registry_lock_before_native_scoring(
+        monkeypatch, public_training_memory, capsys):
+    from contextlib import contextmanager
+    import seed_training
+    import sequence
+    held = [False]
+    @contextmanager
+    def registry_lock():
+        held[0] = True
+        try:
+            yield
+        finally:
+            held[0] = False
+    evaluate = sequence.evaluate
+    def native_boundary(*args, **kwargs):
+        assert not held[0], '正式评分不能占住材料登记锁'
+        return evaluate(*args, **kwargs)
+    monkeypatch.setattr(seed_training, 'writer_lock', registry_lock)
+    monkeypatch.setattr(sequence, 'evaluate', native_boundary)
+    assert seed_training.main(['--project', '/memory', 'run', '--template', str(public_training_memory.template),
+        '--targets', '1', '--workspace', '/memory/work', '--legacy']) == 0
+
+
 def test_training_memory_io_recognizes_windows_paths(public_training_memory):
     """Exercise the same fixture IO with Windows drive/separators even on Linux."""
     import sqlite3

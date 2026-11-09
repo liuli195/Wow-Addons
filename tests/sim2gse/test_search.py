@@ -211,6 +211,34 @@ def test_new_public_task_honors_custom_memory_limit_before_reference(public_form
     assert seen == [512]
 
 
+def test_public_task_rejects_v3_seeds_when_complete_source_evidence_is_missing(public_formal_memory):
+    from copy import deepcopy
+    import seed_training
+    import simulation_config
+    import task
+    from search import digest
+    from test_search_syntax import SIMPLE
+    case = public_formal_memory
+    key = dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target')
+    groups = {f'{scene}-{index}': 'missing-report' for scene in
+        ('nominal', 'jitter', 'pause', 'slow', 'phase') for index in range(3)}
+    storage = dict(version=3, report_groups=groups, archive_group='missing-archive', archive_count=4,
+        archive_digest='0' * 64, seed_source_group='missing-source', seed_source_digest='0' * 64)
+    scenarios = {scene: dict(batches=[dict(batch_key=f'{scene}-{index}', storage_version=3,
+        storage_group_key='missing-report') for index in range(3)])
+        for scene in ('nominal', 'jitter', 'pause', 'slow', 'phase')}
+    programs = [[['outbreak']], [['death_coil']], [['scourge_strike']], [['outbreak'], ['death_coil']]]
+    rows = [dict(candidate_id=str(index), class_name='deathknight', spec='unholy',
+        configuration_key=key, program=program, contract_version=3,
+        evaluation=dict(syntax=simulation_config.syntax_receipt(SIMPLE), program_digest=digest(program),
+            scenarios=deepcopy(scenarios), evidence_storage=deepcopy(storage)))
+        for index, program in enumerate(programs)]
+    case.records['seed_selected', seed_training.shared_scope(key, SIMPLE)] = rows
+    with pytest.raises(task.TaskError, match='训练.*证据'):
+        task.run_task('/memory/role.simc', '/memory/formal',
+            syntax_config=SIMPLE, simulation_config=dict(target_count=1, scene='single_target'))
+
+
 def test_mutate_fetches_parent_feedback_only_after_its_usage_gate():
     import random
     from search import mutate

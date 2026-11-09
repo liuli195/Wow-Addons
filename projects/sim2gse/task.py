@@ -928,7 +928,7 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
         if (evidence.get('status') != 'completed' or not cohort
                 or evaluation.get('finalists') != cohort):
             raise InvalidRecordError('正式遗传冠军入围名单与完整正式来源不符')
-        validate_evidence(record, state, character, verify_reports=verify_reports)
+        validate_evidence(record, state, character, verify_reports=verify_reports or contract == 3)
         return evidence
     if not verify_reports:
         import math
@@ -1529,6 +1529,9 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     else:
                         state['seed_selected_snapshot'] = read_records('seed_selected', shared_scope(configuration_key))
                         contract = selected_contract_version(state['seed_selected_snapshot'])
+                    if contract == 3:
+                        from population_training import verify_selected_evidence
+                        verify_selected_evidence(state['seed_selected_snapshot'])
                     state['training_champion_snapshot'] = (dict(source_kind='training_champion',
                         status='not_applicable', reason='新版四条已包含正常冠军及稳定代表') if contract in (2, 3) else training_champion(
                         character.class_name, character.spec, simulation_config, engines=identities,

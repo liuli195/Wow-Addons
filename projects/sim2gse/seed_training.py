@@ -973,6 +973,7 @@ def selected_contract_version(rows, syntax=None):
             scenarios = evaluation.get('scenarios') or {}
             if (storage.get('version') != 3 or not isinstance(storage.get('report_groups'), dict)
                     or not storage.get('archive_group') or not storage.get('archive_digest')
+                    or not storage.get('seed_source_group') or not storage.get('seed_source_digest')
                     or set(scenarios) != {'nominal', 'jitter', 'pause', 'slow', 'phase'}):
                 raise ValueError('新版训练成果缺少完整证据直接位置')
             for scenario in scenarios.values():
@@ -1229,57 +1230,57 @@ def main(argv=None):
             parallelism = load_training_config(_document=document, max_processes=args.max_processes, max_trainings=args.max_trainings)
             max_processes = parallelism['max_processes']
             from seed_activity import training_activity
-            with writer_lock():
-                sources = registry_rows()
-                if args.candidate_id:
-                    selected_materials(args.candidate_id, sources=sources)  # 明显非法编号不依赖模板或引擎。
-                ready = check_training(args.template, use_burst=args.use_burst, training_config=parallelism)
-                with training_activity() as cancel_event:
+            with training_activity() as cancel_event:
+                with writer_lock():
+                    sources = registry_rows()
+                    if args.candidate_id:
+                        selected_materials(args.candidate_id, sources=sources)  # 明显非法编号不依赖模板或引擎。
+                    ready = check_training(args.template, use_burst=args.use_burst, training_config=parallelism)
                     sources = sync_history(template_character(Path(ready['template']).read_text(encoding='utf-8')),
                                            sources=sources)
                     material_options = ({'materials': selected_materials(args.candidate_id, sources=sources)}
                                         if args.candidate_id else {})
-                    jobs = [(row, targets) for row in ready['templates'] for targets in dict.fromkeys(args.targets)]
-                    output, errors = [], []
-                    from population_training import group_configs, group_workers
-                    configs = group_configs(args.workspace, ready['templates'], parallelism, args.targets)
-                    workers = group_workers(args.workspace, ready['templates'], parallelism, args.targets,
-                                            effective_configs=configs)
-                    if args.command == 'run':
-                        for row, targets in jobs:
-                            config = configs[(str(Path(row['template']).resolve()), targets)]
-                            batches = config['top_k'] * 5 * config['retest_batches']
-                            print(f"{Path(row['template']).name}/{targets}：五场景复测最多"
-                                  f"{config['top_k']}候选、{batches}请求批、"
-                                  f"{batches * config['retest_iterations']}请求迭代（非实际有效样本）；"
-                                  f"本次分组并发上限{workers}", file=sys.stderr, flush=True)
-                    with ThreadPoolExecutor(max_workers=workers) as pool:
-                        futures = []
-                        for row, targets in jobs:
-                            expected = next((group['configuration_key'] for group in ready['groups']
-                                if group['template'] == row['template'] and group['configuration_key']['target_type'] ==
-                                ('single_target' if targets == 1 else 'aoe')), None)
-                            futures.append(pool.submit(_run_training, Path(row['template']), targets, args.workspace,
-                                cancel_event=cancel_event, use_burst=args.use_burst,
-                                prepare_only=args.command == 'prepare', sources=sources,
-                                training_config=parallelism, max_processes=args.max_processes, max_trainings=args.max_trainings,
-                                expected_key=expected, burst_identity=row['burst_identity'],
-                                search_config=search_config, new_search_config=options,
-                                _timeline_origin=timeline_origin, **material_options))
-                        # Deterministic result order; one group's failure never cancels another group.
-                        try:
-                            for (row, targets), future in zip(jobs, futures):
-                                try:
-                                    output.append(future.result())
-                                except (ValueError, OSError, RuntimeError) as error:
-                                    output.append(dict(status='paused', template=row['template'], targets=targets, error=str(error)))
-                                    errors.append(Path(row['template']).name + '/' + str(targets) + ': ' + str(error))
-                        except KeyboardInterrupt as error:
-                            cancel_event.set()
-                            raise TaskCancelled('任务已取消；等待所属评价刷尾并保存暂停') from error
-                    if errors:
-                        print(json.dumps(output, ensure_ascii=False))
-                        raise ValueError('; '.join(errors))
+                jobs = [(row, targets) for row in ready['templates'] for targets in dict.fromkeys(args.targets)]
+                output, errors = [], []
+                from population_training import group_configs, group_workers
+                configs = group_configs(args.workspace, ready['templates'], parallelism, args.targets)
+                workers = group_workers(args.workspace, ready['templates'], parallelism, args.targets,
+                                        effective_configs=configs)
+                if args.command == 'run':
+                    for row, targets in jobs:
+                        config = configs[(str(Path(row['template']).resolve()), targets)]
+                        batches = config['top_k'] * 5 * config['retest_batches']
+                        print(f"{Path(row['template']).name}/{targets}：五场景复测最多"
+                              f"{config['top_k']}候选、{batches}请求批、"
+                              f"{batches * config['retest_iterations']}请求迭代（非实际有效样本）；"
+                              f"本次分组并发上限{workers}", file=sys.stderr, flush=True)
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = []
+                    for row, targets in jobs:
+                        expected = next((group['configuration_key'] for group in ready['groups']
+                            if group['template'] == row['template'] and group['configuration_key']['target_type'] ==
+                            ('single_target' if targets == 1 else 'aoe')), None)
+                        futures.append(pool.submit(_run_training, Path(row['template']), targets, args.workspace,
+                            cancel_event=cancel_event, use_burst=args.use_burst,
+                            prepare_only=args.command == 'prepare', sources=sources,
+                            training_config=parallelism, max_processes=args.max_processes, max_trainings=args.max_trainings,
+                            expected_key=expected, burst_identity=row['burst_identity'],
+                            search_config=search_config, new_search_config=options,
+                            _timeline_origin=timeline_origin, **material_options))
+                    # Deterministic result order; one group's failure never cancels another group.
+                    try:
+                        for (row, targets), future in zip(jobs, futures):
+                            try:
+                                output.append(future.result())
+                            except (ValueError, OSError, RuntimeError) as error:
+                                output.append(dict(status='paused', template=row['template'], targets=targets, error=str(error)))
+                                errors.append(Path(row['template']).name + '/' + str(targets) + ': ' + str(error))
+                    except KeyboardInterrupt as error:
+                        cancel_event.set()
+                        raise TaskCancelled('任务已取消；等待所属评价刷尾并保存暂停') from error
+                if errors:
+                    print(json.dumps(output, ensure_ascii=False))
+                    raise ValueError('; '.join(errors))
         elif args.state == 'prepared':
             if not args.config_key:
                 raise ValueError('读取准备快照必须指定--config-key')
@@ -1304,6 +1305,9 @@ def main(argv=None):
                 elif scope:
                     output = result_store.read_records('seed_selected', shared_scope(scope))
                     selected_contract_version(output)
+                if selected_contract_version(output) == 3:
+                    from population_training import verify_selected_evidence
+                    verify_selected_evidence(output)
         print(json.dumps(output, ensure_ascii=False))
         return 0
     except (ValueError, OSError, RuntimeError) as error:

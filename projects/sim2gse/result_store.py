@@ -592,6 +592,17 @@ def publish_search_records(state):
             batches=record['batches'], candidate=candidate))
     if not rows:
         return
+    previous = state.get('evidence_storage') or {}
+    if previous.get('archive_group'):
+        saved = read_search_records(previous, state['run_id'], condition=state.get('condition'))
+        def core(record):
+            return (record['candidate_key'], record['program_digest'], record['score'],
+                    [{key: batch.get(key) for key in ('data_key', 'request', 'dps', 'samples', 'variance')}
+                     for batch in record['batches']])
+        if len(saved) > len(rows) or any(core(left) != core(right) for left, right in zip(saved, rows)):
+            raise InvalidRecordError('已保存搜索摘要与当前冻结成绩冲突')
+        if len(saved) == len(rows):
+            return  # 恢复时少了历史编译对象，不改变已验证的来源身份。
     checksum = digest(rows)
     group = state['run_id'] + '_a' + checksum[:20]
     storage = dict(state.get('evidence_storage') or dict(version=3, report_groups={}),

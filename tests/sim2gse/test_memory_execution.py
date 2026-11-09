@@ -165,9 +165,13 @@ def test_search_summary_rejects_corruption_without_rewriting_evidence(tmp_path, 
     state = dict(run_id='summary-proof', condition='frozen')
     request = dict(condition='frozen', purpose='search', behavior_identity='candidate', program=[])
     row = dict(status='success', request=request, data_key=digest(request), dps=42., samples=31, variance=0.)
-    state['archive'] = [dict(key='candidate', program=[['outbreak']], score=42., batches=[row])]
+    state['archive'] = [dict(key='candidate', program=[['outbreak']], score=42., batches=[row],
+                             candidate=dict(source='search', text='exported sequence'))]
     result_store.publish_search_records(state)
     storage = state['evidence_storage']
+    state['archive'][0].pop('candidate')  # 恢复副本会省略历史编译对象，业务凭据没有变化。
+    result_store.publish_search_records(state)
+    assert state['evidence_storage'] == storage
     records = result_store.read_search_records(storage, state['run_id'], condition='frozen')
     assert len(records) == 1
     records[0]['score'] = 999.
