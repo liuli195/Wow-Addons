@@ -434,7 +434,8 @@ def training_condition_input(template_sha, engines, config, simulation_config, *
 def _identity_config(config):
     # 保留历史训练编号的固定日志字段；本次采集只读实际执行配置。
     legacy = dict(config, diagnostic_logging=True, diagnostics='summary', search_observability='off')
-    return {key: value for key, value in legacy.items() if key not in ('max_processes', 'search_timeline')}
+    return {key: value for key, value in legacy.items() if key not in (
+        'max_processes', 'search_timeline', 'memory_execution', 'checkpoint_interval_seconds', 'memory_limit_mb')}
 
 
 def semantic_condition(payload, versions):
@@ -688,14 +689,20 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     context = header['context'] if header else None
     context_rebuilt = bool(active and context is None)
     runtime = runtime or TaskRuntime(600, cancel_event=cancel_event, diagnostic_logging=config['diagnostic_logging'])
+    runtime.memory_execution = config.get('memory_execution', False)
+    runtime.memory_limit_mb = config.get('memory_limit_mb', 4096)
+    reference_pending = None
     if context_rebuilt:
         setup = Path(workspace).resolve() / 'preparation' / config_key[:12] / uuid.uuid4().hex
-        setup.mkdir(parents=True)
         profile = setup / 'standard.simc'
-        profile.write_text(text, encoding='utf-8')
+        memory_report = {} if runtime.memory_execution else None
+        if not runtime.memory_execution:
+            setup.mkdir(parents=True)
+            profile.write_text(text, encoding='utf-8')
         native = reference(profile, setup / 'reference', character, runtime=runtime,
                            iterations=100, simulation_config=simulation_config,
-                           summary_excluded_spell_ids=definition['excluded_spell_ids'] if definition else ())
+                           summary_excluded_spell_ids=definition['excluded_spell_ids'] if definition else (),
+                           **(dict(profile_text=text, report_sink=memory_report) if runtime.memory_execution else {}))
         actual_character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
         all_capabilities, capabilities, burst_context = prepare_loop(native, actual_character, setup, runtime,
                                                      definition=definition, interval_ms=config['input_interval_ms'])
@@ -705,11 +712,14 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
                                                  burst_context=burst_context, rule_snapshot=inputs['rule_snapshot'])
         reference_key = digest(dict(condition=semantic_condition(current_input, semantic_versions()),
                                     purpose='seed_reference'))
-        result_store.write_batch(reference_key, dict(batch_key=reference_key, run_id=config_key,
+        reference_row = dict(batch_key=reference_key, run_id=config_key,
             purpose='seed_reference', dps=native['dps'], samples=native['samples'],
-            report=json.loads((setup / 'reference/native.json').read_text(encoding='utf-8'))),
-            diagnostic_logging=config['diagnostic_logging'], runtime=runtime)
-        (setup / 'reference/native.json').unlink()
+            report=memory_report if runtime.memory_execution else json.loads((setup / 'reference/native.json').read_text(encoding='utf-8')))
+        if runtime.memory_execution:
+            reference_pending = (reference_key, reference_row)
+        else:
+            result_store.write_batch(reference_key, reference_row, diagnostic_logging=config['diagnostic_logging'], runtime=runtime)
+            (setup / 'reference/native.json').unlink()
         context = dict(native=native, all_capabilities=all_capabilities, capabilities=capabilities,
                        burst=burst_context, configuration_key=scope_key, representations={})
     if context:
@@ -846,6 +856,8 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     header['checksum'] = digest([{key: value for key, value in row.items() if key != 'checksum'}
                                 for row in snapshot])
     _check_cancelled(cancel_event)
+    if reference_pending is not None:
+        result_store.write_batch(*reference_pending, diagnostic_logging=config['diagnostic_logging'], runtime=runtime)
     if snapshot != cached:
         result_store.write('seed_prepared', config_key, snapshot, schema=PREPARED_SCHEMA)
     stats = dict(registry_sources=len(sources), active_sources=len(active),

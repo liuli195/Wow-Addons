@@ -113,6 +113,8 @@ def run(*, profile, character, capabilities, reference, destination, runtime,
         training_runner=_evolution(store, capabilities, runtime, ga_config, scenarios=('nominal',)))
     if timeline is not None:
         timeline.stop('stagnation')
+    if store.memory_execution:
+        store.flush_reports(final=True)
     qualified = _retest_scores(ga, store, condition=condition_key, stage_plan=plan,
         config=ga_config, character=character, simulation_config=simulation_config, scenarios=('nominal',))
     if len(qualified) != len(ga['finalists']) or not qualified:

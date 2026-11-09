@@ -134,6 +134,32 @@ class ProcessTimeout(RuntimeError):
     """单个原生进程超出允许时长。"""
 
 
+class _MemoryCounters(ctypes.Structure):
+    _fields_ = [('cb', wintypes.DWORD), ('faults', wintypes.DWORD),
+                *[(name, ctypes.c_size_t) for name in ('peak_working', 'working', 'peak_paged',
+                    'paged', 'peak_nonpaged', 'nonpaged', 'pagefile', 'peak_pagefile', 'private')]]
+
+
+_MEMORY_QUERY = None
+
+
+def check_memory_limit(limit_mb):
+    """约束整个应用进程的私有内存，多个任务共用同一上限。"""
+    global _MEMORY_QUERY
+    if _MEMORY_QUERY is None:
+        query = ctypes.WinDLL('psapi', use_last_error=True).GetProcessMemoryInfo
+        query.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+        query.restype = wintypes.BOOL
+        _MEMORY_QUERY = query
+    counters = _MemoryCounters()
+    counters.cb = ctypes.sizeof(counters)
+    if not _MEMORY_QUERY(wintypes.HANDLE(-1), ctypes.byref(counters), counters.cb):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if counters.private > limit_mb * 1024 * 1024:
+        raise MemoryError('应用内存超过配置上限，已停止计算；可从最近恢复点续接')
+    return counters.private
+
+
 @dataclass(frozen=True)
 class ProcessResult:
     returncode: int
@@ -169,6 +195,8 @@ class TaskRuntime:
         return max(0.0, min(self.budget_seconds, self.phase_limit) - self.elapsed_seconds)
 
     def check(self) -> None:
+        if getattr(self, 'memory_execution', False):
+            check_memory_limit(getattr(self, 'memory_limit_mb', 4096))
         if self.cancel_event.is_set():
             raise TaskCancelled("任务已取消")
         if self.remaining_seconds <= 0:

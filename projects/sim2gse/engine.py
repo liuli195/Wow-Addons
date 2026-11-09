@@ -128,7 +128,7 @@ def prepare_loop(native, character, folder, runtime, *, definition=None, interva
     """页面、训练及复测共用的原生目录和审核爆发准备。"""
     from dataclasses import replace
     folder = Path(folder)
-    all_capabilities = inspect(native, folder / 'capabilities')
+    all_capabilities = inspect(native, None if getattr(runtime, 'memory_execution', False) else folder / 'capabilities')
     from action_summary import scoped
     if definition is None:
         if 'action_summary' in native:
@@ -174,7 +174,8 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
         started = diagnostic_start() if runtime.diagnostic_logging else None
         try:
             proc = run_command(command, ROOT if memory_io else folder, timeout_seconds=timeout_seconds, runtime=runtime,
-                               on_start=on_start, **(dict(input_data=profile_text.encode('utf-8')) if memory_io else {}))
+                               on_start=on_start, **(dict(input_data=profile_text.encode('utf-8'),
+                                   output_limit=64 * 1024 * 1024) if memory_io else {}))
         finally:
             if runtime.diagnostic_logging:
                 diagnostic_finish(runtime, 'native.execute', started)

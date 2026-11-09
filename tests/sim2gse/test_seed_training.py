@@ -560,7 +560,7 @@ def public_training_memory(monkeypatch, training_cli, prepared_input, memory_ga)
     monkeypatch.setattr(Path, 'glob', lambda path, pattern: iter(
         [path for path in files if path.name == 'identity.json']
         if pattern == '*/*/identity.json' else []))
-    def open_store(folder): return case.store
+    def open_store(folder, **kwargs): return case.store
     open_store.load_state = search.TaskStore.load_state
     monkeypatch.setattr(population_training, 'TaskStore', open_store)
     import sqlite3

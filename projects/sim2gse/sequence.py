@@ -269,7 +269,16 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
             rows.append(f"{step}:" + ','.join(str(pool.index(member) + 1) for member in members)
                         + timeout_ms)
         castsequence_option = 'sim2gse_castsequences=' + '/'.join(rows) + '\n'
-    profile_text = Path(profile).read_text(encoding='utf-8')
+    if memory_io:
+        profiles = getattr(runtime, 'profile_texts', None)
+        if profiles is None:
+            runtime.profile_texts = profiles = {}
+        profile_key = str(Path(profile).resolve())
+        if profile_key not in profiles:
+            profiles[profile_key] = Path(profile).read_text(encoding='utf-8')
+        profile_text = profiles[profile_key]
+    else:
+        profile_text = Path(profile).read_text(encoding='utf-8')
     generated_text = (profile_text + '\n'
                          + 'actions.sim2gse=' + '/'.join(pool) + '\n'
                          + ('sim2gse_optional_spells=' + ','.join(value for value in sorted({

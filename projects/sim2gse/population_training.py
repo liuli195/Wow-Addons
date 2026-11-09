@@ -333,7 +333,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
             if policy:
                 ga['effective_population_size'] = len(ga['population'])
             ga.update(phase='breed', baseline=baseline())
-            store.checkpoint()
+            store.checkpoint(**(dict(boundary='initial') if store.memory_execution else {}))
         while ga['phase'] == 'breed':
             runtime.check()
             if policy and (type(ga.get('effective_population_size')) is not int
@@ -399,7 +399,8 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                 if timeline is not None and store.state.get('formal_search'):
                     timeline.stop('stagnation')
                     timeline.mark('normal_retest_started')
-            store.checkpoint()
+            store.checkpoint(**(dict(boundary='retest' if ga['phase'] == 'retest' else 'generation')
+                                if store.memory_execution else {}))
         archive = {row['key']: row for row in store.state['archive']}
         if ga['phase'] == 'retest':
             finalists = ga['finalists']
@@ -577,12 +578,15 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
         profile.write_text(ready['text'], encoding='utf-8')
     elif profile.read_text(encoding='utf-8') != ready['text']:
         raise ValueError('GA冻结标准角色副本已变化')
-    store = TaskStore(folder)
+    store = TaskStore(folder, **(dict(memory_execution=True,
+        checkpoint_interval_seconds=ready['config']['checkpoint_interval_seconds'])
+        if ready['config'].get('memory_execution') else {}))
     character = replace(ready['character'], spec_id=context['native']['identity']['spec_id'],
                         race=context['native']['identity']['race'])
     execution_config = ready['config']
     runtime = TaskRuntime(float('inf'), cancel_event=cancel_event,
                           diagnostic_logging=execution_config['diagnostic_logging'])
+    runtime.profile_texts = {str(profile.resolve()): ready['text']}
     timeline = None
     if execution_config['search_timeline']:
         from search_timeline import Timeline
@@ -624,6 +628,8 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
                 training_runner=_evolution(store, context['capabilities'], runtime, config))
             if timeline is not None:
                 timeline.stop('stagnation')
+            if store.memory_execution:
+                store.flush_reports(final=True)
             selected = _selected(ga, store, manifest, character, ready, configuration_key)
             runtime.check()
             # Evidence verification precedes the only current-snapshot replacement.
@@ -631,7 +637,8 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
             result_store.write('seed_selected', scope, selected, schema=seeds.SELECTED_V2_SCHEMA)
             ga['phase'] = 'published'
             store.state['status'] = 'completed'
-            store.checkpoint()
+            if not store.memory_execution:
+                store.checkpoint()
             if timeline is not None:
                 timeline.saved('completed')
         return dict(status='completed', algorithm=ALGORITHM, breeding=ga.get('breeding'),
@@ -643,7 +650,7 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
             ineligible=ga.get('ineligible', {}), **syntax_result)
     except BaseException as error:
         store.state.update(status='paused', error=str(error))
-        store.checkpoint()
+        store.checkpoint(**(dict(boundary='pause') if store.memory_execution else {}))
         if timeline is not None:
             status = 'cancelled' if isinstance(error, (TaskCancelled, KeyboardInterrupt)) else 'failed'
             timeline.stop(status)

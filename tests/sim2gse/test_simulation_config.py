@@ -6,6 +6,17 @@ from io import BytesIO
 from pathlib import Path
 import sys
 import unittest
+
+
+def test_training_and_formal_share_memory_execution_settings():
+    from io import StringIO
+    from simulation_config import load_search_config, load_training_search_config
+    text = '[search]\nmemory_execution=false\ncheckpoint_interval_seconds=180\nmemory_limit_mb=512\n'
+    for load in (load_search_config, load_training_search_config):
+        values = load(StringIO(text))
+        assert values['memory_execution'] is False
+        assert values['checkpoint_interval_seconds'] == 180
+        assert values['memory_limit_mb'] == 512
 import json
 import hashlib
 import importlib.util
@@ -356,6 +367,7 @@ class SimulationConfigTests(unittest.TestCase):
             port=0,
             task_options={"simulation_config": config,
                           "search_config": dict(max_processes=5, coarse_iterations=32, retest_batches=3,
+                              memory_execution=True, checkpoint_interval_seconds=600, memory_limit_mb=4096,
                               retest_iterations=128, stagnation_generations=8, top_k=8,
                               tournament_size=3, crossover_probability=.3, target_mutation_probability=.8, random_mutation_probability=.3,
                               iterations=128, random_seed=20260912,

@@ -69,6 +69,8 @@ def test_public_training_preparation_rejects_missing_reference_summary(prepared_
         report = _fast_report(case.inputs['character'], 100., 99)
         report['sim']['players'][0].pop('sim2gse_action_summary')
         files[Path(folder) / 'native.pending.json'] = json.dumps(report)
+        if kwargs.get('profile_text') is not None:
+            return dict(report=report, log='')
     monkeypatch.setattr(engine, 'run', native_report)
     with pytest.raises(ValueError, match='成功摘要'):
         seed_training.ensure_prepared('/memory/template', 1, '/memory/work', inputs=case.inputs,

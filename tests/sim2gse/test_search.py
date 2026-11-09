@@ -48,7 +48,7 @@ def public_formal_memory(monkeypatch, memory_ga):
     monkeypatch.setattr(os,'replace',lambda a,b:files.__setitem__(path(b),files.pop(path(a))))
     monkeypatch.setattr(task,'_task_lease',lambda *a,**k:nullcontext())
     monkeypatch.setattr(seed_activity,'foreground_search',nullcontext)
-    monkeypatch.setattr(search,'TaskStore',lambda folder:case.store)
+    monkeypatch.setattr(search,'TaskStore',lambda folder, **kwargs:case.store)
     monkeypatch.setattr(case.store,'close',lambda:None)
     monkeypatch.setattr(case.store,'recover_reports',lambda *a:None)
     monkeypatch.setattr(engine,'identity',_fast_identity)

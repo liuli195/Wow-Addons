@@ -1019,14 +1019,14 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
     by_key = {row['candidate_data_key']: row for row in candidates}
     if len(by_key) != len(candidates):
         raise TaskError('明确历史候选身份不唯一')
-    from simulation_config import FORMAL_ALGORITHM_DEFAULTS
+    from simulation_config import FORMAL_ALGORITHM_DEFAULTS, EXECUTION_DEFAULTS
     eligible = []
     for run in runs:
         profile, config = decode(run['profile']), decode(run['config'])
         candidate = by_key.get(run['candidate_data_key'])
         identity = (profile or {}).get('identity', {})
         comparable_config = lambda value: {key: item for key, item in value.items()
-            if key not in (*RETIRED_SEARCH_SETTINGS, *FORMAL_ALGORITHM_DEFAULTS,
+            if key not in (*RETIRED_SEARCH_SETTINGS, *FORMAL_ALGORITHM_DEFAULTS, *EXECUTION_DEFAULTS,
                                'search_observability', 'diagnostics', 'diagnostic_logging', 'search_timeline', 'syntax')}
         source_burst, current_burst = decode(run['burst']) or {}, state.get('burst') or {}
         source_context = {key: item for key, item in source_burst.items()
@@ -1039,7 +1039,8 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
                 or decode(run['engines']) != state['engines']
                 or decode(run['simulation_config']) != state['simulation_config']
                 or set(comparable_config(config)) != set(comparable_config(state['config']))
-                or comparable_config(config_for(config, legacy=True)) != comparable_config(state['config'])
+                or comparable_config(config_for({key: value for key, value in config.items()
+                    if key not in EXECUTION_DEFAULTS}, legacy=True)) != comparable_config(state['config'])
                 or source_context != current_context or not run['condition_key']
                 or run['selected_candidate_key'] != run['locked_candidate_key']
                 or not run['selected_candidate_key'] or candidate is None
@@ -1338,7 +1339,9 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                   burst_identity=None, formal_source_run_ids=None):
     from engine import identity, prepare_loop, reference, damage_statistics, COMMON
     from search import TaskStore, _export_search_observability, digest, initial_programs
-    store = TaskStore(destination)
+    store = TaskStore(destination, **(dict(memory_execution=True,
+        checkpoint_interval_seconds=config['checkpoint_interval_seconds'])
+        if config.get('memory_execution') else {}))
     state = store.state
     try:
         run_id = json.loads((destination / 'profile.json').read_text(encoding='utf-8')).get('run_id')
@@ -1373,6 +1376,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
     try:
         original_bytes, _ = _read_utf8(destination / "input.original.simc", description="原始输入副本")
         effective_bytes, _ = _read_utf8(destination / "input.simc", description="任务输入副本")
+        runtime.profile_texts = {str((destination / 'input.simc').resolve()): effective_bytes.decode('utf-8')}
         input_original_sha256 = hashlib.sha256(original_bytes).hexdigest()
         input_effective_sha256 = hashlib.sha256(effective_bytes).hexdigest()
         if (state.get("input_original_sha256") not in (None, input_original_sha256)
@@ -1446,11 +1450,13 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
             if state['phase'] == 'initialize':
                 state['inflight'] = {'initialize': dict(start=runtime.elapsed_seconds, allowance=min(30,runtime.remaining_seconds))}
                 store.save()
+                memory_reference = {} if store.memory_execution else None
                 try:
                     native = reference(destination/'input.simc', destination/'reference', character, runtime=runtime,
                                        iterations=config['iterations'], seed=config['random_seed'],
                                        simulation_config=simulation_config,
-                                       summary_excluded_spell_ids=definition['excluded_spell_ids'] if definition else ())
+                                       summary_excluded_spell_ids=definition['excluded_spell_ids'] if definition else (),
+                                       **(dict(report_sink=memory_reference) if store.memory_execution else {}))
                 finally:
                     if not config['diagnostic_logging']:
                         from engine import discard_diagnostic_files
@@ -1458,7 +1464,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 reference_report_path = destination / 'reference' / 'native.json'
                 reference_valid = reference_stored = False
                 try:
-                    reference_report = json.loads(reference_report_path.read_text(encoding='utf-8'))
+                    reference_report = (memory_reference if store.memory_execution else
+                        json.loads(reference_report_path.read_text(encoding='utf-8')))
                     reference_key = digest(dict(run_id=run_id, purpose='reference',
                                                 condition=condition, seed=config['random_seed'],
                                                 iterations=config['iterations']))
@@ -1984,8 +1991,12 @@ def _resume_task(output_root, **kwargs):
         _verify_task_inputs(destination, profile)
         from search import (TaskStore, _export_search_observability, config_for,
                             verify_behavior_identity_state)
-        _require_current_formal_resume(_read_resume_checkpoint(destination))
-        store = TaskStore(destination)
+        checkpoint = _read_resume_checkpoint(destination)
+        _require_current_formal_resume(checkpoint)
+        policy = checkpoint.get('config', {})
+        store = TaskStore(destination, **(dict(memory_execution=True,
+            checkpoint_interval_seconds=policy.get('checkpoint_interval_seconds', 600))
+            if checkpoint.get('memory_checkpoint') else {}))
         try:
             state = store.state
             _require_current_formal_resume(state)
@@ -2202,6 +2213,12 @@ def _batch_locations(destination, keys, *, receipts=None):
 def _read_task(output_root, *, include_search_records=False, include_reports=False,
                include_rule_initialization=True):
     destination = Path(output_root).resolve()
+    from search import _LIVE_TASKS
+    live = _LIVE_TASKS.get(str(destination))
+    if live is not None:
+        progress = live.publish()
+        if progress is not None and progress.get('status') in ('running', 'stopping'):
+            return progress
     progress_path = destination / 'progress.json'
     progress = None
     if progress_path.is_file():

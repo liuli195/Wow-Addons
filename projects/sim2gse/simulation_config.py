@@ -195,6 +195,8 @@ FORMAL_ALGORITHM_DEFAULTS = dict(max_processes=5, coarse_iterations=32,
 SEARCH_RUNTIME_DEFAULTS = dict(iterations=128, random_seed=20260912, search_timeline=False,
     diagnostic_logging=False, diagnostics='summary', search_observability='full',
     input_interval_ms=300, reset_events=())
+EXECUTION_DEFAULTS = dict(memory_execution=True, checkpoint_interval_seconds=600, memory_limit_mb=4096)
+SEARCH_RUNTIME_DEFAULTS.update(EXECUTION_DEFAULTS)
 SEARCH_DEFAULTS = dict(FORMAL_ALGORITHM_DEFAULTS, **SEARCH_RUNTIME_DEFAULTS)
 
 
@@ -245,10 +247,10 @@ def load_training_search_config(path=None, *, syntax_config=SYNTAX_UNSET, _docum
     if 'mutation_probability' in overrides:
         raise ValueError('训练mutation_probability已退役，请改用训练区的target_mutation_probability和random_mutation_probability')
     unsupported = set(overrides) - {'search_timeline', 'diagnostic_logging', 'diagnostics',
-                                    'search_observability', 'input_interval_ms', 'reset_events'}
+                                    'search_observability', 'input_interval_ms', 'reset_events', *EXECUTION_DEFAULTS}
     if unsupported:
         raise ValueError('预训练不支持搜索参数，请使用专用训练配置: ' + ', '.join(sorted(unsupported)))
-    values = {key: value for key, value in section.items() if key == 'search_timeline'}
+    values = {key: value for key, value in section.items() if key in ('search_timeline', *EXECUTION_DEFAULTS)}
     values.update({key: value for key, value in overrides.items() if value is not None})
     values.setdefault('input_interval_ms', _default_interval_ms)
     if values.get('diagnostic_logging'):
