@@ -100,6 +100,8 @@ def prepare_simc(args, ready, policy, sources, document):
             state['native_attempts'] += 1
             checkpoint()
         runtime.reserve_native = reserve
+        state['status'] = 'preparing'
+        checkpoint()
         try:
             with isolated_center(root / 'data'):
                 result_store.write('burst_definitions', 'current_252', [definition])

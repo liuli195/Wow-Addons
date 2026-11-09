@@ -172,7 +172,7 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
     from copy import deepcopy
     from unittest.mock import Mock
     import result_store,seed_training
-    source=dict(label='ABC-C',spec='unholy',class_name='deathknight',source='plugin:Smolbreather',
+    source=dict(source_id='manual:registration-fixture',label='ABC-C',spec='unholy',class_name='deathknight',source='plugin:Smolbreather',
         original='15 ordered spell ids',instructions='continuous unmodified key',semantic='rewritten',
         changes=['remove movement'],family='plugin-opener',core=[['putrefy'],['death_coil']],
         program=[['outbreak'],['putrefy'],['death_coil']])
@@ -192,6 +192,10 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
     writes.reset_mock()
     assert seed_training.register('/memory/cleaned.json')==first
     writes.assert_not_called()
+    scope = source.pop('allowed_groups')
+    with pytest.raises(ValueError, match='新增材料必须提供明确适用组'):
+        seed_training.register('/memory/cleaned.json')
+    source['allowed_groups'] = scope
     source.pop('changes')
     with pytest.raises(ValueError,match='清洗件必须包含'): seed_training.register('/memory/cleaned.json')
     writes.assert_not_called()

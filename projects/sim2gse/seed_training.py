@@ -122,7 +122,7 @@ def register(path):
     with writer_lock():
         rows = registry_rows()
         previous = next((item for item in rows if item['source_id'] == row['source_id']), None)
-        if previous is None and row.get('allowed_groups') is None:
+        if row.get('allowed_groups') is None and (previous is None or source_groups(previous) is not None):
             raise ValueError('新增材料必须提供明确适用组；只有既有旧来源可保留共享政策')
         if previous and previous['program'] == row['program']:
             row['candidate_id'] = previous['candidate_id']

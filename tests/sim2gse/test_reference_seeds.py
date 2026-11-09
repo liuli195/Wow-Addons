@@ -117,6 +117,7 @@ def test_refresh_command_recovers_storage_failure_and_rejects_drift_corruption_a
     writes = []
     def store_write(table, key, rows, **kw):
         assert table != 'seed_candidates', 'preparation cannot publish the registry'
+        assert json.loads((root / 'plan.json').read_text(encoding='utf-8'))['status'] == 'preparing'
         writes.append(table)
         if table == 'seed_prepared' and writes.count('seed_prepared') == 2:
             raise OSError('constructed write failure')
@@ -140,6 +141,12 @@ def test_refresh_command_recovers_storage_failure_and_rejects_drift_corruption_a
     plan_path.write_text(json.dumps(dict(completed, checksum='broken')), encoding='utf-8')
     assert seeds.main(arguments) == 2
     assert '校验损坏' in capsys.readouterr().err
+    completed['status'] = 'preparing'
+    completed['checksum'] = digest({k: v for k, v in completed.items() if k != 'checksum'})
+    plan_path.write_text(json.dumps(completed), encoding='utf-8')
+    before = list(writes)
+    assert seeds.main(arguments) == 2
+    assert '非正常退出' in capsys.readouterr().err and writes == before
     completed.update(status='paused', used_seconds=300)
     completed['groups'][0]['status'] = 'preparing'
     completed['checksum'] = digest({k: v for k, v in completed.items() if k != 'checksum'})
