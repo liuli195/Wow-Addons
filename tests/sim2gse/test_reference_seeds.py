@@ -97,6 +97,25 @@ def test_preparation_filters_new_sources_by_actual_group_before_dedup(prepared_i
     assert [row['source_id'] for row in ready['entries']] == ['legacy']
 
 
+def test_prepared_cache_roundtrip_decodes_scope_without_rebuilding_reference(prepared_input, monkeypatch):
+    from copy import deepcopy
+    import result_store, seed_training as seeds
+    row = prepared_input.source('scoped', [['outbreak']])
+    row['allowed_groups'] = [dict(specialization_id=252, hero_talent='rider_of_the_apocalypse',
+                                 target_type='single_target', target_count=1)]
+    seeds.ensure_prepared('/profile', 1, '/memory', sources=[row], inputs=prepared_input.inputs)
+    disk = deepcopy(prepared_input.writes[-1][2])
+    for record in disk:
+        for key, kind in seeds.PREPARED_SCHEMA.items():
+            if kind == 'JSON' and record[key] is not None:
+                record[key] = json.dumps(record[key])
+    monkeypatch.setattr(result_store, 'read_records', lambda *a, **kw: deepcopy(disk))
+    ready = seeds.ensure_prepared('/profile', 1, '/memory', sources=[row], inputs=prepared_input.inputs)
+    assert ready['preparation']['context_rebuilt'] is False
+    assert ready['preparation']['sources_rebuilt'] == 0
+    assert ready['queue'][0]['sources'][0]['allowed_groups'] == row['allowed_groups']
+
+
 def test_weighted_generator_matches_frozen_legacy_output_and_resumes():
     import hashlib
     import random

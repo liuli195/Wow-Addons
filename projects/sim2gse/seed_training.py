@@ -668,7 +668,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
         cached = result_store.read_records('seed_prepared', config_key)
     except result_store.InvalidRecordError:
         cached = []  # 明确损坏可重建；权限、存储及临时读失败仍直接报错。
-    json_fields = ('program', 'core', 'initial_program', 'adaptation', 'context', 'representative_program')
+    json_fields = ('program', 'core', 'initial_program', 'adaptation', 'context', 'representative_program', 'allowed_groups')
     try:
         for row in cached:
             for name in json_fields:
