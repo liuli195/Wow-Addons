@@ -919,6 +919,7 @@ def test_public_formal_resume_rejects_old_breeding_without_rescoring(monkeypatch
 
 
 def test_public_formal_history_explains_each_current_crossover_input(public_formal_memory):
+    import task
     result = run_task('/memory/role.simc', '/memory/formal',
         simulation_config=dict(target_count=1, scene='single_target'),
         search_config=dict(target_mutation_probability=1., random_mutation_probability=1.,
@@ -934,6 +935,9 @@ def test_public_formal_history_explains_each_current_crossover_input(public_form
         else:
             assert after == before
     assert any(row.get('sampled_mutation') == 'target' and 'parent_program' in row for row in events)
+    reread = task.read_task('/memory/formal')
+    assert reread['search']['breeding'] == result['search']['breeding']
+    assert reread['search']['breeding_statistics'] == result['search']['breeding_statistics']
 
 
 def test_public_formal_observation_keeps_illegal_child_regeneration(monkeypatch, public_formal_memory):

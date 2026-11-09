@@ -422,7 +422,8 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
             batch_keys.add(data_key)
     search_metric_names = ('batch_requests', 'batch_cache_hits', 'native_batch_starts',
                            'canonicalized_duplicates', 'configuration_key',
-                           'effective_population_size', 'coarse_rejections', 'last_fallbacks')
+                           'effective_population_size', 'coarse_rejections', 'last_fallbacks',
+                           'breeding', 'breeding_statistics')
     search_metrics = {name: search[name] for name in search_metric_names if name in search}
     initialization = result.get('rule_initialization') or (state or {}).get('rule_initialization')
     if initialization:
@@ -1949,6 +1950,9 @@ def _require_current_formal_resume(state):
         reject_removed_search_settings(state.get('config') or {})
     except ValueError as error:
         raise TaskError('旧搜索能力已移除，身份不兼容，请创建新任务: ' + str(error)) from error
+    if not all(key in (state.get('config') or {}) for key in
+            ('target_mutation_probability', 'random_mutation_probability', 'crossover_probability')):
+        raise TaskError('旧正式繁殖配置已退役，身份不兼容；原完整成果仅可查看，请创建新任务')
     from simulation_config import verify_syntax_receipt
     try:
         verify_syntax_receipt(state.get('syntax'), (state.get('config') or {}).get('syntax'))

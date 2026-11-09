@@ -73,6 +73,12 @@ class SimulationConfigTests(unittest.TestCase):
                              search_timeline=False, search_observability='full'))
             with self.assertRaisesRegex(task.TaskError, '创建新任务'):
                 dual_task.resume('/memory/saved', search_config=dict(iterations=128))
+            for name, value in (('target_mutation_probability', .9),
+                                ('random_mutation_probability', .1), ('crossover_probability', .5)):
+                count = len(written)
+                with self.assertRaisesRegex(task.TaskError, '创建新任务'):
+                    dual_task.resume('/memory/saved', search_config={name:value})
+                self.assertEqual(len(written), count)
             dual_task.resume('/memory/saved', syntax_config={'loop':False})
             self.assertEqual(written[-1]['config']['syntax'],SIMPLE)
             with self.assertRaisesRegex(task.TaskError,'创建新任务'):

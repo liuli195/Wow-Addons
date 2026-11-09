@@ -412,6 +412,39 @@ class ImportInspectionTests(unittest.TestCase):
 
 
 class InterfaceTests(unittest.TestCase):
+    def test_page_displays_configured_three_probabilities_and_execution_order(self):
+        self.server.task_options = dict(search_config=dict(target_mutation_probability=.75,
+            random_mutation_probability=.25,crossover_probability=.4))
+        page = self._json_request('GET', '/')
+        for name, percent in [('targetMutation',75),('randomMutation',25),('crossover',40)]:
+            self.assertIn(f'id="{name}" type="number" min="0" max="100" step="any" value="{percent}"',page)
+        self.assertIn('目标变异 → 随机变异 → 交叉', page)
+        self.assertIn('合计可以超过100%', page)
+
+    def test_page_request_freezes_three_independent_probabilities(self):
+        import dual_task
+        source = SimpleNamespace(write_text=lambda *a, **k: None)
+        destination = self.server.task_root / ('d' * 32)
+        self.server.task_options = dict(search_config=dict(target_mutation_probability=.7,
+            random_mutation_probability=.2, crossover_probability=.4))
+        with patch.object(self.server, 'task_paths', return_value=(source, destination)), \
+                patch.object(dual_task, 'start', return_value=SimpleNamespace(done=True)) as start:
+            self._json_request('POST', '/api/tasks', dict(profile=sample_profile(), mode='dual',
+                target_mutation_probability=.8, random_mutation_probability=.3, crossover_probability=.3))
+            actual = start.call_args.kwargs['search_config']
+            self.assertEqual([actual[name] for name in ('target_mutation_probability',
+                'random_mutation_probability','crossover_probability')], [.8,.3,.3])
+            self.assertEqual(self.server.task_options['search_config']['target_mutation_probability'], .7)
+            for name in ('target_mutation_probability','random_mutation_probability','crossover_probability'):
+                for value in (None, False, -.1, 1.1):
+                    with self.subTest(name=name,value=value), self.assertRaises(HTTPError) as caught:
+                        self._json_request('POST', '/api/tasks', dict(profile=sample_profile(),mode='dual',**{name:value}))
+                    self.assertEqual(caught.exception.code, 400)
+            for value in (0, False, .8):
+                with self.assertRaises(HTTPError) as caught:
+                    self._json_request('POST','/api/tasks',dict(profile=sample_profile(),mode='dual',mutation_probability=value))
+                self.assertIn('退役', json.loads(caught.exception.read())['error'])
+
     def setUp(self) -> None:
         global _friendly_error, _public_state, create_server, run_task
         global sample_profile
@@ -470,13 +503,14 @@ class InterfaceTests(unittest.TestCase):
 
     def test_terminal_parent_does_not_show_stale_scene_as_running(self):
         import result_store
+        from search import config_for
         from dual_task import PARENT_SCHEMA
         task_id = 'a' * 32
         row = dict.fromkeys(PARENT_SCHEMA)
         row.update(parent_id=task_id, formal_search_version=1, status='failed',
                    phase='single_target', error='native trace failed',
                    input_sha256='frozen', definition_id='reviewed', spec_id=252,
-                   config=dict(input_interval_ms=200,syntax=syntax_for()),
+                   config=config_for(dict(input_interval_ms=200,syntax=syntax_for())),
                    syntax=syntax_receipt(syntax_for()), simulation_config={},
                    rules={}, engines={}, preparation_seconds=1., packaging_seconds=0.,
                    single_target_path='single_target', aoe_path='aoe',
@@ -492,6 +526,15 @@ class InterfaceTests(unittest.TestCase):
                 self.assertEqual(state['scenes'][1]['status'], 'pending')
                 self.assertTrue(state['recoverable'])
                 self.assertFalse(state['result_ready'])
+            row['config'].pop('target_mutation_probability')
+            row['config'].pop('random_mutation_probability')
+            row['config']['mutation_probability'] = .8
+            state = self._json_request('GET', '/api/tasks/' + task_id)
+            self.assertFalse(state['recoverable'])
+            self.assertIn('仅可查看', state['result_note'])
+            with self.assertRaises(HTTPError) as caught:
+                self._json_request('POST', '/api/tasks/' + task_id + '/resume', {})
+            self.assertIn('退役', json.loads(caught.exception.read())['error'])
             row['config'].pop('syntax')
             row['syntax']=None
             state=self._json_request('GET','/api/tasks/'+task_id)
@@ -790,6 +833,7 @@ class InterfaceTests(unittest.TestCase):
                     expected = 200 if resets else builtin
                     selection = dict(input_interval_ms=200) if resets and (mode != 'dual' or resets == 'file300') else {}
                     self._json_request('POST', '/api/tasks', dict(profile=sample_profile(), mode=mode,
+                        target_mutation_probability=.8,
                         gse=imported, sequence_name='INTERVAL', version=1, gse_click_ms=expected, gcd_ms=1500, **selection))
                     if resets:
                         with self.assertRaises(HTTPError) as caught:
@@ -800,10 +844,13 @@ class InterfaceTests(unittest.TestCase):
                         self.assertIn('点击对齐', json.loads(caught.exception.read())['error'])
                     options = (dual if mode == 'dual' else single).call_args.kwargs['search_config']
                     self.assertEqual(options['input_interval_ms'], expected)
+                    self.assertEqual([options[name] for name in ('target_mutation_probability',
+                        'random_mutation_probability','crossover_probability')], [.8,.2,.4])
                 self.assertIn('step="1" value="' + ('300' if resets == 'file300' else '200') + '"', self._json_request('GET', '/'))
             self.assertEqual(document.call_count, reads)
         for resets in (False, True, 'file300'):
             settings = dict(reset_events=[[400, 'shift']]) if resets else {}
+            settings.update(target_mutation_probability=.7,random_mutation_probability=.2,crossover_probability=.4)
             if resets == 'file300':
                 settings['input_interval_ms'] = 300
             with patch.object(ThreadingHTTPServer, '__init__', socket_open), patch.object(Path, 'mkdir'), \
@@ -969,11 +1016,21 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     assert.equal(await checkbox.isChecked(),false);
     await checkbox.setChecked(true);
     await page.locator('#profile').fill(input.profile);
+    await page.locator('#targetMutation').fill('110');
+    await page.locator('#start').click();
+    assert.equal(submitted.length,0,'非法概率不应发起计算');
+    await page.locator('#targetMutation').fill('80');
+    await page.locator('#randomMutation').fill('30');
+    await page.locator('#crossover').fill('30');
     finishPolling=new Promise(resolve=>{releasePolling=resolve;});
     await page.locator('#start').click();
     await page.locator('#cancel').waitFor({state:'visible'});
     assert.equal(submitted.at(-1).body.mode,'dual');
     assert.equal(submitted.at(-1).body.diagnostic_logging,true);
+    assert.equal(submitted.at(-1).body.target_mutation_probability,.8);
+    assert.equal(submitted.at(-1).body.random_mutation_probability,.3);
+    assert.equal(submitted.at(-1).body.crossover_probability,.3);
+    assert.equal(await page.locator('#targetMutation').isDisabled(),true);
     const count=submitted.length;
     await checkbox.setChecked(false);
     assert.equal(submitted.length,count,'勾选不应修改正在运行的任务');
@@ -983,6 +1040,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     await page.locator('#resume').click();
     await page.waitForFunction(()=>!document.querySelector('#start').disabled);
     assert.ok(submitted.at(-1).path.endsWith('/resume'));
+    assert.equal(submitted.at(-1).body.target_mutation_probability,undefined,'恢复不提交页面的新概率');
     assert.equal(submitted.at(-1).body.diagnostic_logging,false);
     assert.equal(await page.locator('#resume').isVisible(),true,'失败后仍可继续');
     await page.locator('#gseImport').fill('!GSE3!browser-fixture');
@@ -1003,6 +1061,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     page.on('response',async response=>{if(response.url().includes('/api/tasks/')&&response.request().method()==='GET')state=await response.json();});
     await page.goto(input.url);
     assert.equal(await page.locator('#interval').inputValue(),'200');
+    for(const id of ['targetMutation','randomMutation','crossover'])assert.equal(await page.locator('#'+id).inputValue(),'0');
     assert.equal(await page.locator('#resultSection').isVisible(),false);
     await page.locator('#interval').fill('180');
     await page.locator('#profile').fill(input.profile);
@@ -1011,6 +1070,7 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
     assert.equal(await page.locator('#resultSection').isVisible(),true,await page.locator('#error').textContent());
     const text=await page.locator('#result').inputValue();assert.match(text,/^!GSE3!/);
     assert.equal(state.input_interval_ms,180);
+    assert.deepEqual(state.breeding_policy.probabilities,{target_mutation_probability:0,random_mutation_probability:0,crossover_probability:0});
     assert.equal(Object.values(state.syntax).some(Boolean),false);
     assert.match(await page.locator('#syntaxSummary').innerText(),/一键一技能/);
     assert.equal(submitted.mode,'dual');assert.equal(submitted.target_count,undefined);
@@ -1047,6 +1107,14 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         self.assertEqual(len(self.server.tasks), 1, '一次开始只创建一个双场任务')
         from task import read_task
         destination, _ = next(iter(self.server.tasks.values()))
+        children = [read_task(destination / scene) for scene in ('single_target','aoe')]
+        self.assertEqual([child['simulation_config']['target_count'] for child in children], [1,5])
+        self.assertNotEqual(children[0]['reference_data_key'],children[1]['reference_data_key'])
+        for child in children:
+            self.assertEqual(child['search']['breeding']['order'],['target','random','crossover'])
+            self.assertEqual(child['search']['breeding']['probabilities'],dict(
+                target_mutation_probability=0.,random_mutation_probability=0.,crossover_probability=0.))
+            self.assertEqual(child['search']['breeding_statistics']['status'],'not_collected')
         saved = read_task(destination / 'aoe', include_search_records=True)
         self.assertEqual(saved['simulation_config']['target_count'], 5)
         self.assertEqual(saved['config']['input_interval_ms'], 180)

@@ -4,7 +4,7 @@
 
 **Blocked by（阻塞任务）:** 03：训练成果与全部起点贯通正式推荐导出。
 
-**Status（状态）:** ready-for-agent
+**Status（状态）:** in-progress
 
 ## 验收条件
 

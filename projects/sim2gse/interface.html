@@ -8,8 +8,13 @@
 <header><h1>角色按键序列优化器</h1><p>粘贴角色信息，找到适合你的按键序列。</p></header>
 <main>
 <section><h2><span class="number">01</span>导入角色</h2>
+<p id="breedingSummary" class="note" role="status"></p>
 <p id="syntaxSummary" class="note" role="status">开始后显示本次使用的语法范围。</p>
 <label for="profile">角色导出字符串</label><textarea id="profile" rows="7" spellcheck="false" placeholder="在这里粘贴从 SimC（角色导出插件）复制的完整文本"></textarea>
+<label for="targetMutation">目标变异概率（%）</label><input id="targetMutation" type="number" min="0" max="100" step="any" value="{{target_mutation_probability}}">
+<label for="randomMutation">随机变异概率（%）</label><input id="randomMutation" type="number" min="0" max="100" step="any" value="{{random_mutation_probability}}">
+<label for="crossover">交叉概率（%）</label><input id="crossover" type="number" min="0" max="100" step="any" value="{{crossover_probability}}">
+<p class="note">按目标变异 → 随机变异 → 交叉的顺序执行，各自独立抽取，合计可以超过100%。继续未完成任务时沿用原来的概率。</p>
 <p id="error" class="error" role="alert" hidden></p><label for="interval">模拟按键间隔（毫秒）</label><input id="interval" type="number" min="50" max="2000" step="1" value="200"><p class="note">依次寻找单目标和5目标序列，每场遗传搜索自然早停后完成正常场景复测，没有总时间硬截止；可随时取消。另需读取角色和整理结果。爆发宏中的内容自动排除在普通循环之外。地面技能在角色脚下释放。</p><button id="start">开始运行</button>
 </section>
 <section><h2>导入第三方 GSE 序列并模拟 DPS（每秒伤害）</h2>
@@ -38,6 +43,7 @@
 const profile=document.getElementById('profile'),start=document.getElementById('start'),copy=document.getElementById('copy'),result=document.getElementById('result');
 const error=document.getElementById('error'),progress=document.getElementById('progress'),progressText=document.getElementById('progressText'),progressNote=document.getElementById('progressNote'),resultNote=document.getElementById('resultNote'),resultSection=document.getElementById('resultSection');
 const interval=document.getElementById('interval');
+const breedingFields=['targetMutation','randomMutation','crossover'].map(id=>document.getElementById(id));
 const targetCount=document.getElementById('targetCount');
 const cancelButton=document.getElementById('cancel'),resumeButton=document.getElementById('resume');
 const outputs={single_target:[result,copy],aoe:[document.getElementById('aoeResult'),document.getElementById('copyAoe')],burst:[document.getElementById('burstResult'),document.getElementById('copyBurst')]};
@@ -63,6 +69,7 @@ async function poll(){
   const response=await fetch('/api/tasks/'+taskId,{cache:'no-store'}),state=await response.json();
   if(!response.ok)throw new Error(state.error||'读取任务状态失败');
   error.hidden=true;if(state.storage_unavailable)showError(state.error);
+  if(state.breeding_policy){const p=state.breeding_policy.probabilities;document.getElementById('breedingSummary').textContent='当前任务：目标 '+(p.target_mutation_probability*100)+'%、随机 '+(p.random_mutation_probability*100)+'%、交叉 '+(p.crossover_probability*100)+'%；继续任务沿用此配置。';}
   if(state.syntax_summary)document.getElementById('syntaxSummary').textContent=state.syntax_summary+(state.start_rejection_count?' 已拒绝 '+state.start_rejection_count+' 条不合规起点。':'');
   if(state.progress==null){progress.removeAttribute('value');}else{progress.value=state.progress;} progressText.textContent=phases[state.phase]||state.phase||'正在处理';
   progressNote.textContent='已完成 '+(state.completed_batches||0)+' 个真实模拟批次，已用时 '+Math.round(state.elapsed_seconds||0)+' 秒。';
@@ -82,13 +89,14 @@ async function poll(){
   timer=setTimeout(poll,500);
  }catch(e){showError('暂时无法读取进度，正在重新连接；计算可能仍在继续。');timer=setTimeout(poll,1000);}
 }
-function finish(){running=false;start.disabled=false;refreshImportSupport();profile.disabled=false;interval.disabled=false;targetCount.disabled=false;gseImport.disabled=false;cancelButton.hidden=true;start.textContent='开始运行';importStart.textContent='模拟导入序列';if(timer)clearTimeout(timer);}
+function finish(){running=false;for(const field of breedingFields)field.disabled=false;start.disabled=false;refreshImportSupport();profile.disabled=false;interval.disabled=false;targetCount.disabled=false;gseImport.disabled=false;cancelButton.hidden=true;start.textContent='开始运行';importStart.textContent='模拟导入序列';if(timer)clearTimeout(timer);}
 start.addEventListener('click',async()=>{
  if(running)return;
  if(!profile.value.trim()){showError('请先粘贴角色导出字符串。');profile.focus();return;}
  if(!interval.checkValidity()||!interval.value){showError('按键间隔必须为 50 至 2000 毫秒的整数。');interval.focus();return;}
- running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;start.textContent='运行中…';error.hidden=true;resetResult();resetProgress();progressText.textContent='正在启动任务';progressNote.textContent='正在等待真实任务事件。';
- try{const response=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile:profile.value,mode:'dual',input_interval_ms:Number(interval.value),diagnostic_logging:diagnosticLogging.checked})});const state=await response.json();if(!response.ok)throw new Error(state.error||'任务启动失败');taskId=state.task_id;localStorage.setItem('sim2gse-task',taskId);cancelButton.hidden=false;poll();}
+ for(const field of breedingFields){if(!field.value||!field.checkValidity()){showError('三项概率必须分别在0%至100%之间。');field.focus();return;}}
+ running=true;for(const field of breedingFields)field.disabled=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;start.textContent='运行中…';error.hidden=true;resetResult();resetProgress();progressText.textContent='正在启动任务';progressNote.textContent='正在等待真实任务事件。';
+ try{const response=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile:profile.value,mode:'dual',input_interval_ms:Number(interval.value),diagnostic_logging:diagnosticLogging.checked,target_mutation_probability:Number(breedingFields[0].value)/100,random_mutation_probability:Number(breedingFields[1].value)/100,crossover_probability:Number(breedingFields[2].value)/100})});const state=await response.json();if(!response.ok)throw new Error(state.error||'任务启动失败');taskId=state.task_id;localStorage.setItem('sim2gse-task',taskId);cancelButton.hidden=false;poll();}
  catch(e){showError(e.message||'任务启动失败。');finish();}
 });
 function refreshImportSupport(){const entry=inspected?.sequences.find(item=>item.name===importSequence.value);const selected=entry?.version_support?.find(item=>item.version===Number(importVersion.value));const preflightPassed=selected?.simulation_preflight_passed===true;importStart.disabled=running||!preflightPassed;if(!inspected||!entry||!selected)return;const summary='已解析 '+inspected.sequences.length+' 条序列；语法：'+(inspected.syntax.join('、')||'无')+'。';const status=selected.support_status==='requires_character_validation'?'语法和版本预检通过；角色技能和物品映射尚未核对，启动时会验证，未匹配则不会返回 DPS。':'当前序列不能模拟：'+(selected.support_reason||'固定版本不支持。');importInspection.textContent=summary+status;}
@@ -98,14 +106,14 @@ importSequence.addEventListener('change',fillVersions);
 importVersion.addEventListener('change',refreshImportSupport);
 inspectImport.addEventListener('click',async()=>{if(running)return;try{const response=await fetch('/api/gse/inspect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gse:gseImport.value.trim()})});const data=await response.json();if(!response.ok)throw new Error(data.error||'检查导入内容失败');inspected=data;importSequence.replaceChildren();for(const item of data.sequences)importSequence.add(new Option(item.name,item.name));fillVersions();importSelection.hidden=false;refreshImportSupport();error.hidden=true;}catch(e){inspected=null;importSelection.hidden=true;importStart.disabled=true;showError(e.message||'检查导入内容失败');}});
 importStart.addEventListener('click',async()=>{if(running||!inspected)return;const member=inspected.sequences.find(item=>item.name===importSequence.value);const selected=member?.version_support?.find(item=>item.version===Number(importVersion.value));if(selected?.simulation_preflight_passed!==true){showError(selected?.support_reason||'当前序列不能模拟。');refreshImportSupport();return;}if(!profile.value.trim()){showError('请先粘贴角色导出字符串。');profile.focus();return;}if(!interval.checkValidity()||!gcdMs.checkValidity()){showError('请检查两个毫秒数输入。');return;}
- running=true;start.disabled=true;importStart.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;gseImport.disabled=true;importStart.textContent='模拟中…';error.hidden=true;resetResult();resetProgress();progressText.textContent='正在启动导入模拟';
+ running=true;for(const field of breedingFields)field.disabled=true;start.disabled=true;importStart.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;gseImport.disabled=true;importStart.textContent='模拟中…';error.hidden=true;resetResult();resetProgress();progressText.textContent='正在启动导入模拟';
  try{const response=await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile:profile.value,target_count:Number(targetCount.value),mode:'import',gse:gseImport.value.trim(),sequence_name:importSequence.value,version:Number(importVersion.value),gse_click_ms:Number(interval.value),gcd_ms:Number(gcdMs.value),input_interval_ms:Number(interval.value),diagnostic_logging:diagnosticLogging.checked})});const state=await response.json();if(!response.ok)throw new Error(state.error||'导入模拟启动失败');taskId=state.task_id;poll();}
  catch(e){showError(e.message||'导入模拟启动失败');finish();}
 });
 copy.addEventListener('click',async()=>{if(!result.value.trim())return;const status=document.getElementById('copyStatus');try{await navigator.clipboard.writeText(result.value);status.textContent='已复制。';}catch{result.focus();result.select();status.textContent='请按 Ctrl+C（复制快捷键）复制已选中的字符串。';}});
 for(const [field,button] of [outputs.aoe,outputs.burst,[collectionResult,copyCollection]])button.addEventListener('click',async()=>{if(!field.value)return;const status=document.getElementById('copyStatus');try{await navigator.clipboard.writeText(field.value);status.textContent='已复制。';}catch{field.focus();field.select();status.textContent='请按 Ctrl+C（复制快捷键）复制已选中的字符串。';}});
 cancelButton.addEventListener('click',async()=>{cancelButton.disabled=true;try{const response=await fetch('/api/tasks/'+taskId+'/cancel',{method:'POST'});if(!response.ok)throw new Error();}catch{showError('取消请求未送达，请重试。');}finally{cancelButton.disabled=false;}});
-resumeButton.addEventListener('click',async()=>{if(running)return;running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;resumeButton.hidden=true;cancelButton.hidden=false;try{const response=await fetch('/api/tasks/'+taskId+'/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({diagnostic_logging:diagnosticLogging.checked})}),state=await response.json();if(!response.ok)throw new Error(state.error||'任务不能继续');running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;resumeButton.hidden=true;cancelButton.hidden=false;poll();}catch(e){showError(e.message);finish();resumeButton.hidden=false;}});
-const savedTask=localStorage.getItem('sim2gse-task');if(savedTask){taskId=savedTask;running=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;cancelButton.hidden=false;poll();}
+resumeButton.addEventListener('click',async()=>{if(running)return;running=true;for(const field of breedingFields)field.disabled=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;resumeButton.hidden=true;cancelButton.hidden=false;try{const response=await fetch('/api/tasks/'+taskId+'/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({diagnostic_logging:diagnosticLogging.checked})}),state=await response.json();if(!response.ok)throw new Error(state.error||'任务不能继续');running=true;for(const field of breedingFields)field.disabled=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;resumeButton.hidden=true;cancelButton.hidden=false;poll();}catch(e){showError(e.message);finish();resumeButton.hidden=false;}});
+const savedTask=localStorage.getItem('sim2gse-task');if(savedTask){taskId=savedTask;running=true;for(const field of breedingFields)field.disabled=true;start.disabled=true;profile.disabled=true;interval.disabled=true;targetCount.disabled=true;cancelButton.hidden=false;poll();}
 </script>
 </html>
