@@ -54,30 +54,33 @@ def test_owned_memory_process_limits_and_cancellation(tmp_path, case):
 
 
 @pytest.mark.real
-def test_real_compiled_sequence_memory_scoring_matches_complete_report(tmp_path):
+@pytest.mark.parametrize('targets', [1, 5])
+def test_real_compiled_sequence_memory_scoring_matches_complete_report(tmp_path, targets):
     import codec
     import sequence
     profile = tmp_path / 'role.simc'
     profile.write_text(sample_profile(), encoding='utf-8')
     character = parse_character(sample_profile())
-    native = engine.reference(profile, tmp_path / 'reference', character, iterations=2)
+    config = dict(target_count=targets)
+    native = engine.reference(profile, tmp_path / 'reference', character, iterations=8, simulation_config=config)
     task_runtime = runtime.TaskRuntime(30)
     task_runtime.memory_execution = True
     work = tmp_path / 'memory'
     blocks = [[dict(kind='spell', spell_id=77575, name='Outbreak', simc_action='outbreak')]]
     candidate = codec.export(blocks, work, identity=native['identity'], runtime=task_runtime)
-    full = sequence.evaluate(profile, candidate, work, character=character, iterations=2,
-        trace=True, runtime=task_runtime, memory_io=True)
-    rough = sequence.evaluate(profile, candidate, work, character=character, iterations=2,
-        trace=False, runtime=task_runtime, memory_io=True, report_kind='summary')
+    full = sequence.evaluate(profile, candidate, work, character=character, iterations=8,
+        trace=True, runtime=task_runtime, memory_io=True, simulation_config=config)
+    rough = sequence.evaluate(profile, candidate, work, character=character, iterations=8,
+        trace=False, runtime=task_runtime, memory_io=True, report_kind='summary', simulation_config=config)
     legacy = sequence.evaluate(profile, candidate, tmp_path / 'file-comparison',
-        character=character, iterations=2, trace=True, runtime=runtime.TaskRuntime(30))
+        character=character, iterations=8, trace=True, runtime=runtime.TaskRuntime(30), simulation_config=config)
     assert full['consistent'] and full['trace']
     assert full['summary'] == legacy['summary']
     assert full['trace'] == legacy['trace']
     assert battle_report(full['report']) == battle_report(legacy['report'])
     assert rough['summary'] == full['summary']
     assert engine.damage_statistics(rough['report'], character) == engine.damage_statistics(full['report'], character)
+    assert rough['summary']['samples'] == 7
     assert 'stats' not in rough['report']['sim']['players'][0]
     assert not work.exists(), '编译与模拟不得创建应用过程文件或目录'
 

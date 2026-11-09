@@ -245,10 +245,10 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
 
     def compile(mode):
         runtime.check()
-        input_data = cbor2.dumps(wire_value(payload))
-        expected_text = 'return ' + lua_literal(dict(expected, payload=payload))
         if memory_io:
             return _memory_compile(payload, dict(expected, payload=payload), mode, runtime, on_lua_start)
+        input_data = cbor2.dumps(wire_value(payload))
+        expected_text = 'return ' + lua_literal(dict(expected, payload=payload))
         if getattr(runtime, 'diagnostic_logging', False):
             (folder / 'input.cbor').write_bytes(input_data)
             (folder / 'expected.lua').write_text(expected_text, encoding='utf-8')
