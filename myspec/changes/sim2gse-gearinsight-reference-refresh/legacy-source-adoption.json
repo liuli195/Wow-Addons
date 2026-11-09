@@ -1,0 +1,237 @@
+{
+  "version": 1,
+  "status": "proposed_exact_adoption_not_applied",
+  "evidence": ".local/sim2gse/population-expansion-pilot/runs/20261109-multicondition-01/inputs.json",
+  "evidence_sha256": "9504cef1f79d8693b19614d3cf3421ce9ad58636f686c464bc635ad114270386",
+  "policy": "replace_only_explicit_legacy_sources_after_validation_keep_evidence",
+  "legacy_sources": [
+    {
+      "source_id": "437c4a59117b7bb2fe85128904b3e17ca20b8afe62671234e4bf3f23403d3d54",
+      "candidate_id": "437c4a59117b7bb2fe85128904b3e17ca20b8afe62671234e4bf3f23403d3d54",
+      "source_revision": "eb2af67ed6bf28e121781ad83468bb0db9a6c853775173be023eee7278ccecbc",
+      "label": "GearInsight ordered opener 01",
+      "original_sha256": "6edfdcb7324a6f522bc3bb4d257eb47e8724925a6df645e249be756ef5f78c65",
+      "program_sha256": "d71698b6224191e3112d33be974801fcf6dae6a9cccc30f6d3e73a1fb56d55c8"
+    },
+    {
+      "source_id": "8ad9a6bd7d4104e67e298a266e450cc3498f365f527ddbd1b462ab831adccdf0",
+      "candidate_id": "8ad9a6bd7d4104e67e298a266e450cc3498f365f527ddbd1b462ab831adccdf0",
+      "source_revision": "8b76d02c22ce1d13f6c2d52009187ce5e693229d9fb463c1cf42267d32849d1e",
+      "label": "GearInsight ordered opener 02",
+      "original_sha256": "97aa2befcd42d1885aca3b9ea03b3bddbbba65beebae731c346546bc9fb4fdd0",
+      "program_sha256": "2c0b1ef7c79895644d8ff2db24d8497bc316e3a893746e46e70bd7b8b353ab04"
+    },
+    {
+      "source_id": "5ded0d4bc5f13c224187c156d1634efbde2800e8c5ea76978ff0027db6d6ebd9",
+      "candidate_id": "5ded0d4bc5f13c224187c156d1634efbde2800e8c5ea76978ff0027db6d6ebd9",
+      "source_revision": "9d268e7baaa00436150c9903561e297200d2282a0149fa77691758bbe740406a",
+      "label": "GearInsight ordered opener 03",
+      "original_sha256": "94b3a3887c42e99d14ed7711d50e5408dcac884c57d1c19a0a2418887cbba5db",
+      "program_sha256": "277c7408fd24e87bb6fdde2575f5f6ef83f00f16d0f6691372c10ec05154a6fe"
+    },
+    {
+      "source_id": "505ba2d61406589be7fd9d1627529da0ecda9a5cc5417505fd371bfa295caf16",
+      "candidate_id": "505ba2d61406589be7fd9d1627529da0ecda9a5cc5417505fd371bfa295caf16",
+      "source_revision": "b20230aa5f27b122dfc1fa8d5e7e314ab07cb035c29e30300b55896fe6281de3",
+      "label": "GearInsight ordered opener 04",
+      "original_sha256": "fb0bdb218dda9f38352f12832b29dbd7c3820431307d8d15811a682275d05b50",
+      "program_sha256": "36ef4cc437dad20450b0217d414f1fa2669b76f7fba76b3b27698edc044cd3ed"
+    },
+    {
+      "source_id": "3122d9fc9706b3a5f9f8ceb1dfc01b79635d7ab900d0a82768518ff3aa861edb",
+      "candidate_id": "3122d9fc9706b3a5f9f8ceb1dfc01b79635d7ab900d0a82768518ff3aa861edb",
+      "source_revision": "5cc849be4e6cba67ca12053b5b1de649f73cf6239637351760506e7756e7d8c7",
+      "label": "GearInsight ordered opener 05",
+      "original_sha256": "7930ee25b6e3a1f44a04d70679cf39721d6a3b2e79cf8b7648fc9ec6010aa2e7",
+      "program_sha256": "37f09253fe96614841febec596e3aee644b5bf84144c0f3e63b10cb6ffe650de"
+    },
+    {
+      "source_id": "4b04d55112883a621d01b825511622d29e7e3042ecfa331561844b13e5fe4af0",
+      "candidate_id": "4b04d55112883a621d01b825511622d29e7e3042ecfa331561844b13e5fe4af0",
+      "source_revision": "f7780c4e9d9266f75a22b04ddf26baa686f59409e5bf156c9c333f48b7a13138",
+      "label": "GearInsight ordered opener 06",
+      "original_sha256": "2c2f09b6e245923b6b3bf4a43a2a722977bb1fcf0aa592525aaa116700b918fe",
+      "program_sha256": "36c3303e068fb84f64b9c0aa46713e572181ec29bc424cf8f4ef9c9a8977af43"
+    },
+    {
+      "source_id": "ba90b7dcfa3a4a43081ead9097c1716c1a64ff45eb4cff6be23ffd37617ede95",
+      "candidate_id": "ba90b7dcfa3a4a43081ead9097c1716c1a64ff45eb4cff6be23ffd37617ede95",
+      "source_revision": "8793f70119bae4abca320b5d821a5d7c26784042a7fecb1be3cbd17b739e3708",
+      "label": "GearInsight ordered opener 07",
+      "original_sha256": "e5b660c57ab4f7793264a2f44b89a20c44a1931c18acce72934f631a4ae8569b",
+      "program_sha256": "bc93276654cf146c35f6b4d4e85331a0c0eb2f38d489d27dbcf3e352a5c314ec"
+    },
+    {
+      "source_id": "a3c56a532d4a50af9377391f366fa31e5c678d55c1b8532937a3d47404f6f8c6",
+      "candidate_id": "a3c56a532d4a50af9377391f366fa31e5c678d55c1b8532937a3d47404f6f8c6",
+      "source_revision": "4848bea7a778bf769a2e6e08ab8cca1dcd6083ba0c8892848f0e6000f7550ae5",
+      "label": "GearInsight ordered opener 08",
+      "original_sha256": "3ba0d0747412f7e27e04c296209f09046a6f46f2adedc5214472a0ee7622902a",
+      "program_sha256": "440822b1a34da429762c7a4a709e5e627918cb3f4916af9c764de0efeb660934"
+    },
+    {
+      "source_id": "6892fc708fd7bfa79a311de48013ec3425b1011057c676d68e02a4dd0c7ec49e",
+      "candidate_id": "6892fc708fd7bfa79a311de48013ec3425b1011057c676d68e02a4dd0c7ec49e",
+      "source_revision": "6648f03018c1a4adb10361e30bb1e7e934ef845d934bc44df9d483825efbb13c",
+      "label": "GearInsight ordered opener 09",
+      "original_sha256": "42fe8872cdc8a8f267c8cc0e9e8ff90be1a7a63f630ab577b911dabbc6c9278f",
+      "program_sha256": "847c4ccd9240da1de793b6df0c472a60a7d49d9b6bf44281ba470b32fbad9ecc"
+    },
+    {
+      "source_id": "64303a46c9b0a09d31340ffb97e8e120c08f2f2d31b32f7d211b3cc9caa7cf62",
+      "candidate_id": "64303a46c9b0a09d31340ffb97e8e120c08f2f2d31b32f7d211b3cc9caa7cf62",
+      "source_revision": "23608e8becdf565a5e194ff0057d236d019fab4c4e9d44ac988317fa79fd90bf",
+      "label": "GearInsight ordered opener 10",
+      "original_sha256": "cdfe8d93f19310bd2353c1ef9ff3493cfea3b8651400e4fba228b3130b614527",
+      "program_sha256": "df63c05956e0d99b894cecaf56cd74111cfecdbcca1f4d3e0ab72c80a4ca7360"
+    },
+    {
+      "source_id": "7f81d99ed253389991a6a75906278d2668d5a2fe7add270af7c2c69f51d6d3dd",
+      "candidate_id": "7f81d99ed253389991a6a75906278d2668d5a2fe7add270af7c2c69f51d6d3dd",
+      "source_revision": "626ddae6748b19d8f257a3d41d6ccc9c228cbea61bc9fe1f921cb84dd110ea09",
+      "label": "GearInsight ordered opener 11",
+      "original_sha256": "6a58a13469433f0b09659db3fae701077731f3ff7c1235c17e4832a7743235ba",
+      "program_sha256": "f9c3bd92deb574af055e64af7fda01bef38d298f9390849d32c382ee25def854"
+    },
+    {
+      "source_id": "793ac60e4cc1d09f946914d70441df92599a4cd14730c6cf4b66ad54c4a22d6f",
+      "candidate_id": "793ac60e4cc1d09f946914d70441df92599a4cd14730c6cf4b66ad54c4a22d6f",
+      "source_revision": "54aaa0efb559a25cbe8bd61aea5a853605363416d19f387a40d420e032f57a57",
+      "label": "GearInsight ordered opener 12",
+      "original_sha256": "55511285a9b830e910c461f8716391b278e7669c7b9337af5728b96c74a8b81b",
+      "program_sha256": "eb34607d1628b8f50ab3fe359c50e54b425fa530216660922db631321b97567a"
+    },
+    {
+      "source_id": "92a90eda00fefa8d43433596c2d11118f410e13a712298326bf83a87c4f31e3d",
+      "candidate_id": "92a90eda00fefa8d43433596c2d11118f410e13a712298326bf83a87c4f31e3d",
+      "source_revision": "b25b98149fb199cde783250535a32a05ebdc44f00d9381888843759f22764e67",
+      "label": "GearInsight ordered opener 13",
+      "original_sha256": "b5dff2e7e0c71527c573d96baf602e0a1e5f1dc897e42ca7f96b359c33f4c759",
+      "program_sha256": "c2b4ce810a107e7a4c8a0f7daf67000a3f614c2947d6c4e0a2a82cd3642d7adf"
+    },
+    {
+      "source_id": "417a3d6f359db04663ebda05f37e1070d616c198dd8a2528fa75da1728d80c16",
+      "candidate_id": "417a3d6f359db04663ebda05f37e1070d616c198dd8a2528fa75da1728d80c16",
+      "source_revision": "8919f326f837bfa412ea7b03299898238d03f1ead5c799940333e299d734db3a",
+      "label": "GearInsight ordered opener 14",
+      "original_sha256": "b6ee5e66f90456eccad90feba1c57625fa9e87f2b912ab2091bbea2eab1f72a1",
+      "program_sha256": "31f41d1d30dc2806c0bc318dc7094318e74e7e24aa679034760596e817fe7bd3"
+    },
+    {
+      "source_id": "62e0dcdc9a58c23d231a599b4fdcaac87acd54416e01804d2bc086c93ea2c9b3",
+      "candidate_id": "62e0dcdc9a58c23d231a599b4fdcaac87acd54416e01804d2bc086c93ea2c9b3",
+      "source_revision": "cb4eb6f15eb19e485b25ee81b7c4023e9f315af3a7db82388f0f5eed91de47bf",
+      "label": "GearInsight ordered opener 15",
+      "original_sha256": "c38010d90d61b16800e7dfee378fa7baa36596be353aec8adf22bcacff504d65",
+      "program_sha256": "a569efdf158df0da45b27465a44d4828fa5485f31fe29f38a1772e0902377bf2"
+    },
+    {
+      "source_id": "e2dcfba5dd5703a116b91f7384d118636c299bfe3a430ef3f47fcb649dd56acd",
+      "candidate_id": "e2dcfba5dd5703a116b91f7384d118636c299bfe3a430ef3f47fcb649dd56acd",
+      "source_revision": "63e702500d48b6964ae21a21e2bacfd8ff887c6d907b56fff0d78534d4e6b45f",
+      "label": "GearInsight ordered opener 16",
+      "original_sha256": "092061e6e408254553507b0e7c334fb2cbc535f6b1fc2f3887fb5b4988837f6a",
+      "program_sha256": "6e6b80fb141265d35f615e21327e496e2b38973286b4b9f38198872988d25318"
+    },
+    {
+      "source_id": "5027499876e8edec3685d162cc453a8876da5ff46e8911d7d99dec5ae2490272",
+      "candidate_id": "5027499876e8edec3685d162cc453a8876da5ff46e8911d7d99dec5ae2490272",
+      "source_revision": "5a53fe02217c4d0f097e6db247fb592754010e8d5270855edb0294229d57f967",
+      "label": "GearInsight ordered opener 17",
+      "original_sha256": "d8a44da1aae03c2c71e37e41ba955c8ee7d0bdc712658b247b23a0e7f62be917",
+      "program_sha256": "03c83f4c4c42abd29f7596972b0700ee542eefad3ade5f4309df353b690ab659"
+    },
+    {
+      "source_id": "79b2bd805f37571bd29c419d11cfb9f777ccdde80e7ec3e90f07b98ee32d3879",
+      "candidate_id": "79b2bd805f37571bd29c419d11cfb9f777ccdde80e7ec3e90f07b98ee32d3879",
+      "source_revision": "dc079b6d90908d52f30ab61ac66694339e24052939b0bb803764cb2f87c184e4",
+      "label": "GearInsight ordered opener 18",
+      "original_sha256": "99aa640b3d21219d268bedccc12ee09ef78e3ff292d4f2e41bf399ab527ac6a3",
+      "program_sha256": "7d234629e3611094a00a7157183c295d427b90a9b4230d379a19084878b769e9"
+    },
+    {
+      "source_id": "1dcab2d506baaf5dab6f3fe48b8a28361f1c7388afe95e3119f70dd396096da5",
+      "candidate_id": "1dcab2d506baaf5dab6f3fe48b8a28361f1c7388afe95e3119f70dd396096da5",
+      "source_revision": "89557d734047bca0d4e20e8d5b645d15c3bee3d160e282cb3ff8fc41b4da2d7e",
+      "label": "GearInsight ordered opener 19",
+      "original_sha256": "600e2ed59437757e7b85fc0771eb30447c0a68a91cdb4707a78119ef99e112e5",
+      "program_sha256": "405ae80f9052cbae7c5158dea18b389b3aa27b548d3ffba627c61ff0f35d496c"
+    },
+    {
+      "source_id": "7157b6138d953b9554f2bc8b6041415387700abbf96b0ba836ab366c0448403e",
+      "candidate_id": "7157b6138d953b9554f2bc8b6041415387700abbf96b0ba836ab366c0448403e",
+      "source_revision": "54b08d1d602f2d2470ffc59f61ce32b57750007cfb7755eeb24e45f9cd642e99",
+      "label": "GearInsight ordered opener 20",
+      "original_sha256": "b55a050427f66114431a22fbe55ca0cf9fa46886a834519d05e71e571e2ef18a",
+      "program_sha256": "049ed95350bbef41fe043057fdb86049dc7c0e242577227b82e127c334fa2124"
+    },
+    {
+      "source_id": "04b5507b429425a4f3f242acbdc76b62169d5d96d15c9ef008807916ff67048d",
+      "candidate_id": "04b5507b429425a4f3f242acbdc76b62169d5d96d15c9ef008807916ff67048d",
+      "source_revision": "cce780b55418b0ef6436b1c17013919922b891df2e2bb780f88684d2f8f4e151",
+      "label": "GearInsight ordered opener 21",
+      "original_sha256": "a56a9f38cc0c325fade22c6c8cefef9a8cf4184cfcbacdbeeb165cc64b51e1ab",
+      "program_sha256": "3def64711990c9ea1780769996f934105ba4d643b4b1face908f2c55ab470642"
+    },
+    {
+      "source_id": "65305d4d7ee21d34df91f774e7549fc4390e2dce901d8a56258b833615bba76a",
+      "candidate_id": "65305d4d7ee21d34df91f774e7549fc4390e2dce901d8a56258b833615bba76a",
+      "source_revision": "7882188cd848754e29f2102899491b74f56fbba21cfaeac3817a945452cb5a86",
+      "label": "GearInsight ordered opener 22",
+      "original_sha256": "c88daa858e6ddfada99164c0dbc632d05979202cd219055abdc9f3dc3d781429",
+      "program_sha256": "5946305b22a25e400097fc6b6120dc350a80433fbbc649887f3a6c3dc151f80d"
+    },
+    {
+      "source_id": "e7fb2803384aaa13c70329099145a9120544b8a574a848848ff17cb37e734cde",
+      "candidate_id": "e7fb2803384aaa13c70329099145a9120544b8a574a848848ff17cb37e734cde",
+      "source_revision": "e6d9e5c31203bac828713f4939b4c7b733b7edcc9d777640a1b23ff81732d45c",
+      "label": "GearInsight ordered opener 23",
+      "original_sha256": "2d7aaa12b924ea7c9cf4f1e1d5e21b963ac54c1e220d6dfaf19583d1405326e0",
+      "program_sha256": "e10afb4e91e3434d2fd1af4c96321900c00ea054d566cea96aaa8e35fa5ca485"
+    },
+    {
+      "source_id": "a4425310c4bd22532819cfe53a0f2a57c7cf90503fd046312f50bfeeb1b74f09",
+      "candidate_id": "a4425310c4bd22532819cfe53a0f2a57c7cf90503fd046312f50bfeeb1b74f09",
+      "source_revision": "5b7188f01ae7389c0b0def15fc91f30bb1b233588b5ca0a90741ad881bb8d09e",
+      "label": "GearInsight ordered opener 24",
+      "original_sha256": "52180b5355190f5dacc46b70d0f533ca52e99753434f67506cdfa7d23ef07735",
+      "program_sha256": "7d6ca28bf5053429cccbdfde00ce8e15336a69a5bb95ded501ba9900a01d8b90"
+    },
+    {
+      "source_id": "3c862d7e2ed6fea8c6426e5ec1915682dc38f2d23c68286365ee4e46eebec194",
+      "candidate_id": "3c862d7e2ed6fea8c6426e5ec1915682dc38f2d23c68286365ee4e46eebec194",
+      "source_revision": "d8a11aa0ce20bfdf1ffa413fc076e3814cf0fc840ff40b9a89002eeda0c42d9b",
+      "label": "GearInsight ordered opener 25",
+      "original_sha256": "7d5f9a7c80796427b05d34bcbf73084dfa40fb1d8ddde841ae1b303ea475b207",
+      "program_sha256": "3dd7ab042a1e2173f500ed16cca494cfb723bd332c92d2de914b81a4eba5f260"
+    },
+    {
+      "source_id": "6982fd0e359767fc5417abd1b7c840b15788e7f779ded3cd791503c0e1bc0f60",
+      "candidate_id": "6982fd0e359767fc5417abd1b7c840b15788e7f779ded3cd791503c0e1bc0f60",
+      "source_revision": "46a2195f773ae3eb434bc0372b33094dc86bd1af8f547fd6da25b1e363565897",
+      "label": "GearInsight ordered opener 26",
+      "original_sha256": "9665765f257204cfad33d073bc39205fb95b5807e4f0197e9b95264a9a328809",
+      "program_sha256": "1b2cc3f2b9a7847fbf5ed11fe05c054d7fca17f05c54693d35991e7fa2ba21e3"
+    },
+    {
+      "source_id": "4bd0652b00329e33b8dbc35a0991e7ebfc6f5aa68aeecb26b2b2e20e277d7735",
+      "candidate_id": "4bd0652b00329e33b8dbc35a0991e7ebfc6f5aa68aeecb26b2b2e20e277d7735",
+      "source_revision": "1a051e8829a12d7c207039c8a7b86afadc691800d8ee7a9c6f11abda46dc4dc3",
+      "label": "GearInsight ordered opener 27",
+      "original_sha256": "b6bd301d875dd41de3ec9eb66fa078bc2c12ef23899661715ab92372e27cd4f7",
+      "program_sha256": "6dafea976ccaadf18f68f789feee40712199dd5c51c64322ac2c177d0ce58c4c"
+    },
+    {
+      "source_id": "c347b3be619e9258012b29e305dc5234dd9daa7d5bc67fb5fb9c8bc63b97b7b6",
+      "candidate_id": "c347b3be619e9258012b29e305dc5234dd9daa7d5bc67fb5fb9c8bc63b97b7b6",
+      "source_revision": "5cc6a0b471132121fcd91bea1ba49eb93127dcff00e6a41c53b12c22eeeabbd0",
+      "label": "GearInsight ordered opener 28",
+      "original_sha256": "83c27a9be92f618a57f7c04b76750de01e7798d1e5e9bca929037217f005ce57",
+      "program_sha256": "4de31fc17888c3b0ee9872329a077ba16d13f6ee4bbff64ba98a0e99601b157f"
+    }
+  ],
+  "protected_manual_source_ids": [
+    "manual:gearinsight-sanlayn-b1-20261012",
+    "manual:gearinsight-sanlayn-b2-20261012"
+  ]
+}

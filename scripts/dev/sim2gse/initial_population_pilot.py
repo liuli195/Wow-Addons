@@ -383,35 +383,12 @@ def compare(output, plan, budget, *, data_root=None):
 
         generation_started = time.monotonic()
         rng = random.Random(plan['seed'] + 1)
-        actions = capabilities['actions']
-        total = sum(reference['successes'].values())
-        weights = [.5 * reference['successes'].get(button_key(a), 0) / total + .5 / len(actions)
-                   for a in actions]
-        names = [a['simc_action'] for a in actions]
-        bound = 128 - len(capabilities.get('precombat_actions', []))
-        if bound < 1:
-            raise ValueError('战前动作占满长度，无法新增普通循环')
-        generated, seen = [], {p['key'] for p in parents}
-        new_attempts = 0
-        new_invalid = new_duplicates = offspring_invalid = 0
-        for _ in range(352):
-            budget.runtime.check()
-            new_attempts += 1
-            program = [[name] for name in rng.choices(names, weights, k=rng.randint(1, bound))]
-            try:
-                identity = key(program)
-            except ValueError:
-                new_invalid += 1
-                continue
-            if identity in seen:
-                new_duplicates += 1
-                continue
-            seen.add(identity)
-            generated.append(program)
-            if len(generated) == 32:
-                break
-        if len(generated) != 32:
-            raise ValueError('新增起点在352次提案内未补足32个不同行为')
+        from weighted_seeds import generate
+        generation = generate(capabilities, reference, rng, count=32,
+                              excluded={p['key'] for p in parents}, legal=key, check=budget.runtime.check)
+        generated = generation['programs']
+        new_attempts, new_invalid, new_duplicates = (generation[k] for k in ('attempts', 'invalid', 'duplicates'))
+        offspring_invalid = 0
         report['costs']['groups']['new_starts']['generation_seconds'] = time.monotonic() - generation_started
         generation_started = time.monotonic()
 

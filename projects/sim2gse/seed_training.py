@@ -23,7 +23,7 @@ from runtime import TaskRuntime, TaskCancelled, diagnostic_summary
 CANDIDATE_SCHEMA = dict(candidate_id='VARCHAR', label='VARCHAR', class_name='VARCHAR',
     spec='VARCHAR', source='VARCHAR', source_id='VARCHAR', source_revision='VARCHAR',
     active='BOOLEAN', unavailable_reason='VARCHAR', original='VARCHAR', instructions='VARCHAR',
-    semantic='VARCHAR', changes='VARCHAR[]', family='VARCHAR', core='JSON', program='JSON')
+    semantic='VARCHAR', changes='VARCHAR[]', family='VARCHAR', core='JSON', program='JSON', allowed_groups='JSON')
 PROCESSED_SCHEMA = dict(configuration_key='JSON', candidate_id='VARCHAR', condition='VARCHAR', status='VARCHAR',
     error='VARCHAR', initial_program='JSON', program='JSON', family='VARCHAR', core_retained='BOOLEAN',
     rounds='UBIGINT', stop_reason='VARCHAR', elapsed_seconds='DOUBLE', scores='DOUBLE[]',
@@ -35,7 +35,7 @@ SELECTED_SCHEMA = dict(configuration_key='JSON', candidate_id='VARCHAR', conditi
 SELECTED_V2_SCHEMA = dict(SELECTED_SCHEMA, contract_version='UBIGINT', evaluation='JSON')
 RETEST_SEEDS = (20261008, 20261009, 20261010)
 TRAINING_VERSION = 'seed-training-v2'
-PREPARATION_VERSION = 'seed-preparation-v1'
+PREPARATION_VERSION = 'seed-preparation-v2-scoped-sources'
 PREPARED_SCHEMA = dict(CANDIDATE_SCHEMA, kind='VARCHAR', config_key='VARCHAR',
     version='VARCHAR', program_revision='VARCHAR', status='VARCHAR', reason='VARCHAR',
     initial_program='JSON', behavior_id='VARCHAR', adaptation='JSON', context='JSON',
@@ -90,8 +90,8 @@ def writer_lock():
 
 def register(path):
     row = json.loads(Path(path).read_text(encoding='utf-8'))
-    optional = {'source_id', 'active'}
-    required = set(CANDIDATE_SCHEMA) - {'candidate_id', 'source_id', 'source_revision', 'active', 'unavailable_reason'}
+    optional = {'source_id', 'active', 'allowed_groups'}
+    required = set(CANDIDATE_SCHEMA) - {'candidate_id', 'source_id', 'source_revision', 'active', 'unavailable_reason', 'allowed_groups'}
     if not isinstance(row, dict) or not required <= set(row) or set(row) - required - optional:
         raise ValueError('清洗件必须包含来源、原件、使用说明、语义、清洗记录、家族、核心及程序')
     for key in ('label', 'class_name', 'spec', 'source', 'original', 'instructions', 'family'):
@@ -112,7 +112,9 @@ def register(path):
         raise ValueError('人工来源身份不能为空或使用历史保留前缀')
     if 'active' in row and type(row['active']) is not bool:
         raise ValueError('来源活动状态必须为布尔值')
-    row['candidate_id'] = digest({key: row[key] for key in required | ({'source_id'} if 'source_id' in row else set())})
+    source_groups(row)
+    row['candidate_id'] = digest({key: row[key] for key in required | ({'source_id'} if 'source_id' in row else set())
+                                 | ({'allowed_groups'} if 'allowed_groups' in row else set())})
     row.setdefault('source_id', row['candidate_id'])
     row.setdefault('active', True)
     row['unavailable_reason'] = '' if row['active'] else '来源已明确停用'
@@ -188,7 +190,33 @@ def registry_rows():
         row.setdefault('active', True)
         row.setdefault('unavailable_reason', '')
         row.setdefault('source_revision', digest(row))
+        if 'allowed_groups' in row:
+            row['allowed_groups'] = decode(row['allowed_groups'])
     return rows
+
+
+def source_groups(row):
+    """Null only preserves historical shared sources; managed SimC is always explicit."""
+    groups = decode(row.get('allowed_groups'))
+    if groups is None:
+        if row.get('family') == 'simc-reference-weighted-v1':
+            raise ValueError('新增模拟来源缺少适用组')
+        return None
+    if not isinstance(groups, list) or not groups:
+        raise ValueError('来源适用组必须为非空列表')
+    for group in groups:
+        if (not isinstance(group, dict) or set(group) != {'specialization_id', 'hero_talent', 'target_type', 'target_count'}
+                or group['specialization_id'] != 252 or type(group['specialization_id']) is not int
+                or group['hero_talent'] not in ('rider_of_the_apocalypse', 'sanlayn')
+                or type(group['target_count']) is not int or group['target_count'] not in (1, 5)
+                or group['target_type'] != ('single_target' if group['target_count'] == 1 else 'aoe')):
+            raise ValueError('来源适用组身份无效')
+    return groups
+
+
+def source_in_group(row, group, targets):
+    groups = source_groups(row)
+    return groups is None or dict(group, target_count=targets) in groups
 
 
 def sync_history(character, *, sources=None):
@@ -615,7 +643,7 @@ def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, m
 
 def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burst=False,
                     materials=None, max_processes=None, inputs=None, sources=None, diagnostic_logging=None, search_config=None,
-                    burst_identity=None):
+                    burst_identity=None, runtime=None):
     """run/prepare共用入口：完整快照原子保存成功后才返回可派发队列。"""
     from engine import reference, prepare_loop, configuration_key
     from program import canonicalize_search_program, _search_expanded_nodes, compile_program
@@ -656,7 +684,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     active = [row for row in sources if row.get('active', True) and row['semantic'] != 'unsupported']
     context = header['context'] if header else None
     context_rebuilt = bool(active and context is None)
-    runtime = TaskRuntime(600, cancel_event=cancel_event, diagnostic_logging=config['diagnostic_logging'])
+    runtime = runtime or TaskRuntime(600, cancel_event=cancel_event, diagnostic_logging=config['diagnostic_logging'])
     if context_rebuilt:
         setup = Path(workspace).resolve() / 'preparation' / config_key[:12] / uuid.uuid4().hex
         setup.mkdir(parents=True)
@@ -687,6 +715,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
         context = dict(context, preparation_input=preparation_input, rules=_rule_hashes(relative_to=ROOT),
                        configuration_key=configuration_key(context['native'], simulation_config.get('scene')))
         context['capabilities'] = dict(context['capabilities'], search_syntax=config['syntax'])
+        sources = [row for row in sources if source_in_group(row, context['configuration_key'], targets)]
     # 受检工具/目标资料加载失败是环境错误，不缓存为某条材料非法。
     target_masks = load_targeting(runtime=runtime)['target_masks'] if context else {}
     previous = {row['source_id']: row for row in cached if row.get('kind') == 'source'}
@@ -694,7 +723,8 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     for source in sources:
         runtime.check()
         source = dict(source, program=decode(source['program']), core=decode(source['core']))
-        program_revision = digest({key: source[key] for key in ('program', 'semantic', 'instructions', 'changes')})
+        program_revision = digest(dict({key: source[key] for key in ('program', 'semantic', 'instructions', 'changes')},
+                                       allowed_groups=source_groups(source)))
         old = previous.get(source.get('source_id', source['candidate_id']))
         entry = dict.fromkeys(PREPARED_SCHEMA)
         entry.update(source, source_id=source.get('source_id', source['candidate_id']), kind='source',
@@ -785,6 +815,8 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     snapshot_entries = entries
     if materials is not None:
         wanted = {row['candidate_id'] for row in materials}
+        if wanted - {row['candidate_id'] for row in entries}:
+            raise ValueError('显式训练材料不在当前实际组的适用范围')
         invalid = [row for row in entries if row['candidate_id'] in wanted and row['status'] != 'ready']
         if invalid:
             raise ValueError('显式训练材料不合法: ' + '; '.join(row['candidate_id'] + ': ' + row['reason'] for row in invalid))
@@ -1105,6 +1137,14 @@ def main(argv=None):
     listing.add_argument('--specialization-id', type=int)
     listing.add_argument('--hero-talent')
     listing.add_argument('--target-type', choices=('single_target', 'aoe'))
+    refresh = commands.add_parser('refresh-references', help='手动补齐模拟参考并刷新插件材料')
+    refresh.add_argument('--workspace', type=Path, required=True)
+    refresh.add_argument('--plugin-dir', type=Path)
+    refresh.add_argument('--simc-only', action='store_true', help='仅准备模拟来源阶段，不发布')
+    refresh.add_argument('--seed', type=int, default=20261109)
+    refresh_mode = refresh.add_mutually_exclusive_group()
+    refresh_mode.add_argument('--check-only', action='store_true')
+    refresh_mode.add_argument('--apply-plan', action='store_true')
     training = commands.add_parser('run', help='种群预训练至连续两代无改善、五场景复测与更新')
     preparing = commands.add_parser('prepare', help='统一增量整理并冻结唯一输入，不启动优化或复测')
     for command_parser in (training, preparing):
@@ -1132,7 +1172,10 @@ def main(argv=None):
     try:
         result_store.bind_project(args.project)
         result_store.ensure_available()
-        if args.command == 'register':
+        if args.command == 'refresh-references':
+            from reference_seeds import run
+            output = run(args)
+        elif args.command == 'register':
             output = register(args.input)
         elif args.command == 'check':
             output = check_training(args.template, use_burst=args.use_burst)

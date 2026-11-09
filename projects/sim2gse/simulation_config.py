@@ -120,12 +120,30 @@ TRAINING_DEFAULTS = dict(max_processes=5, max_trainings=4, coarse_iterations=32,
     retest_batches=3, retest_iterations=128, stagnation_generations=2, top_k=8,
     tournament_size=3, crossover_probability=0.3, target_mutation_probability=0.8, random_mutation_probability=0.3)
 
+REFERENCE_SEED_DEFAULTS = dict(reference_seed_mode='disabled', reference_seed_target=30)
+
+
+def load_reference_seed_config(path=None, *, document=None):
+    section = (_load_document(path) if document is None else document).get('training', {})
+    if not isinstance(section, dict):
+        raise ValueError('[training] 必须是TOML表')
+    values = dict(REFERENCE_SEED_DEFAULTS,
+                  **{k: v for k, v in section.items() if k in REFERENCE_SEED_DEFAULTS})
+    if values['reference_seed_mode'] not in ('disabled', 'weighted-v1'):
+        raise ValueError('模拟来源生成模式无效')
+    if type(values['reference_seed_target']) is not int or not 1 <= values['reference_seed_target'] <= 30:
+        raise ValueError('模拟来源目标必须为1至30的整数')
+    return values
+
 
 def load_training_config(path: str | Path | BinaryIO | TextIO | None = None, *, max_processes=None, max_trainings=None,
                          _document=None) -> dict:
     """启动读取的GA白名单；普通搜索的资源和采样上限不变。"""
     import math
     section = (_load_document(path) if _document is None else _document).get("training", {})
+    load_reference_seed_config(document={'training': section})
+    if isinstance(section, dict):
+        section = {k: v for k, v in section.items() if k not in REFERENCE_SEED_DEFAULTS}
     if isinstance(section, dict) and 'mutation_probability' in section:
         raise ValueError('训练mutation_probability已退役，请改用target_mutation_probability和random_mutation_probability')
     if not isinstance(section, dict) or set(section) - set(TRAINING_DEFAULTS):

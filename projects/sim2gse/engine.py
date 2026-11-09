@@ -154,6 +154,9 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
     executable, manifest = identity(mode, runtime)
     folder.mkdir(parents=True, exist_ok=True)
     options = tuple(options)
+    if hasattr(runtime, 'reserve_native'):
+        requested = [option.split('=', 1)[1] for option in options if option.startswith('iterations=')]
+        runtime.reserve_native(int(requested[-1]) if requested else 100)
     reports = [] if any(option.startswith('json2=') for option in options) else ['json2=native.json']
     command = [str(executable), os.path.relpath(profile, folder), *COMMON, *engine_options(simulation_config),
                'iterations=100', 'max_time=180',
