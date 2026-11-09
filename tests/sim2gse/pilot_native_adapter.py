@@ -63,6 +63,8 @@ def boundary(root, output):
         # Independent confirmation has a different landscape: do not assert only coarse scores.
         clicks = args[1]['compiled_program']['clicks']
         score = 1000 + len(clicks) if kwargs['seed'] % 2 else 1200 - len(clicks)
+        if (kwargs.get('simulation_config') or {}).get('target_count') == 5:
+            score = 0  # Reliable zero is valid evidence, not a failed native request.
         return fast._fast_evaluate(*args, **kwargs, score=score)
 
     with ExitStack() as stack:

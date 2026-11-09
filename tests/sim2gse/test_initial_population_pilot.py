@@ -76,12 +76,18 @@ def test_batch_command_compares_all_conditions_and_reports_only_independent_repe
         assert len(report['summary']['conditions']) == 4
         assert 'p_value' not in report['summary']
         assert report['counts']['requested_iterations'] <= 72000
+        assert report['summary']['followup']['sample_size'] is None
+        assert report['costs']['groups']['new_starts']['requested_iterations'] > 0
         for block in report['blocks']:
             actual = block['report']
             assert actual['status'] == 'completed'
             assert actual['target_count'] == block['target_count']
             assert actual['template'] == block['template']
             assert actual['evidence_kind'] == 'constructed_native_boundary'
+            assert set(actual['costs']['groups']) == {'baseline', 'new_starts', 'offspring'}
+            assert actual['costs']['groups']['new_starts']['wall_seconds'] >= 0
+        zero_condition = report['summary']['conditions'][1]
+        assert zero_condition['unavailable_comparisons'] == 3
 
 
 @pytest.mark.real
@@ -89,12 +95,15 @@ def test_batch_global_request_limit_does_not_restart_for_each_block(installed_re
     PILOTS.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=PILOTS) as folder:
         result = command('--output', Path(folder) / 'batch', '--batch',
-                         '--max-requested-iterations', 1, '--native-adapter',
+                         '--max-requested-iterations', 4000, '--native-adapter',
                          ROOT / 'tests/sim2gse/pilot_native_adapter.py')
         assert result.returncode == 2, result.stderr
         report = json.loads(result.stdout)
         assert report['status'] == 'incomplete'
-        assert report['counts']['requested_iterations'] <= 1
+        assert report['counts']['requested_iterations'] <= 4000
+        assert len(report['blocks']) == 2
+        assert report['blocks'][0]['report']['status'] == 'completed'
+        assert report['counts']['requested_iterations'] > report['blocks'][0]['report']['counts']['requested_iterations']
         assert report['summary']['independent_repeats'] == 0
         assert report['summary']['coverage_complete'] is False
 
@@ -104,14 +113,15 @@ def test_batch_deadline_keeps_partial_report_without_publishing(installed_result
     PILOTS.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=PILOTS) as folder:
         result = command('--output', Path(folder) / 'batch', '--batch',
-                         '--max-wait-seconds', .05, '--native-adapter',
+                         '--max-wait-seconds', 5, '--native-adapter',
                          ROOT / 'tests/sim2gse/pilot_native_adapter.py')
         assert result.returncode == 2, result.stderr
         report = json.loads(result.stdout)
         assert report['status'] == 'incomplete'
         assert report['published'] is False
         assert report['summary']['coverage_complete'] is False
-        assert report['counts']['native_starts'] == 0
+        assert report['counts']['native_starts'] > 0
+        assert report['blocks'][0]['report']['status'] == 'completed'
 
 
 @pytest.mark.real

@@ -27,18 +27,19 @@ def frozen_inputs():
     import seed_training
     from burst import select_definition
     from simulation_config import load_training_config, load_training_search_config
+    from task import _rule_hashes
     templates = {name: dict(path=str(path.resolve()), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
                  for name, path in zip(('rider', 'sanlayn'), engine.training_templates())}
-    paths = [Path(__file__).resolve(), ROOT / 'projects/sim2gse/burst/unholy.json',
-             *sorted((ROOT / 'projects/sim2gse').glob('*.py'))]
+    paths = [Path(__file__).resolve(), ROOT / 'projects/sim2gse/burst/unholy.json']
     inputs = dict(templates=templates, sources=seed_training.registry_rows(),
         training_config=load_training_config(),
         search_config=load_training_search_config(_default_interval_ms=200),
         engines={mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')},
         definitions={name: select_definition(seed_training.template_character(
             Path(row['path']).read_text(encoding='utf-8'))) for name, row in templates.items()},
-        code_sha256={str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
-                     for path in paths})
+        code_sha256=dict(_rule_hashes(relative_to=ROOT), **{
+            path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in paths}))
     return json.loads(json.dumps(inputs))
 
 
@@ -52,38 +53,46 @@ def summarize_blocks(blocks):
         new = report['groups']['new_starts']['independent']['mean']
         old = report['groups']['offspring']['independent']['mean']
         baseline = report['baseline']['independent']['mean']
-        if not all(math.isfinite(v) and v > 0 for v in (new, old, baseline)):
-            raise ValueError('独立复评均值必须为有限正数')
+        if not all(math.isfinite(v) and v >= 0 for v in (new, old, baseline)):
+            continue  # Keep invalid raw evidence, but exclude it from numeric summaries.
         rows.append(dict(repeat=block['repeat'], template=block['template'],
-            target_count=block['target_count'], vs_offspring_log=math.log(new / old),
-            vs_original_log=math.log(new / baseline)))
+            target_count=block['target_count'],
+            vs_offspring_percent=100 * (new / old - 1) if old else None,
+            vs_original_percent=100 * (new / baseline - 1) if baseline else None))
+
+    comparisons = ('vs_offspring_percent', 'vs_original_percent')
 
     def describe(values):
-        return dict(count=len(values), mean_percent=100 * math.expm1(statistics.mean(values)),
-            observed_min_percent=100 * math.expm1(min(values)),
-            observed_max_percent=100 * math.expm1(max(values)),
-            log_standard_deviation=statistics.stdev(values) if len(values) > 1 else None)
+        return dict(count=len(values), mean_percent=statistics.mean(values),
+            observed_min_percent=min(values), observed_max_percent=max(values),
+            standard_deviation_percentage_points=statistics.stdev(values) if len(values) > 1 else None)
 
     conditions = []
     for template in ('rider', 'sanlayn'):
         for targets in (1, 5):
             selected = [r for r in rows if r['template'] == template and r['target_count'] == targets]
             conditions.append(dict(template=template, target_count=targets, completed=len(selected),
-                comparisons={key: describe([r[key] for r in selected]) for key in
-                    ('vs_offspring_log', 'vs_original_log')} if selected else {}))
+                unavailable_comparisons=sum(any(r[key] is None for key in comparisons) for r in selected),
+                comparisons={key: describe([r[key] for r in selected if r[key] is not None])
+                    for key in comparisons if any(r[key] is not None for r in selected)}))
     repeats = []
     for repeat in range(3):
         selected = [r for r in rows if r['repeat'] == repeat]
         if len(selected) == 4:
             repeats.append({key: statistics.mean(r[key] for r in selected)
-                            for key in ('vs_offspring_log', 'vs_original_log')})
-    aggregate = {key: describe([r[key] for r in repeats]) for key in
-                 ('vs_offspring_log', 'vs_original_log')} if repeats else {}
+                            for key in comparisons if all(r[key] is not None for r in selected)})
+    aggregate = {key: describe([r[key] for r in repeats if key in r])
+                 for key in comparisons if any(key in r for r in repeats)}
     return dict(coverage_complete=len(rows) == 12, completed_blocks=len(rows),
         independent_repeats=len(repeats), conditions=conditions, aggregate=aggregate,
         note='范围是本次观察到的最小/最大变化，不是置信区间；不设收益门槛。'
+             '同条件相对变化取算术平均，四条件等权；分母为零时无法计算该相对变化。'
              '三个完整计划用于估波动，不代表十二个独立角色；未完成时不判总体优劣。',
-        next_step='结合收益、波动和计算成本判断是否值得训练确认；确认次数与预算另定')
+        followup=dict(sample_size=None,
+            reason='筛选与一代繁殖波动不能推算完整训练波动；未设收益目标或估计精度，不能诚实给出固定确认次数',
+            steps=['先依据本次实测变化与新增成本决定是否继续',
+                   '如继续，另定小额同规则训练对照，测最终四起点的波动与实际耗时',
+                   '再展示不同估计精度所需的固定次数与总成本，批准后使用新随机计划确认']))
 
 
 def batch(args, plan, output):
@@ -104,6 +113,23 @@ def batch(args, plan, output):
                     counts[key] += item[key]
         report.update(counts=counts, elapsed_seconds=time.monotonic() - ENTRY,
                       summary=summarize_blocks(report['blocks']))
+        groups = {}
+        preparation = {}
+        for block in report['blocks']:
+            costs = block.get('report', {}).get('costs', {})
+            for key, value in costs.get('preparation', {}).items():
+                preparation[key] = preparation.get(key, 0) + value
+            for name, row in costs.get('groups', {}).items():
+                group = groups.setdefault(name, {})
+                for key, value in row.items():
+                    group[key] = group.get(key, 0) + value
+        accounted = {key: preparation.get(key, 0) + sum(row.get(key, 0) for row in groups.values())
+                     for key in counts}
+        report['costs'] = dict(preparation=preparation, groups=groups,
+            unattributed_counts={key: counts[key] - accounted[key] for key in counts},
+            note='按实际执行归属；原材料先评分，跨组命中已有结果只计读取耗时，不算新增引擎请求。'
+                 '分组耗时为评分与生成耗时，其他调度/落盘时间见整批总耗时；中断未落盘归属单列。'
+                 '这是本次探路实际成本，不是300种群完整训练的成本预测。')
         write(output / 'report.json', report)
 
     try:
@@ -208,6 +234,7 @@ class PilotBudget:
 
 
 def compare(output, plan, budget, *, data_root=None):
+    comparison_started = time.monotonic()
     import engine
     import result_store
     import seed_training
@@ -283,6 +310,10 @@ def compare(output, plan, budget, *, data_root=None):
         data_root=str(result_store.DATA_ROOT), manifest_digest=digest(manifest),
         target_count=targets, template=plan['template'], counts=budget.counts,
         groups={}, untested_scenarios=list(SCENARIOS[1:]))
+    report['costs'] = dict(preparation=dict(wall_seconds=time.monotonic() - comparison_started,
+        **budget.counts), groups={name: dict(wall_seconds=0., generation_seconds=0.,
+            scoring_requests=0, cache_hits=0, native_attempts=0, native_starts=0, requested_iterations=0)
+            for name in ('baseline', 'new_starts', 'offspring')})
     (output / 'task').mkdir()
     store = TaskStore(output / 'task')
     store.state.update(run_id=uuid.uuid4().hex, starts=starts, config=config,
@@ -296,9 +327,18 @@ def compare(output, plan, budget, *, data_root=None):
         scoring_batches = {}
         report['scoring_requests'] = report['scoring_cache_hits'] = 0
 
-        def score(program, stage='search', index=0):
+        def score(program, stage='search', index=0, *, group='baseline'):
             budget.runtime.check()
-            row = evaluate(program, stage, index)
+            before, counts = time.monotonic(), dict(budget.counts)
+            costs = report['costs']['groups'][group]
+            try:
+                row = evaluate(program, stage, index)
+            finally:
+                costs['wall_seconds'] += time.monotonic() - before
+                for key in counts:
+                    costs[key] += budget.counts[key] - counts[key]
+            costs['scoring_requests'] += 1
+            costs['cache_hits'] += bool(row['cached'])
             report['scoring_requests'] += 1
             report['scoring_cache_hits'] += bool(row['cached'])
             scoring_batches[row['batch_key']] = row['samples']
@@ -341,6 +381,7 @@ def compare(output, plan, budget, *, data_root=None):
         report['baseline']['locked'] = [row['key'] for row in original_best]
         write(output / 'progress.json', report)
 
+        generation_started = time.monotonic()
         rng = random.Random(plan['seed'] + 1)
         actions = capabilities['actions']
         total = sum(reference['successes'].values())
@@ -371,6 +412,8 @@ def compare(output, plan, budget, *, data_root=None):
                 break
         if len(generated) != 32:
             raise ValueError('新增起点在352次提案内未补足32个不同行为')
+        report['costs']['groups']['new_starts']['generation_seconds'] = time.monotonic() - generation_started
+        generation_started = time.monotonic()
 
         class Fitness(base.Fitness):
             weights = (1.,)
@@ -412,6 +455,7 @@ def compare(output, plan, budget, *, data_root=None):
                         raise ValueError('对照组已达到提案上限')
                     offspring[slot] = propose(2)[0]
                     proposals += 2
+        report['costs']['groups']['offspring']['generation_seconds'] = time.monotonic() - generation_started
         programs = dict(new_starts=generated, offspring=[list(child) for child in offspring])
         report['proposals'] = dict(new_starts=dict(attempts=new_attempts, invalid=new_invalid,
             duplicates=new_duplicates), offspring=dict(attempts=proposals, invalid=offspring_invalid,
@@ -424,7 +468,7 @@ def compare(output, plan, budget, *, data_root=None):
         for slot in range(32):
             for name in programs:
                 program = programs[name][slot]
-                row = score(program)
+                row = score(program, group=name)
                 coarse[name][key(program)] = dict(identity=key(program), program=program,
                                                   coarse=row['dps'], coarse_batch=row['batch_key'])
         for name, unique in coarse.items():
@@ -440,7 +484,7 @@ def compare(output, plan, budget, *, data_root=None):
         for index in range(2):
             for name, group in confirmation_groups.items():
                 for row in group['selected']:
-                    batch = score(row['program'], 'nominal', index)
+                    batch = score(row['program'], 'nominal', index, group=name)
                     row.setdefault('confirmation', []).append(batch)
                     row['samples'] = sum(b['samples'] for b in row['confirmation'])
                     row['dps'] = sum(b['dps'] * b['samples'] for b in row['confirmation']) / row['samples']
