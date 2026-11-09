@@ -172,9 +172,15 @@ def test_v3_selected_independently_reads_full_source_cohort(monkeypatch, memory_
     manifest = case.manifest
     ready = dict(case.ready, text=text, template_sha=environment['template'])
     key = dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target')
+    state['configuration_key'] = key
     training._publish_seed_evidence(ga, store, manifest, case.character, ready)
     selected = training._selected(ga, store, manifest, case.character, ready, key)
     training.verify_selected_evidence(selected)
+    wrong_group = deepcopy(selected)
+    for row in wrong_group:
+        row['configuration_key'] = dict(key, hero_talent='sanlayn')
+    with pytest.raises(ValueError, match='分组'):
+        training.verify_selected_evidence(wrong_group)
     missing = next(iter(receipts))
     case.reports.pop(missing)
     with pytest.raises(ValueError, match='完整复测报告'):

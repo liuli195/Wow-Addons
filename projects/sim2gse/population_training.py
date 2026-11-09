@@ -746,7 +746,7 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
     return qualified
 
 
-_SEED_EVIDENCE_JSON = ('manifest', 'capabilities', 'ga', 'receipts', 'storage', 'character')
+_SEED_EVIDENCE_JSON = ('manifest', 'capabilities', 'ga', 'receipts', 'storage', 'character', 'configuration_key')
 
 
 def _read_seed_evidence(group, checksum):
@@ -779,6 +779,7 @@ def _publish_seed_evidence(ga, store, manifest, character, ready):
     storage = {key: value for key, value in store.state['evidence_storage'].items()
                if key not in ('seed_source_group', 'seed_source_digest')}
     record = dict(run_id=store.state['run_id'], condition=digest(manifest),
+        configuration_key=store.state['configuration_key'],
         profile_text=ready['text'], manifest=manifest,
         capabilities=store.state['capabilities'],
         character=dict(spec_id=character.spec_id, race=character.race),
@@ -806,6 +807,8 @@ def verify_selected_evidence(rows):
     if any(row['evaluation']['evidence_storage'] != storage for row in decoded):
         raise ValueError('新版训练四条的完整来源证据不一致')
     record = _read_seed_evidence(storage['seed_source_group'], storage['seed_source_digest'])
+    if any(row['configuration_key'] != record['configuration_key'] for row in decoded):
+        raise ValueError('新版训练四条分组与冻结完整来源证据不符')
     manifest = record['manifest']
     condition = digest(manifest)
     if (record['condition'] != condition or any(row['condition'] != condition for row in decoded)
@@ -823,7 +826,7 @@ def verify_selected_evidence(rows):
     ready = dict(template_sha=manifest['environment']['template'], engines=manifest['environment']['engines'],
                  simulation_config=manifest['environment']['simulation'],
                  context=dict(capabilities=record['capabilities']))
-    selected = _selected(record['ga'], store, manifest, character, ready, decoded[0]['configuration_key'])
+    selected = _selected(record['ga'], store, manifest, character, ready, record['configuration_key'])
     if digest(selected) != digest(decoded):
         raise ValueError('新版训练四条与完整来源证据重新计算结果不符')
 
