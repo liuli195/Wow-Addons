@@ -736,6 +736,27 @@ def test_formal_resume_can_switch_observation_detail_without_changing_computatio
     assert case.store.state['search_observability']['summary']['mutation_attempts'] > history['summary']['mutation_attempts']
 
 
+def test_formal_invalid_child_has_same_outcome_with_observation_on_and_off(monkeypatch, memory_ga):
+    import population_training
+    from copy import deepcopy
+    outcomes = []
+    for enabled in (False, True):
+        case = memory_ga(formal=True, programs=[[['outbreak'], ['death_coil']], [['scourge_strike']]],
+            search_settings=dict(target_mutation_probability=0., random_mutation_probability=1.,
+                crossover_probability=1., diagnostic_logging=enabled, search_observability='full'))
+        calls = 0
+        def temporary_invalid(program, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return [['missing_action']] if calls == 1 else deepcopy(list(program))
+        monkeypatch.setattr(population_training, 'mutate', temporary_invalid)
+        result = case.run()
+        outcomes.append((result['candidate'], result['search_result'],
+            [(candidate['program'], options['seed'], options['iterations']) for _,candidate,options in case.calls],
+            case.store.state['ga']['rng']))
+    assert outcomes[0] == outcomes[1]
+
+
 def test_formal_master_off_retains_expected_detail_without_collecting_new_logs(memory_ga):
     case = memory_ga(formal=True, programs=[[['outbreak']]])
     result = case.run()

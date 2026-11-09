@@ -131,25 +131,28 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
             left.crossed = right.crossed = True
         if details is not None:
             for index, child in enumerate((left, right)):
+                partner_identity, partner_reason = observed_identity(before[1-index])
                 evidence = dict(details, sampled_mutation='crossover',
                     actual_mutation='crossover' if changed else 'no_change',
-                    partner_identity=canonicalize_search_program(before[1-index], capabilities)['identity'])
+                    partner_identity=partner_identity, partner_illegal_reason=partner_reason)
                 if store.state['config']['search_observability'] == 'full':
                     evidence['partner_program'] = before[1-index]
                 observe_child(before[index], child, evidence)
         return left, right
     feedback_for = None
+    def observed_identity(program):
+        try:
+            return canonicalize_search_program(program, capabilities)['identity'], None
+        except (TypeError, ValueError, KeyError) as error:
+            return None, str(error)
     def observe_child(parent, child, details):
         if not observe_search or not store.state.get('search_observability'):
             return
-        try:
-            identity = canonicalize_search_program(child, capabilities)['identity']
-            reason = None
-        except (TypeError, ValueError, KeyError) as error:
-            identity, reason = None, str(error)
+        identity, reason = observed_identity(child)
+        parent_identity, parent_reason = observed_identity(parent)
         if store.state['config']['search_observability'] == 'full':
             details = dict(details, parent_program=deepcopy(list(parent)), child_program=deepcopy(list(child)))
-        _observe_ga(store, 'mutation', parent_identity=canonicalize_search_program(parent, capabilities)['identity'],
+        _observe_ga(store, 'mutation', parent_identity=parent_identity, parent_illegal_reason=parent_reason,
                     candidate_identity=identity, illegal_reason=reason, **details)
     def mutation(member):
         feedback_getter = None if member.crossed else lambda: feedback_for(member.parent_program)

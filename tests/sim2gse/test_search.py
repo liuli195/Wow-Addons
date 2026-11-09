@@ -934,3 +934,19 @@ def test_public_formal_history_explains_each_current_crossover_input(public_form
         else:
             assert after == before
     assert any(row.get('sampled_mutation') == 'target' and 'parent_program' in row for row in events)
+
+
+def test_public_formal_observation_keeps_illegal_child_regeneration(monkeypatch, public_formal_memory):
+    import population_training
+    calls = 0
+    def temporary_invalid(program, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return [['missing_action']] if calls == 1 else list(program)
+    monkeypatch.setattr(population_training, 'mutate', temporary_invalid)
+    result = run_task('/memory/role.simc', '/memory/formal',
+        simulation_config=dict(target_count=1, scene='single_target'),
+        search_config=dict(target_mutation_probability=0., random_mutation_probability=1.,
+            crossover_probability=1., diagnostic_logging=True, search_observability='full'))
+    assert result['status'] == 'completed' and calls > 1
+    assert any(row.get('illegal_reason') for row in result['search']['observability']['details'])

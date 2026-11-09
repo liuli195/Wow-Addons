@@ -932,7 +932,7 @@ class InterfaceTests(unittest.TestCase):
 
         from test_search_syntax import SIMPLE
         self.server.task_options = {'search_config': dict(iterations=2, max_processes=1, stagnation_generations=2,
-                                                        syntax=SIMPLE)}
+            target_mutation_probability=0., random_mutation_probability=0., crossover_probability=0., syntax=SIMPLE)}
         from test_burst import reviewed_fixture
         import burst
         definition, reviewed_profile = reviewed_fixture()
