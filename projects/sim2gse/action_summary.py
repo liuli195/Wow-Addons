@@ -2,6 +2,7 @@
 
 from collections import Counter
 import re
+import json
 
 VERSION = 1
 
@@ -19,6 +20,11 @@ def window_text(plan):
 
 def checked(value, samples, *, expected_scope=None, position_buttons=None):
     """原始整数计数与有效评分场数一致才可作为引导数据。"""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError as error:
+            raise ValueError('原生成功摘要存储文本损坏') from error
     if not isinstance(value, dict) or type(value.get('version')) is not int or value['version'] != VERSION:
         raise ValueError('原生成功摘要版本缺失或不支持')
     if type(samples) is not int or samples < 1:

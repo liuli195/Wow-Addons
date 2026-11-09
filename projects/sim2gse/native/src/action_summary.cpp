@@ -46,9 +46,13 @@ bool apl_button(const action_t& a)
          range::find(list.off_gcd_actions, &a) != list.off_gcd_actions.end() ||
          range::find(list.cast_while_casting_actions, &a) != list.cast_while_casting_actions.end();
 }
+bool item_button(const action_t& a)
+{
+  return a.signature_str.rfind("use_item,", 0) == 0;
+}
 std::string button_key(const action_t& a)
 {
-  if (a.name_str == "use_item") return a.signature_str;
+  if (item_button(a)) return a.signature_str;
   if (a.name_str == "auto_attack") return "auto_attack";
   const auto id = base_spell_id(*a.player, a.data().id());
   return id ? "spell:" + std::to_string(id) : a.signature_str;
@@ -108,9 +112,9 @@ void summary_begin(player_t& p)
     for (const auto& key : util::string_split(s.buttons_text, "/")) s.allowed.insert(key);
   if (s.buttons_text.empty() || s.buttons_text == "@apl")
     for (const auto* a : p.action_list)
-      if (apl_button(*a) && !a->is_precombat && (!a->background || a->name_str == "use_item") && !a->quiet &&
+      if (apl_button(*a) && !a->is_precombat && (!a->background || item_button(*a)) && !a->quiet &&
           a->initialized && ((a->data().ok() && a->data().id() && !a->data().flags(SX_PASSIVE)) ||
-                              a->name_str == "auto_attack" || a->name_str == "use_item"))
+                              a->name_str == "auto_attack" || item_button(*a)))
         s.allowed.insert(button_key(*a));
   for (const auto& key : util::string_split(s.excluded_text, "/")) s.excluded.insert(key);
   for (const auto& text : util::string_split(s.windows_text, "/"))
@@ -141,9 +145,9 @@ void summary_success(action_t& action)
   const input_t* input = found == s.inputs.end() ? nullptr : &found->second;
   if (s.controlled && !input) return; // No dispatched player command owns this effect.
   const auto* command = input ? input->command : &action;
-  if (!input && ((action.background && action.name_str != "use_item") || action.quiet || action.data().flags(SX_PASSIVE))) return;
+  if (!input && ((action.background && !item_button(action)) || action.quiet || action.data().flags(SX_PASSIVE))) return;
   if ((!command->data().ok() || command->data().id() == 0) &&
-      command->name_str != "auto_attack" && command->name_str != "use_item") return;
+      command->name_str != "auto_attack" && !item_button(*command)) return;
   const auto key = button_key(*command);
   if (!s.allowed.count(key))
   {
