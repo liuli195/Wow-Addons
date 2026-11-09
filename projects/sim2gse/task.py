@@ -2218,14 +2218,19 @@ def _batch_locations(destination, keys, *, receipts=None):
         connection = None
         try:
             connection = sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)
-            templates = connection.execute("SELECT value FROM state_fields WHERE key='checkpoint_requests'").fetchone()
-            templates = json.loads(templates[0]) if templates else {}
+            templates = None
             from search import _expand_checkpoint_request
             for offset in range(0, len(keys), 500):
                 chunk = keys[offset:offset + 500]
                 sql = 'SELECT key,value FROM batches WHERE key IN (' + ','.join('?' for _ in chunk) + ')'
                 for key, payload in connection.execute(sql, chunk):
-                    row = _expand_checkpoint_request(json.loads(payload), templates)
+                    row = json.loads(payload)
+                    if (isinstance(row, dict) and isinstance(row.get('request'), dict)
+                            and 'checkpoint_request_key' in row['request'] and templates is None):
+                        saved_templates = connection.execute(
+                            "SELECT value FROM state_fields WHERE key='checkpoint_requests'").fetchone()
+                        templates = json.loads(saved_templates[0]) if saved_templates else {}
+                    row = _expand_checkpoint_request(row, templates or {})
                     if not isinstance(row, dict):
                         raise ValueError('批次位置记录必须是对象')
                     locations[key] = row.get('storage_group_key') or row.get('data_key') or key

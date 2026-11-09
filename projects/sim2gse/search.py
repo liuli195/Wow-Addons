@@ -889,10 +889,11 @@ def _expand_checkpoint_request(row, templates):
     if not isinstance(row, dict) or not isinstance(row.get('request') or {}, dict):
         raise ValueError('恢复成绩凭据必须是对象')
     request = row.get('request') or {}
-    key = request.get('checkpoint_request_key')
-    if key is None:
+    if 'checkpoint_request_key' not in request:
         return row
-    if key not in templates or set(request) - {'checkpoint_request_key', 'program', 'behavior_identity'}:
+    key = request['checkpoint_request_key']
+    if (not isinstance(key, str) or key not in templates
+            or set(request) - {'checkpoint_request_key', 'program', 'behavior_identity'}):
         raise ValueError('恢复成绩的公共请求引用缺失或无效')
     return dict(row, request=dict(templates[key], **{name: value for name, value in request.items()
                                                    if name != 'checkpoint_request_key'}))
@@ -903,8 +904,11 @@ def checkpoint_batch(database, key):
     saved = database.execute('SELECT value FROM batches WHERE key=?', (key,)).fetchone()
     if saved is None:
         return None
+    row = json.loads(saved[0])
+    if isinstance(row, dict) and 'checkpoint_request_key' not in (row.get('request') or {}):
+        return row
     templates = database.execute("SELECT value FROM state_fields WHERE key='checkpoint_requests'").fetchone()
-    return _expand_checkpoint_request(json.loads(saved[0]), json.loads(templates[0]) if templates else {})
+    return _expand_checkpoint_request(row, json.loads(templates[0]) if templates else {})
 
 
 def _restore_checkpoint_batches(archive, batches):
@@ -1666,6 +1670,16 @@ class TaskStore:
 
     def discard_unsaved_reports(self):
         with self.lock:
+            if self.memory_execution:
+                # 运行库不再回写恢复副本；只丢待保存的完整报告，保留可靠的计算状态和失败额度。
+                for key in self.memory_reports:
+                    self.unsaved_batches.pop(key, None)
+                    self.verified_batches.pop(key, None)
+                self.memory_reports.clear()
+                reliable = dict(self.verified_batches, **self.unsaved_batches)
+                self.state.update(inflight={}, completed_batches=sum(row.get('status') == 'success'
+                    and row.get('request', {}).get('purpose') != 'diagnostic' for row in reliable.values()))
+                return
             progress = {key: self.state[key] for key in ('elapsed_seconds', 'next_report_group', *_TASK_COUNTERS)
                         if key in self.state}
             for key, _, _ in self.report_buffer:

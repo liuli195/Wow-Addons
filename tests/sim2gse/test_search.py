@@ -239,6 +239,42 @@ def test_public_task_rejects_v3_seeds_when_complete_source_evidence_is_missing(p
             syntax_config=SIMPLE, simulation_config=dict(target_count=1, scene='single_target'))
 
 
+def test_public_memory_failure_preserves_frozen_state_and_failed_attempts(public_formal_memory, monkeypatch):
+    from copy import deepcopy
+    import engine
+    import sequence
+    import task
+    from test_search_syntax import SIMPLE
+    case = public_formal_memory
+    snapshots = []
+    case.store.memory_execution = True
+    monkeypatch.setattr(case.store, '_memory_checkpoint', lambda boundary: snapshots.append(deepcopy(case.store.state)))
+    def fail(*args, **kwargs):
+        raise engine.NativeEvaluationError('injected native failure')
+    monkeypatch.setattr(sequence, 'evaluate', fail)
+    with pytest.raises(task.TaskError, match='injected native failure'):
+        task.run_task('/memory/role.simc', '/memory/formal', syntax_config=SIMPLE,
+                      simulation_config=dict(target_count=1, scene='single_target'))
+    saved = snapshots[-1]
+    assert saved['run_id'] and saved['condition'] and saved['starts'] and saved['ga']
+    assert saved['config']['syntax'] == SIMPLE
+    assert saved['training_failures'] and max(saved['training_failures'].values()) == 2
+
+
+def test_old_batch_receipt_without_field_table_remains_readable(monkeypatch):
+    import sqlite3
+    import task
+    database = sqlite3.connect(':memory:')
+    database.execute('CREATE TABLE batches(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
+    receipt = dict(data_key='old-batch', status='success', storage_group_key='old-group', request=dict(purpose='search'))
+    database.execute('INSERT INTO batches VALUES (?,?)', ('old-batch', json.dumps(receipt)))
+    monkeypatch.setattr(sqlite3, 'connect', lambda *args, **kwargs: database)
+    monkeypatch.setattr(Path, 'is_file', lambda path: True)
+    receipts = {}
+    assert task._batch_locations(Path('/memory/old-task').resolve(), ['old-batch'], receipts=receipts) == {'old-batch': 'old-group'}
+    assert receipts == {'old-batch': receipt}
+
+
 def test_mutate_fetches_parent_feedback_only_after_its_usage_gate():
     import random
     from search import mutate
