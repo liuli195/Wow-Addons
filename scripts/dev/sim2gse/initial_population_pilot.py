@@ -75,7 +75,7 @@ class PilotBudget:
             engine.run = original
 
 
-def compare(output, plan, budget):
+def compare(output, plan, budget, *, data_root=None):
     import engine
     import result_store
     import seed_training
@@ -94,7 +94,10 @@ def compare(output, plan, budget):
     sources = seed_training.registry_rows()
     write(output / 'sources.json', sources)
     write(output / 'burst-definition.json', definition)
-    result_store.DATA_ROOT = PILOTS / 'data'
+    data_root = Path(data_root or PILOTS / 'data').resolve()
+    if not data_root.is_relative_to(PILOTS.resolve()) or data_root.is_relative_to((ROOT / 'data').resolve()):
+        raise ValueError('验证数据根必须隔离于生产数据')
+    result_store.DATA_ROOT = data_root
     result_store._REPORT_LOCATIONS = None
     result_store.DATA_ROOT.mkdir(parents=True, exist_ok=True)
     result_store.ensure_available()
@@ -201,6 +204,7 @@ def compare(output, plan, budget):
             raise ValueError('战前动作占满长度，无法新增普通循环')
         generated, seen = [], {p['key'] for p in parents}
         new_attempts = 0
+        new_invalid = new_duplicates = offspring_invalid = 0
         for _ in range(352):
             budget.runtime.check()
             new_attempts += 1
@@ -208,8 +212,10 @@ def compare(output, plan, budget):
             try:
                 identity = key(program)
             except ValueError:
+                new_invalid += 1
                 continue
             if identity in seen:
+                new_duplicates += 1
                 continue
             seen.add(identity)
             generated.append(program)
@@ -251,15 +257,19 @@ def compare(output, plan, budget):
                     key(offspring[slot])
                     break
                 except ValueError:
+                    offspring_invalid += 1
                     if attempt == 10:
                         raise ValueError('非法后代槽在10次补试后仍不合法')
+                    if proposals + 2 > 352:
+                        raise ValueError('对照组已达到提案上限')
                     offspring[slot] = propose(2)[0]
                     proposals += 2
-                    if proposals > 352:
-                        raise ValueError('对照组已达到提案上限')
         programs = dict(new_starts=generated, offspring=[list(child) for child in offspring])
+        report['proposals'] = dict(new_starts=dict(attempts=new_attempts, invalid=new_invalid,
+            duplicates=new_duplicates), offspring=dict(attempts=proposals, invalid=offspring_invalid,
+            duplicate_slots=32 - len({key(program) for program in programs['offspring']})))
         write(output / 'proposals.json', dict(programs=programs,
-            attempts=dict(new_starts=new_attempts, offspring=proposals),
+            counts=report['proposals'],
             generation_rng=rng.getstate(), breeding_rng=breeding_rng.getstate()))
         # Alternate arms to keep elapsed-time drift from always favoring one arm.
         coarse = {name: {} for name in programs}
@@ -290,11 +300,26 @@ def compare(output, plan, budget):
         for group in confirmation_groups.values():
             values = [row['dps'] for row in group['selected']]
             group['independent'] = dict(mean=statistics.mean(values), best=max(values), worst=min(values))
+            group['independent']['batch_means'] = [statistics.mean(
+                row['confirmation'][index]['dps'] for row in group['selected']) for index in range(2)]
         baseline_mean = report['baseline']['independent']['mean']
         for group in report['groups'].values():
             group['change_vs_original_mean_percent'] = (
                 100 * (group['independent']['mean'] / baseline_mean - 1) if baseline_mean else None)
-        report.update(status='completed', conclusion='仅作投入判断，不能证明300种群或最终推荐更优')
+        new_means = report['groups']['new_starts']['independent']['batch_means']
+        old_means = report['groups']['offspring']['independent']['batch_means']
+        original_means = report['baseline']['independent']['batch_means']
+        if all(n > o and n > b for n, o, b in zip(new_means, old_means, original_means)):
+            decision = 'positive_signal'
+            conclusion = '两批均出现改善，可考虑下一次小额验证；尚不能证明300种群更优'
+        elif all(n <= o or n <= b for n, o, b in zip(new_means, old_means, original_means)):
+            decision = 'defer'
+            conclusion = '未出现一致的新增起点优势，暂缓扩大投入；不证明扩充无效'
+        else:
+            decision = 'inconclusive'
+            conclusion = '两批信号不一致，尚不能判断，暂不扩大投入'
+        report.update(status='completed', decision=decision, conclusion=conclusion,
+                      limitation='单次小样本探路，不是统计胜出、完整训练或游戏验收')
         return report
 
     try:
@@ -313,8 +338,8 @@ def worker(args, plan, output):
     adapter = (runpy.run_path(str(args.native_adapter))['boundary'](ROOT, output)
                if args.native_adapter else nullcontext())
     try:
-        with adapter, budget.measured_engine():
-            report = compare(output, plan, budget)
+        with adapter as resources, budget.measured_engine():
+            report = compare(output, plan, budget, **(resources or {}))
     except Exception as error:
         import traceback
         (output / 'error.log').write_text(traceback.format_exc(), encoding='utf-8')
@@ -340,17 +365,24 @@ def main(argv=None):
     args = parser.parse_args(argv)
     from simulation_config import load_training_config, load_training_search_config
     config = load_training_search_config(_default_interval_ms=200)
+    training_config = load_training_config()
+    required = dict(coarse_iterations=32, tournament_size=3, target_mutation_probability=.8,
+                    random_mutation_probability=.3, crossover_probability=.3)
+    if any(training_config[key] != value for key, value in required.items()):
+        parser.error('本次探路固定32次粗评、三选一及80%/30%/30%繁殖配置')
     plan = dict(status='preflight', native_starts=0,
                 limits=dict(seconds=args.max_wait_seconds, native_starts=256,
                             requested_iterations=args.max_requested_iterations),
                 groups=dict(new_starts=32, offspring_slots=32),
                 confirmation=dict(candidates_per_group=4, batches=2, iterations=32),
                 target_count=1, syntax=config['syntax'], seed=args.seed, version=1,
-                search_config=config, training_config=load_training_config(),
+                search_config=config, training_config=training_config,
                 evidence_kind='constructed_native_boundary' if args.native_adapter else 'native_simulation')
     plan = json.loads(json.dumps(plan))
     output = args.output.resolve()
-    if (not output.is_relative_to(PILOTS.resolve()) or output == PILOTS.resolve()
+    if (PILOTS.resolve().is_relative_to((ROOT / 'data').resolve())
+            or not PILOTS.resolve().is_relative_to((ROOT / '.local').resolve())
+            or not output.is_relative_to(PILOTS.resolve()) or output == PILOTS.resolve()
             or output.is_relative_to((PILOTS / 'data').resolve())):
         parser.error('输出必须在隔离探路目录内，且不能指向共享数据目录')
     if (not 0 < args.max_wait_seconds <= 1800 or not 1 <= args.max_requested_iterations <= 6000
@@ -382,10 +414,14 @@ def main(argv=None):
     runtime = TaskRuntime(args.max_wait_seconds, used_seconds=min(args.max_wait_seconds, time.monotonic() - ENTRY))
     arguments = list(sys.argv[1:] if argv is None else argv)
     try:
-        run_command([sys.executable, str(Path(__file__).resolve()), *arguments,
+        process = run_command([sys.executable, str(Path(__file__).resolve()), *arguments,
                      '--worker', '--deadline', str(deadline)], ROOT,
                     timeout_seconds=runtime.remaining_seconds, runtime=runtime,
                     output_dir=output / 'process')
+        report_file = output / 'report.json'
+        if process.returncode and (not report_file.exists()
+                or json.loads(report_file.read_text(encoding='utf-8')).get('status') == 'completed'):
+            raise RuntimeError(f'验证工作进程异常退出：{process.returncode}')
     except Exception as error:
         progress = output / 'progress.json'
         report = json.loads(progress.read_text(encoding='utf-8')) if progress.exists() else {}

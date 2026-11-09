@@ -2,6 +2,8 @@
 from contextlib import contextmanager, ExitStack
 from copy import deepcopy
 import json
+import os
+import runpy
 from pathlib import Path
 import sys
 from unittest.mock import patch
@@ -29,6 +31,8 @@ def boundary(root, output):
         semantic='preserved', changes=[], family='manual', core=[], program=program)
         for i, program in enumerate(programs)]
     read = result_store.read_records
+    installed = Path(os.environ['DATA_STORE_TEST_SKILL'])
+    api = runpy.run_path(str(installed / 'scripts/data_store.py'))
     select_definition = burst.select_definition
     definition = json.loads((root / 'projects/sim2gse/burst/unholy.json').read_text(encoding='utf-8'))
     definition['definition_id'] = burst.definition_id(definition)
@@ -66,6 +70,7 @@ def boundary(root, output):
         stack.enter_context(patch.object(engine, 'prepare_loop', side_effect=lambda *a, **k:
                             (fast._fast_capabilities(), fast._fast_capabilities(), None)))
         stack.enter_context(patch.object(result_store, 'read_records', side_effect=read_records))
+        stack.enter_context(patch.object(result_store, '_SKILL_API', api))
         stack.enter_context(patch.object(burst, 'select_definition', side_effect=select))
         stack.enter_context(patch.object(sequence, 'evaluate', side_effect=evaluate))
-        yield
+        yield dict(data_root=output.parent / 'data')

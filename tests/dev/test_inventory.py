@@ -8,6 +8,7 @@ import shlex
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPERS = {
+    'tests/sim2gse/pilot_native_adapter.py': 'tests/sim2gse/test_initial_population_pilot.py',
     'tests/conftest.py': 'tests/sim2gse/test_search.py',
     'tests/sim2gse/conftest.py': 'tests/sim2gse/test_search.py',
     'tests/sim2gse/legacy_training_fixture.py': 'tests/sim2gse/test_training_champion.py',

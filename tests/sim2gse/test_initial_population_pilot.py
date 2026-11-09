@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 CLI = ROOT / 'scripts/dev/sim2gse/initial_population_pilot.py'
@@ -15,7 +16,8 @@ def command(*arguments):
                           cwd=ROOT, text=True, capture_output=True, timeout=40)
 
 
-def test_command_preflight_freezes_bounded_plan_without_running_native():
+@pytest.mark.real
+def test_command_preflight_freezes_bounded_plan_without_running_native(installed_result_center):
     PILOTS.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=PILOTS) as folder:
         output = Path(folder) / 'run'
@@ -32,7 +34,8 @@ def test_command_preflight_freezes_bounded_plan_without_running_native():
         assert not (output / 'report.json').exists()
 
 
-def test_command_completes_isolated_comparison_with_locked_independent_confirmation():
+@pytest.mark.real
+def test_command_completes_isolated_comparison_with_locked_independent_confirmation(installed_result_center):
     PILOTS.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=PILOTS) as folder:
         output = Path(folder) / 'run'
@@ -58,10 +61,13 @@ def test_command_completes_isolated_comparison_with_locked_independent_confirmat
         confirmations = plan['stage_plan']['nominal']['seeds']
         assert len(set([search_seed, *confirmations])) == 3
         assert not Path(report['data_root']).resolve().is_relative_to(ROOT / 'data')
-        assert Path(report['data_root']).resolve() == PILOTS / 'data'
+        assert Path(report['data_root']).resolve() == Path(folder) / 'data'
+        assert report['decision'] in ('positive_signal', 'defer', 'inconclusive')
+        assert len(report['baseline']['independent']['batch_means']) == 2
 
 
-def test_command_reports_incomplete_when_reference_or_scoring_cannot_fit_budget():
+@pytest.mark.real
+def test_command_reports_incomplete_when_reference_or_scoring_cannot_fit_budget(installed_result_center):
     PILOTS.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=PILOTS) as folder:
         result = command('--output', Path(folder) / 'limited', '--max-requested-iterations', 1,
@@ -76,7 +82,8 @@ def test_command_reports_incomplete_when_reference_or_scoring_cannot_fit_budget(
         assert 'BudgetExceeded' in report['error']
 
 
-def test_command_deadline_stops_worker_without_publishing_partial_results():
+@pytest.mark.real
+def test_command_deadline_stops_worker_without_publishing_partial_results(installed_result_center):
     PILOTS.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=PILOTS) as folder:
         result = command('--output', Path(folder) / 'timeout', '--max-wait-seconds', .05,
@@ -87,7 +94,8 @@ def test_command_deadline_stops_worker_without_publishing_partial_results():
         assert report['published'] is False
 
 
-def test_command_refuses_production_output_or_unapproved_budget():
+@pytest.mark.real
+def test_command_refuses_production_output_or_unapproved_budget(installed_result_center):
     result = command('--output', ROOT / 'data', '--check-only')
     assert result.returncode == 2
     assert '输出必须在隔离探路目录' in result.stderr
@@ -138,3 +146,17 @@ def test_shared_variation_keeps_frozen_baseline_random_stream_and_children():
         outputs.append(dict(children=[list(child) for child in children], rng=rng.getstate(), counts=counts))
     assert hashlib.sha256(json.dumps(outputs, sort_keys=True).encode()).hexdigest() == (
         '18c2223cfab8f5e99e77627a365db8c4da7dd3bdf55d3f68e4e110f7a8100750')
+
+
+@pytest.mark.parametrize('key,value', [('coarse_iterations', 64), ('tournament_size', 2),
+    ('target_mutation_probability', .7), ('random_mutation_probability', .2), ('crossover_probability', .4)])
+def test_preflight_refuses_changed_experiment_parameters(monkeypatch, capsys, key, value):
+    import runpy
+    import simulation_config
+    configuration = dict(simulation_config.TRAINING_DEFAULTS, **{key: value})
+    monkeypatch.setattr(simulation_config, 'load_training_config', lambda: configuration)
+    cli = runpy.run_path(str(CLI))
+    with pytest.raises(SystemExit) as error:
+        cli['main'](['--output', str(PILOTS / 'unused'), '--check-only'])
+    assert error.value.code == 2
+    assert '本次探路固定32次粗评' in capsys.readouterr().err
