@@ -37,7 +37,8 @@ TRAINING_SEARCH_DEFAULTS = {
     "reset_events": (),
 }
 # Formal search owns its defaults; training and historical evidence keep the original runtime values.
-from simulation_config import SEARCH_DEFAULTS, FORMAL_ALGORITHM_DEFAULTS
+from simulation_config import (SEARCH_DEFAULTS, FORMAL_ALGORITHM_DEFAULTS,
+                               FORMAL_V2_ALGORITHM_DEFAULTS, SEARCH_RUNTIME_DEFAULTS)
 DEFAULT_CONFIG = dict(SEARCH_DEFAULTS)
 # Only historical receipt readers may fill the original frozen defaults.
 LEGACY_DEFAULT_CONFIG = dict(TRAINING_SEARCH_DEFAULTS, total_budget_seconds=600.0, search_budget_seconds=600.0,
@@ -56,13 +57,14 @@ def verify_behavior_identity_state(state):
         raise ValueError('候选行为身份版本已变化，请创建新任务')
 
 
-def config_for(values=None, *, training=False, legacy=False, _defer_interval_alignment=False):
+def config_for(values=None, *, training=False, legacy=False, _defer_interval_alignment=False, _historical_formal_v2=False):
     from simulation_config import reject_removed_search_settings, syntax_for
-    if not legacy:
+    if not legacy and not _historical_formal_v2:
         reject_removed_search_settings(values or {})
     if type(training) is not bool:
         raise ValueError('训练配置开关必须为布尔值')
-    config = dict(LEGACY_DEFAULT_CONFIG if legacy else TRAINING_SEARCH_DEFAULTS if training else DEFAULT_CONFIG)
+    config = dict(LEGACY_DEFAULT_CONFIG if legacy else TRAINING_SEARCH_DEFAULTS if training else
+        dict(FORMAL_V2_ALGORITHM_DEFAULTS, **SEARCH_RUNTIME_DEFAULTS) if _historical_formal_v2 else DEFAULT_CONFIG)
     if not legacy:
         config['syntax'] = syntax_for()
     if values:
@@ -89,10 +91,13 @@ def config_for(values=None, *, training=False, legacy=False, _defer_interval_ali
         if type(config[key]) is not int or not 1 <= config[key] <= maximum:
             raise ValueError('搜索配置超出范围: '+key)
     if not training and not legacy:
-        for key in set(FORMAL_ALGORITHM_DEFAULTS) - {'max_processes', 'crossover_probability', 'mutation_probability'}:
+        algorithm = FORMAL_V2_ALGORITHM_DEFAULTS if _historical_formal_v2 else FORMAL_ALGORITHM_DEFAULTS
+        probabilities = {'crossover_probability','mutation_probability'} if _historical_formal_v2 else {
+            'target_mutation_probability','random_mutation_probability','crossover_probability'}
+        for key in set(algorithm) - {'max_processes', *probabilities}:
             if type(config[key]) is not int or config[key] < (4 if key == 'top_k' else 1):
                 raise ValueError('正式搜索配置必须为正整数（top_k至少4）: ' + key)
-        for key in ('crossover_probability', 'mutation_probability'):
+        for key in sorted(probabilities):
             value = config[key]
             if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
                 raise ValueError('正式搜索概率必须为0至1的有限数: ' + key)

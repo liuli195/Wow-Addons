@@ -1931,6 +1931,11 @@ def _read_resume_checkpoint(output_root):
 def _require_current_formal_resume(state):
     if not isinstance(state, dict) or type(state.get('formal_search_version')) is not int or state['formal_search_version'] != 1:
         raise TaskError('旧正式任务恢复契约已退役，身份不兼容；原完整成果仍可读取，请创建新任务')
+    frozen = state.get('formal_search')
+    if frozen is not None:
+        from formal_search import VERSION
+        if not isinstance(frozen, dict) or type(frozen.get('version')) is not int or frozen['version'] != VERSION:
+            raise TaskError('旧正式繁殖版本不能续跑；完整成果仍可读取，请创建新任务')
     intent = state.get('formal_champion_publication_intent')
     if intent:
         record = intent.get('record', {}) if isinstance(intent, dict) else {}
@@ -2245,7 +2250,7 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
         from formal_search import contract_for
         frozen = search['formal_search']
         if (not isinstance(frozen, dict) or type(frozen.get('version')) is not int
-                or frozen.get('version') not in (1, 2)
+                or frozen.get('version') not in (1, 2, 3)
                 or frozen != contract_for(decode(saved['config']), version=frozen.get('version'))):
             raise TaskError('正式遗传搜索成果版本或冻结评分契约不符，不能按新语义读取')
     if pointer.get('formal_champion_publication'):

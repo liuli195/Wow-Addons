@@ -79,6 +79,7 @@ def memory_ga(monkeypatch):
                 return native(profile, candidate, folder, **options)
             score = 100. if score_for is None else score_for(candidate, options)
             report = _fast_report(character, score, max(1, options['iterations'] - 1))
+            report['sim']['targets'] *= options['simulation_config']['target_count']
             summary = engine.check_report(report, character, options['iterations'],
                 simulation_config=options['simulation_config'], allow_zero=True)
             return dict(report=report, summary=summary, trace=[])
@@ -106,8 +107,11 @@ def memory_ga(monkeypatch):
             if timeline is not None: runtime.search_timeline=timeline
             if formal and runner is None:
                 from formal_search import run as run_formal
+                summary = _fast_report(character, 100., 99)['sim']['players'][0]['sim2gse_action_summary']
+                summary.update(successes={'spell:1001':99})
+                summary['scope']['allowed'] = {'spell:1001': True}
                 return run_formal(profile=Path('/memory/standard.simc'), character=character,
-                    capabilities=capabilities, reference=dict(dps=100., identity=dict(resource='runic_power')),
+                    capabilities=capabilities, reference=dict(dps=100., identity=dict(resource='runic_power'), action_summary=summary),
                     destination=Path('/memory/ga'), runtime=runtime, config=search_config,
                     condition_key=condition, store=store, simulation_config=ready['simulation_config'])
             default_execute = training._evolution(store, capabilities, runtime, config)
@@ -667,55 +671,49 @@ def test_public_ga_timeline_switch_exports_existing_scores_without_extra_evaluat
     else: assert writes==[]
 
 
-def test_public_feedback_commits_at_twelve_and_replays_same_generation_rng(monkeypatch,memory_ga):
+def test_public_pending_generation_reuses_coarse_receipts_without_resampling(monkeypatch,memory_ga):
     from copy import deepcopy
     from itertools import islice,product
-    import population_training
+    import random
     from runtime import TaskCancelled
-    from search import digest
     programs=[[[name] for name in order] for order in islice(product(('outbreak','death_coil','scourge_strike'),repeat=4),70)]
-    case=memory_ga(programs=programs,formal=True,search_settings=dict(mutation_probability=1., crossover_probability=0.))
-    # Native scoring remains a report input; this probe concerns the existing
-    # bounded feedback checkpoint callback, not physical report publication.
+    case=memory_ga(programs=programs,formal=True,search_settings=dict(
+        target_mutation_probability=0., random_mutation_probability=1., crossover_probability=0.))
+    # Real SQLite checkpoints; compiler/report publication remain explicit IO inputs.
     real_stage,real_checkpoint=case.store.stage_report,case.store.checkpoint
-    real_mutate=population_training.mutate
-    mutations,checkpoints=[],[]
-    mode=1
+    checkpoints=[]
     def staged(key,row,stored,**kwargs):
         real_stage(key,row,stored,**kwargs)
-        if row['request']['purpose']=='feedback': case.store.report_buffer.append((key,row,{}))
+        if case.store.state['ga']['pending'] is not None:
+            case.store.report_buffer.append((key,row,{}))
     def checkpoint():
         size=len(case.store.report_buffer)
-        feedback=sum(options['iterations']==2 for _,_,options in case.calls)
-        pending=case.store.state['ga']['pending'] is not None
-        if feedback and case.store.state['ga']['phase']=='breed': checkpoints.append((size,feedback,pending))
         case.store.report_buffer.clear()  # Explicit report publisher IO boundary.
         real_checkpoint()
-        if feedback and case.store.state['ga']['phase']=='breed' and (mode==1 or pending):
+        if size:
+            checkpoints.append(size)
             raise TaskCancelled('checkpoint interruption')
-    def mutation(program,capabilities,rng,**kwargs):
-        before=digest(rng.getstate())
-        result=real_mutate(program,capabilities,rng,**kwargs)
-        mutations.append((deepcopy(list(program)),before,deepcopy(result),digest(rng.getstate())))
-        return result
     monkeypatch.setattr(case.store,'stage_report',staged)
     monkeypatch.setattr(case.store,'checkpoint',checkpoint)
-    monkeypatch.setattr(population_training,'mutate',mutation)
     with pytest.raises(TaskCancelled): case.run()
-    assert checkpoints[0]==(12,12,False) and max(row[0] for row in checkpoints)<=12
+    assert checkpoints == [12]
     paused=case.store.load_state(case.store.db)['ga']
-    assert paused['generation']==0 and paused['pending'] is None
-    first=deepcopy(mutations)
-    mutations.clear()
+    frozen=deepcopy(paused['pending'])
+    assert paused['generation']==0 and len(frozen['programs'])==70
     case.store.state=case.store.load_state(case.store.db)
-    mode=2
+    base_random = random.Random
+    class NoResampling(base_random):
+        _randbelow=base_random._randbelow
+        def random(self):
+            raise AssertionError('恢复已冻结子代时不得重抽繁殖概率')
+    monkeypatch.setattr(random,'Random',NoResampling)
     with pytest.raises(TaskCancelled): case.run()
-    assert mutations[:len(first)]==first
-    feedback=[folder for folder,_,options in case.calls if options['iterations']==2]
-    assert len(feedback)==len(set(feedback))>12
-    assert max(row[0] for row in checkpoints)<=12
     resumed=case.store.load_state(case.store.db)['ga']
-    assert resumed['generation']==0 and len(resumed['pending']['programs'])==70
+    assert resumed['generation']==0 and resumed['pending']==frozen
+    assert checkpoints==[12,12]
+    folders=[folder for folder,_,options in case.calls]
+    assert len(folders)==len(set(folders))
+    assert all(options['iterations']!=2 for _,_,options in case.calls)
 
 
 def test_formal_resume_can_switch_observation_detail_without_changing_computation(memory_ga):

@@ -31,15 +31,15 @@ def test_public_task_rejects_corrupt_success_summary_before_search(public_formal
         elif invalid in ('pairs', 'positions', 'scope', 'valid'):
             report['sim']['players'][0]['sim2gse_action_summary'].update(
                 duration_ms=max(1, iterations - 1) * 180000,
-                scope=dict(allowed={'spell:77575': True}, excluded={}, windows='', policy='@apl', controlled=False),
-                successes={'spell:77575': 2}, pairs={'spell:77575>spell:77575': 1},
-                outgoing={'spell:77575': 1})
+                scope=dict(allowed={'spell:1001': True}, excluded={}, windows='', policy='@apl', controlled=False),
+                successes={'spell:1001': 2}, pairs={'spell:1001>spell:1001': 1},
+                outgoing={'spell:1001': 1})
         if invalid == 'scope':
             report['sim']['players'][0]['sim2gse_action_summary']['scope']['windows'] = 'broken'
         if invalid == 'pairs':
             report['sim']['players'][0]['sim2gse_action_summary']['outgoing'] = {}
         if invalid == 'positions':
-            report['sim']['players'][0]['sim2gse_action_summary']['positions'] = {'spell:77575@0': 3}
+            report['sim']['players'][0]['sim2gse_action_summary']['positions'] = {'spell:1001@0': 3}
         (Path(folder) / 'native.pending.json').write_text(json.dumps(report), encoding='utf-8')
         return ''
 
@@ -49,8 +49,8 @@ def test_public_task_rejects_corrupt_success_summary_before_search(public_formal
                         simulation_config=dict(target_count=1, scene='single_target'))
     if invalid == 'valid':
         result = run()
-        assert result['native_reference']['action_summary']['successes'] == {'spell:77575': 2}
-        assert result['native_reference']['action_summary']['outgoing'] == {'spell:77575': 1}
+        assert result['native_reference']['action_summary']['successes'] == {'spell:1001': 2}
+        assert result['native_reference']['action_summary']['outgoing'] == {'spell:1001': 1}
     else:
         with pytest.raises(TaskError, match='成功摘要'):
             run()

@@ -154,7 +154,8 @@ def test_invalid_mean_uses_real_report_validation_and_never_masks_count_or_stage
     from search import DEFAULT_CONFIG as FORMAL_DEFAULTS
     from test_search import _fast_report
     with monkeypatch.context() as scoped:
-        scoped.setitem(FORMAL_DEFAULTS, 'mutation_probability', 0.)
+        scoped.setitem(FORMAL_DEFAULTS, 'target_mutation_probability', 0.)
+        scoped.setitem(FORMAL_DEFAULTS, 'random_mutation_probability', 0.)
         scoped.setitem(FORMAL_DEFAULTS, 'crossover_probability', 0.)
         def make(mean, *, formal=True, stage='search', count=None):
             attempts = []

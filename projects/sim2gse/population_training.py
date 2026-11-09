@@ -16,7 +16,9 @@ SCENARIOS = ('nominal', 'jitter', 'pause', 'slow', 'phase')
 ALGORITHM = 'ga-easimple-v1'
 
 
-def _cross(left, right, rng):
+def _cross(left, right, rng, *, observation=None):
+    if observation is not None:
+        observation['crossover_cut'] = None
     def wrapped(member):
         return (len(member) == 1 and isinstance(member[0], dict) and member[0].get('kind') == 'Loop')
     if wrapped(left) != wrapped(right):
@@ -28,6 +30,8 @@ def _cross(left, right, rng):
     if min(len(a), len(b)) < 2:
         return False
     cut = rng.randint(1, min(len(a), len(b)) - 1)
+    if observation is not None:
+        observation['crossover_cut'] = cut
     if a[cut:] == b[cut:]:
         return False
     a[cut:], b[cut:] = deepcopy(b[cut:]), deepcopy(a[cut:])
@@ -120,10 +124,19 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
         return [max((rng.choice(population) for _ in range(config['tournament_size'])),
                     key=lambda member: member.fitness) for _ in range(count)]
     def mate(left, right):
-        if _cross(left, right, rng):
+        before = deepcopy(list(left)), deepcopy(list(right))
+        details = {} if observe_search else None
+        changed = _cross(left, right, rng, observation=details)
+        if changed:
             left.crossed = right.crossed = True
-            observe_child(left.parent_program, left, dict(sampled_mutation='crossover', actual_mutation='crossover'))
-            observe_child(right.parent_program, right, dict(sampled_mutation='crossover', actual_mutation='crossover'))
+        if details is not None:
+            for index, child in enumerate((left, right)):
+                evidence = dict(details, sampled_mutation='crossover',
+                    actual_mutation='crossover' if changed else 'no_change',
+                    partner_identity=canonicalize_search_program(before[1-index], capabilities)['identity'])
+                if store.state['config']['search_observability'] == 'full':
+                    evidence['partner_program'] = before[1-index]
+                observe_child(before[index], child, evidence)
         return left, right
     feedback_for = None
     def observe_child(parent, child, details):
@@ -134,6 +147,8 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
             reason = None
         except (TypeError, ValueError, KeyError) as error:
             identity, reason = None, str(error)
+        if store.state['config']['search_observability'] == 'full':
+            details = dict(details, parent_program=deepcopy(list(parent)), child_program=deepcopy(list(child)))
         _observe_ga(store, 'mutation', parent_identity=canonicalize_search_program(parent, capabilities)['identity'],
                     candidate_identity=identity, illegal_reason=reason, **details)
     def mutation(member):

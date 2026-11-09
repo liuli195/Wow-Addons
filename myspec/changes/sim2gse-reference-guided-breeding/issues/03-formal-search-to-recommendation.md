@@ -4,7 +4,7 @@
 
 **Blocked by（阻塞任务）:** 02：新繁殖贯通材料到训练四代表。
 
-**Status（状态）:** ready-for-agent
+**Status（状态）:** in-progress
 
 ## 验收条件
 

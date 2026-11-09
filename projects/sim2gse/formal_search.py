@@ -6,9 +6,10 @@ import random
 from runtime import TaskRuntime
 from search import digest
 
-ALGORITHM = 'formal-ga-easimple-v2'
+ALGORITHM = 'formal-reference-guided-ga-v3'
 STOP_POLICY = dict(version=1, kind='natural_stagnation')
-VERSION = 2
+VERSION = 3
+SUPPORTED_VERSIONS = (1, 2, VERSION)
 COARSE_FAILURE_POLICY = dict(version=1, initial='exclude_invalid_score', offspring='retain_verified_slot')
 
 
@@ -59,7 +60,7 @@ V1_ALGORITHM_CONFIG = dict(max_processes=2, coarse_iterations=32, retest_batches
 def contract_for(config, *, version=VERSION):
     from population_training import _stage_plan
     from simulation_config import FORMAL_ALGORITHM_DEFAULTS
-    if type(version) is not int or version not in (1, VERSION):
+    if type(version) is not int or version not in SUPPORTED_VERSIONS:
         raise ValueError('正式遗传搜索契约版本不符')
     if version == 1:
         from search import formal_v1_config_for
@@ -67,9 +68,14 @@ def contract_for(config, *, version=VERSION):
         ga_config = dict(V1_ALGORITHM_CONFIG, max_processes=config.get('max_processes', 2))
         if type(ga_config['max_processes']) is not int or not 1 <= ga_config['max_processes'] <= 2:
             raise ValueError('历史正式搜索并发超出范围')
+    elif version == 2:
+        from search import config_for
+        from simulation_config import FORMAL_V2_ALGORITHM_DEFAULTS
+        config = config_for(config, _historical_formal_v2=True)
+        ga_config = {key: config[key] for key in FORMAL_V2_ALGORITHM_DEFAULTS}
     else:
         ga_config = {key: config[key] for key in FORMAL_ALGORITHM_DEFAULTS}
-    return dict(version=version, algorithm='formal-ga-easimple-v1' if version == 1 else ALGORITHM,
+    return dict(version=version, algorithm=('formal-ga-easimple-v1' if version == 1 else 'formal-ga-easimple-v2' if version == 2 else ALGORITHM),
                 stop_policy=STOP_POLICY, config=ga_config,
                 coarse_failure_policy=COARSE_FAILURE_POLICY,
                 stage_plan=_stage_plan(ga_config, config['random_seed'], scenarios=('nominal',)))
@@ -85,6 +91,12 @@ def run(*, profile, character, capabilities, reference, destination, runtime,
     if state.get('formal_search') not in (None, frozen):
         raise ValueError('正式遗传搜索恢复契约或评分计划变化，不能混接')
     state['formal_search'] = frozen
+    if 'breeding_reference' not in state:
+        if state.get('ga', {}).get('phase', 'initial') != 'initial' or state.get('archive'):
+            raise ValueError('当前正式任务缺少冻结参考，不能混接旧繁殖')
+        state['breeding_reference'] = deepcopy(reference.get('action_summary'))
+    elif state['breeding_reference'] != reference.get('action_summary'):
+        raise ValueError('当前正式参考与冻结成功摘要不符')
     state.setdefault('ga', dict(algorithm=GA_ALGORITHM, phase='initial', generation=0,
         stagnant=0, population=[], pending=None, rng=random.Random(config['random_seed']).getstate(), finals={}))
     if state['ga']['algorithm'] != GA_ALGORITHM:
@@ -140,7 +152,10 @@ def run(*, profile, character, capabilities, reference, destination, runtime,
             rounds=ga['generation'], complete_generations=ga['generation'],
             candidate_count=len(state['evaluated_keys']), unique_candidates=len(state['seen']),
             partial_round=False, stop_reason='stagnation', errors=state.get('errors', []),
-            formal_search=frozen, retest=summary['retest']),
+            formal_search=frozen, breeding=ga.get('breeding'),
+            breeding_statistics=(dict(status='collected', counts=ga.get('breeding_counts', {}))
+                if config['diagnostic_logging'] else dict(status='not_collected')),
+            retest=summary['retest']),
         validation=dict(dataset='validation', records=[]),
         final=dict(dataset='final', status='completed', scenarios=dict(nominal=dict(finalists=finalists))),
         elapsed_seconds=runtime.elapsed_seconds, completed_batches=state['completed_batches'])
@@ -174,7 +189,7 @@ def validate_evidence(record, state, character, *, verify_reports):
             raise InvalidRecordError(str(error)) from error
     if (not isinstance(evaluation, dict) or not isinstance(evaluation.get('search'), dict)
             or type(evaluation['search'].get('version')) is not int
-            or evaluation['search']['version'] not in (1, VERSION)
+            or evaluation['search']['version'] not in SUPPORTED_VERSIONS
             or not isinstance(evaluation['search'].get('coarse_failure_policy'), dict)
             or type((evaluation['search'].get('coarse_failure_policy') or {}).get('version')) is not int):
         raise InvalidRecordError('正式遗传冠军评价契约版本格式不符')

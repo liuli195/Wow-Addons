@@ -76,7 +76,7 @@ def test_formal_search_rejects_missing_variance_without_failing_task(memory_ga):
 
     # The same formal entry owns quarantine and full finalist retests. HTTP,
     # physical report groups and native execution retain separate real witnesses.
-    with patch.dict(FORMAL_DEFAULTS, crossover_probability=0., mutation_probability=0.):
+    with patch.dict(FORMAL_DEFAULTS, crossover_probability=0., target_mutation_probability=0., random_mutation_probability=0.):
         case = memory_ga(formal=True, programs=[[[name] for name in actions]
             for actions in (initial, better, worse)], native=evaluate)
         result = case.run()

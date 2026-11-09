@@ -157,6 +157,8 @@ RETIRED_SEARCH_SETTINGS = ('total_budget_seconds', 'search_budget_seconds', 'can
 
 
 def reject_removed_search_settings(values):
+    if 'mutation_probability' in values:
+        raise ValueError('mutation_probability旧总变异概率已退役，请改用target_mutation_probability和random_mutation_probability')
     removed = set(REMOVED_SEARCH_SETTINGS) & set(values)
     if removed:
         raise ValueError('搜索能力及开关已移除，请删除旧配置: ' + ', '.join(sorted(removed)))
@@ -165,9 +167,13 @@ def reject_removed_search_settings(values):
         raise ValueError('旧正式搜索参数已退役，请删除旧配置: ' + ', '.join(sorted(retired)))
 
 
-FORMAL_ALGORITHM_DEFAULTS = dict(max_processes=5, coarse_iterations=32,
+# Only historical completed v2 receipts use these fixed values.
+FORMAL_V2_ALGORITHM_DEFAULTS = dict(max_processes=5, coarse_iterations=32,
     retest_batches=3, retest_iterations=128, stagnation_generations=8, top_k=8,
     tournament_size=3, crossover_probability=0.8, mutation_probability=0.8)
+FORMAL_ALGORITHM_DEFAULTS = dict(max_processes=5, coarse_iterations=32,
+    retest_batches=3, retest_iterations=128, stagnation_generations=8, top_k=8,
+    tournament_size=3, target_mutation_probability=0.8, random_mutation_probability=0.3, crossover_probability=0.3)
 SEARCH_RUNTIME_DEFAULTS = dict(iterations=128, random_seed=20260912, search_timeline=False,
     diagnostic_logging=False, diagnostics='summary', search_observability='full',
     input_interval_ms=300, reset_events=())
