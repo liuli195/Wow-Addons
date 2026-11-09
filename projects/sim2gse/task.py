@@ -1363,6 +1363,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
     if formal_source_run_ids is not None:
         state['formal_history_scope'] = formal_source_run_ids
     runtime.diagnostic_logging = config['diagnostic_logging']
+    runtime.memory_limit_mb = config.get('memory_limit_mb', 4096)
     def reservation(key, allowance):
         with store.lock:
             inflight = state.setdefault('inflight', {})

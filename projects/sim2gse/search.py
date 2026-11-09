@@ -1233,6 +1233,8 @@ class TaskStore:
                             CREATE TABLE state_fields (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                             CREATE TABLE state_archive (key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, value TEXT NOT NULL);
                             CREATE TABLE batches (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                            CREATE TABLE report_intents (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                            CREATE TABLE runtime_progress (id INTEGER PRIMARY KEY, elapsed REAL NOT NULL, status TEXT NOT NULL, inflight TEXT NOT NULL);
                         ''')
                         target.execute('INSERT INTO state VALUES (1,?)', (_json({'storage_format': 2}),))
                         target.executemany('INSERT INTO state_fields VALUES (?,?)', fields)
@@ -1603,7 +1605,8 @@ class TaskStore:
         """进程崩溃最多按尚未消耗的单批额度扣费，恢复扣除只发生一次。"""
         self.runtime = runtime
         runtime.memory_execution = self.memory_execution
-        runtime.memory_limit_mb = self.state.get('config', {}).get('memory_limit_mb', 4096)
+        runtime.memory_limit_mb = self.state.get('config', {}).get('memory_limit_mb',
+            getattr(runtime, 'memory_limit_mb', 4096))
         stop = threading.Event()
         def beat():
             with self.lock:

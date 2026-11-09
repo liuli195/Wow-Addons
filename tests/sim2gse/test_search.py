@@ -197,6 +197,20 @@ def test_formal_command_keeps_actual_rejection_count(monkeypatch,capsys,public_f
     assert result['start_rejection_count']==1
 
 
+def test_new_public_task_honors_custom_memory_limit_before_reference(public_formal_memory, monkeypatch):
+    import engine
+    import task
+    original = engine.reference
+    seen = []
+    def reference(*args, **kwargs):
+        seen.append(kwargs['runtime'].memory_limit_mb)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(engine, 'reference', reference)
+    task.run_task('/memory/role.simc', '/memory/formal', search_config=dict(memory_limit_mb=512),
+                  simulation_config=dict(target_count=1, scene='single_target'))
+    assert seen == [512]
+
+
 def test_mutate_fetches_parent_feedback_only_after_its_usage_gate():
     import random
     from search import mutate
@@ -258,15 +272,21 @@ def _fast_capabilities():
 
 
 def _fast_reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912,
-                    simulation_config=None, import_spell_ids=(), import_spell_names=(), summary_excluded_spell_ids=()):
+                    simulation_config=None, import_spell_ids=(), import_spell_names=(), summary_excluded_spell_ids=(),
+                    profile_text=None, report_sink=None):
     folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=True)
+    memory = profile_text is not None or getattr(runtime, 'memory_execution', False)
+    if not memory:
+        folder.mkdir(parents=True, exist_ok=True)
     report = _fast_report(character, 100.0, max(1, iterations-1))
     summary = report['sim']['players'][0]['sim2gse_action_summary']
     summary['successes'] = {'spell:1001': max(1, iterations-1)}
     summary['scope']['allowed'] = {'spell:1001': True}
     summary['scope']['excluded'] = {f'spell:{i}': True for i in summary_excluded_spell_ids}
-    (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")
+    if report_sink is not None:
+        report_sink.update(report)
+    if not memory:
+        (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")
     return dict(action_summary=summary, static_snapshot=static_snapshot(), dps=100.0, metric="dps", personal_dps=100.0, samples=max(1, iterations-1), seconds=180,
                 identity=dict(class_id=6, spec_id=252, spec=character.spec, race=character.race,
                               role=character.fields.get("role", "attack"), resource="runic_power"),
@@ -276,8 +296,9 @@ def _fast_reference(profile, folder, character, *, runtime=None, iterations=100,
 
 
 def _fast_inspect(reference, folder, *, include_item=True):
-    folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=True)
+    folder = Path(folder) if folder is not None else None
+    if folder is not None:
+        folder.mkdir(parents=True, exist_ok=True)
     capabilities = _fast_capabilities()
     if not include_item:
         capabilities["actions"] = [row for row in capabilities["actions"]
@@ -285,7 +306,8 @@ def _fast_inspect(reference, folder, *, include_item=True):
         spell_ids = {"outbreak": 77575, "death_coil": 47541, "scourge_strike": 55090}
         for row in capabilities["actions"]:
             row["spell_id"] = row["base_spell_id"] = spell_ids[row["simc_action"]]
-    (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
+    if folder is not None:
+        (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
     return capabilities
 
 
@@ -311,10 +333,13 @@ def _fast_report(character, score, samples):
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                    seed=20260912, trace=True, mode="controlled", input_times=None,
                    runtime=None, score_offset=0, simulation_config=None, reset_events=None,
-                   on_native_start=None, score=None, rule_observation_request=None, allow_zero=False, burst_plan=None):
+                   on_native_start=None, score=None, rule_observation_request=None, allow_zero=False, burst_plan=None,
+                   report_kind='full', memory_io=False):
     """构造稳定报告，保留 search.optimize 的选择、缓存和发布逻辑。"""
     folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=True)
+    memory = memory_io or getattr(runtime, 'memory_execution', False)
+    if not memory:
+        folder.mkdir(parents=True, exist_ok=True)
     if on_native_start is not None:
         on_native_start()
     input_times = list(range(0, 180000, 300)) if input_times is None else list(input_times)
@@ -328,7 +353,8 @@ def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
     report = _fast_report(character, score, samples)
     targets = (simulation_config or {}).get('target_count', 1)
     report['sim']['targets'] = [dict(report['sim']['targets'][0]) for _ in range(targets)]
-    (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")
+    if not memory:
+        (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")
     trace_rows = []
     if trace:
         trace_rows = [

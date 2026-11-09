@@ -105,3 +105,37 @@ def test_public_task_reads_live_memory_progress_without_progress_file(tmp_path):
         assert not (tmp_path / 'progress.json').exists()
     finally:
         store.close()
+
+
+@pytest.mark.real
+def test_final_publication_still_works_after_static_recovery_save(tmp_path, installed_result_center):
+    import json
+    from task import parse_character
+    from test_character_export import sample_profile
+    from test_search import _fast_report
+    import result_store
+    result_store.DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    folder = tmp_path / 'task'
+    store = TaskStore(folder, memory_execution=True)
+    character = parse_character(sample_profile())
+    store.character, store.simulation_config = character, dict(target_count=1)
+    store.state.update(run_id='final-after-recovery', archive=[], completed_batches=0)
+    request = dict(condition='frozen', program=[], behavior_identity='candidate', purpose='nominal',
+        seed=11, input_seed=22, iterations=32, times=[0], stats='paired-bootstrap-v1', trace=False, reset_events=[])
+    key = digest(request)
+    row = dict(status='success', request=request, data_key=key, dps=42., samples=31, variance=0.)
+    stored = dict(batch_key=key, run_id=store.state['run_id'], condition_key='frozen',
+        candidate_key='candidate', program_identity=json.dumps([], separators=(',', ':')),
+        purpose='nominal', seed=11, input_seed=22, iterations=32, times=[0], stats_version='paired-bootstrap-v1',
+        trace=False, batch_index=0, scenario='nominal', report=_fast_report(character, 42., 31),
+        dps=42., samples=31, variance=0.)
+    try:
+        store.checkpoint(boundary='initial')
+        store.stage_report(key, row, stored)
+        store.flush_reports(final=True)
+        receipt = store.batch(key)
+        saved = result_store.one('batches', 'batch_key', key, group_key=receipt['storage_group_key'])
+        assert saved['dps'] == 42.
+        store.checkpoint(boundary='final')
+    finally:
+        store.close()
