@@ -83,7 +83,7 @@
     },
     {
       "path": "projects/sim2gse/native/hooks/090-memory-report-stream.patch",
-      "sha256": "5e8945e7b66e86a22440d543046e205102c336c963ebc3b392579b4af5f8b6b1"
+      "sha256": "1d09fd54d74d0a4ad191921834c5818e8644dc37204c48186893f8c564dedf49"
     },
     {
       "path": "projects/sim2gse/native/hooks/091-controlled-memory-report.patch",
@@ -129,9 +129,10 @@
     "engine/class_modules/sc_death_knight.cpp": "5ba19fa34ca055deff56ba1058df4d0de03c9b27b92f98b61dd593929bf6b686",
     "engine/player/player.cpp": "0ca8f7b4bc57ce4315eb1cf2bb2bd4480cefa6aa0818bb6051da8423b80a4054",
     "engine/player/player.hpp": "b5263251eb249d4ceb29800240d5834871c8e5e6451deca925d7ab210ab47fef",
-    "engine/report/json/report_json.cpp": "71dcbcf8a77a084570ba3af3def82df9dd415b77a9eef460eb4b4652c9c64b57",
+    "engine/report/json/report_json.cpp": "d48f3ff2788b75092926b89e6429203b209f2b6ab78a662b733340e05e4b0635",
     "engine/sim/sim.cpp": "8f6180519988e8c098b84f11e72b316c7ea1d24bba50432e01cf17c161900e59",
-    "engine/Makefile": "fd625df6d8cddac73f80d92bb049bda6cc07e2ae49ebcb5e05e4779caa1f398f"
+    "engine/Makefile": "fd625df6d8cddac73f80d92bb049bda6cc07e2ae49ebcb5e05e4779caa1f398f",
+    "engine/report/reports.cpp": "99a941f072a29fad77d49dff3260d2997f11902c95b9893842edfa17c0c6c7b8"
   },
   "baseline_patches": [
     {
@@ -156,7 +157,7 @@
     },
     {
       "path": "projects/sim2gse/native/hooks/090-memory-report-stream.patch",
-      "sha256": "5e8945e7b66e86a22440d543046e205102c336c963ebc3b392579b4af5f8b6b1"
+      "sha256": "1d09fd54d74d0a4ad191921834c5818e8644dc37204c48186893f8c564dedf49"
     }
   ],
   "baseline_patched_files": {
@@ -167,9 +168,10 @@
     "engine/class_modules/sc_death_knight.cpp": "56b33d64995911b5ef8aa35518def0e1b335d9fcd9da0240db2d51d9195fdc95",
     "engine/player/player.cpp": "011e45661002d2cf8fabbb18d0a5e6e3deb8184875100e39594fb22f03f8ee84",
     "engine/player/player.hpp": "9ba155905ce6efd4833b47f5918492c718eba2c76cc9672631b37db356be1c96",
-    "engine/report/json/report_json.cpp": "2eba50d5c2912ed5c6ff13d604f5b59c088d6215f7c570bae3abbe16591e436f",
+    "engine/report/json/report_json.cpp": "a1d6bd9aab7a0089caaf16ed83d16a59271d4889a77f211c399072185fcad034",
     "engine/sim/sim.cpp": "fe7c7d15c404782414801cc59d0bf9711061a2b9848785eec709320b5c0cf120",
-    "engine/Makefile": "ee446de58589e2fcf7e08b2b646055d3643efd44bee606aa5dc5e0d9b9de2f3f"
+    "engine/Makefile": "ee446de58589e2fcf7e08b2b646055d3643efd44bee606aa5dc5e0d9b9de2f3f",
+    "engine/report/reports.cpp": "99a941f072a29fad77d49dff3260d2997f11902c95b9893842edfa17c0c6c7b8"
   },
   "client_targeting": {
     "path": "projects/sim2gse/compatibility/spell-target-masks.json",

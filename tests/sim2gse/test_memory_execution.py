@@ -75,12 +75,17 @@ def test_interrupted_retest_replays_without_losing_coarse_or_failure_budget(tmp_
     store = TaskStore(tmp_path, memory_execution=True)
     request = dict(condition='frozen', purpose='search', program=[], seed=11)
     key = digest(request)
-    store.state.update(run_id='retest', archive=[], status='running',
+    store.state.update(run_id='retest', archive=[], status='running', completed_batches=0,
         ga=dict(phase='qualified', finals={'unfinished': {'nominal': {'0': 'not-published'}}}),
         training_failures={'original-request': 2})
     store.put_batch(key, dict(status='success', request=request, data_key=key, dps=42., samples=31,
                               variance=3.), verified=True)
-    store.put_batch('transient-final', dict(status='success', request=dict(purpose='nominal'), dps=42.))
+    store.stage_report('transient-final', dict(status='success', request=dict(purpose='nominal'), dps=42.),
+                       dict(batch_index=0, scenario='nominal', report={}))
+    store.discard_unsaved_reports()
+    assert store.state['run_id'] == 'retest' and store.state['training_failures'] == {'original-request': 2}
+    assert store.batch(key)['dps'] == 42.
+    assert store.batch('transient-final') is None and not store.memory_reports
     store.checkpoint(boundary='pause')
     assert store.state['ga']['phase'] == 'qualified'
     assert store.state['ga']['finals']

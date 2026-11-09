@@ -54,6 +54,15 @@ def test_owned_memory_process_limits_and_cancellation(tmp_path, case):
 
 
 @pytest.mark.real
+def test_memory_reports_skip_unused_native_text_report(tmp_path):
+    before = set(tmp_path.iterdir())
+    result = engine.run(None, tmp_path, profile_text=sample_profile(), options=['iterations=2'])
+    assert 'text report took' not in result['log']
+    assert result['report']['sim']['players']
+    assert set(tmp_path.iterdir()) == before
+
+
+@pytest.mark.real
 @pytest.mark.parametrize('targets', [1, 5])
 def test_real_compiled_sequence_memory_scoring_matches_complete_report(tmp_path, targets):
     import codec
