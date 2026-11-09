@@ -188,6 +188,41 @@ def target_mutation(program, capabilities, rng, reference, current, legal):
             key, step = position.rsplit('@', 1)
             for row in locations_for_step(int(step), key):
                 successful[_token(row)] = row
+    def unit(row):
+        return (tuple(row['path']), row['index'])
+    by_button = {}
+    for row in successful.values():
+        by_button.setdefault(row['key'], {})[unit(row)] = row
+    adjacent = {}
+    def add_pair(a, b, first, last):
+        adjacent.setdefault((a, b), {})[(unit(first), unit(last))] = (first, last)
+    # An aggregate actual pair is unambiguous when every success of each button
+    # belongs to just one source node. Multiple source nodes need a real witness.
+    for pair, count in current['pairs'].items():
+        a, b = pair.split('>')
+        left, right = list(by_button.get(a, {}).values()), list(by_button.get(b, {}).values())
+        if count and len(left) == len(right) == 1:
+            add_pair(a, b, left[0], right[0])
+    step_keys = {}
+    for position, count in current.get('positions', {}).items():
+        if count:
+            key, step = position.rsplit('@', 1)
+            step_keys.setdefault(int(step), set()).add(key)
+    for pair, witness in current.get('witnesses', {}).items():
+        first, last = pair.split('>')
+        middle = step_keys.get(witness[1], set())
+        if len(middle) != 1:
+            continue
+        middle = next(iter(middle))
+        triple = [(first, witness[0]), (middle, witness[1]), (last, witness[2])]
+        for (a, i), (b, j) in zip(triple, triple[1:]):
+            if not current['pairs'].get(a + '>' + b, 0):
+                raise ValueError('成功三点见证与相邻计数不符')
+            left, right = locations_for_step(i, a), locations_for_step(j, b)
+            # A single runtime click can contain repeated castsequence members;
+            # do not guess which source member produced the witnessed event.
+            if len(left) == len(right) == 1:
+                add_pair(a, b, left[0], right[0])
     temporal = None
     pairs = [(a, b) for a in sorted(actions) for b in sorted(actions)]
     for rule in ('reverse', 'repeat', 'connection'):
@@ -215,22 +250,33 @@ def target_mutation(program, capabilities, rng, reference, current, legal):
                 if a == b or r_ab <= c_ab:
                     continue
                 strength, reason = r_ab - c_ab, 'sequence_connection_soft'
-            eligible = rows if rule == 'connection' else list(successful.values())
-            for first in (row for row in eligible if row['key'] == a):
-                for second in (row for row in eligible if row['key'] == b and row['path'] == first['path']):
-                    proposals.append((strength, a, b, dict(operation='move', path=second['path'],
-                        index=second['index'], target=first['index'] + (second['index'] > first['index'])), reason))
-                    if rule != 'connection':
-                        proposals.append((strength, a, b, dict(operation='swap', path=first['path'],
-                            index=first['index'], target=second['index']), reason))
+            if rule == 'reverse':
+                locations = [(last, first) for first, last in adjacent.get((b, a), {}).values()]
+            elif rule == 'repeat':
+                locations = []
+                for first, last in adjacent.get((a, a), {}).values():
+                    if first['path'] != last['path']:
+                        continue
+                    locations.extend((first, row) for row in rows if row['key'] == b
+                        and row['path'] == first['path'] and unit(row) not in (unit(first), unit(last)))
+            else:
+                locations = [(first, second) for first in rows if first['key'] == a
+                    for second in rows if second['key'] == b and first['path'] == second['path']]
+            for first, second in locations:
+                if first['path'] != second['path']:
+                    continue
+                proposals.append((strength, a, b, dict(operation='move', path=second['path'],
+                    index=second['index'], target=first['index'] + (second['index'] > first['index'])), reason))
+                if rule == 'reverse':
+                    proposals.append((strength, a, b, dict(operation='swap', path=first['path'],
+                        index=first['index'], target=second['index']), reason))
             if rule == 'connection':
                 witness = current.get('witnesses', {}).get(a + '>' + b)
                 if witness:
                     firsts, lasts = locations_for_step(witness[0], a), locations_for_step(witness[2], b)
                     # Only a uniquely identified middle button proves a blocker;
                     # a multi-command runtime click alone cannot prove its key.
-                    middle_keys = {key.split('@')[0] for key in current.get('positions', {})
-                                   if key.endswith('@' + str(witness[1]))}
+                    middle_keys = step_keys.get(witness[1], set())
                     if len(middle_keys) == 1 and middle_keys.isdisjoint({a, b}):
                         for first in firsts:
                             for last in lasts:
@@ -241,10 +287,12 @@ def target_mutation(program, capabilities, rng, reference, current, legal):
         priority = lambda item: (-item[0], item[1], item[2], item[4] != 'sequence_connection_witness')
         ordered_proposals = sorted(proposals, key=lambda item: (*priority(item), _token(item[3])))
         for _, group in groupby(ordered_proposals, priority):
-            equivalent = [(edit, reason) for _, a, b, edit, reason in group
-                          if _legal_edits(program, [edit], legal)]
+            equivalent = {}
+            for _, a, b, edit, reason in group:
+                if _legal_edits(program, [edit], legal):
+                    equivalent.setdefault(_token(edit), (edit, reason))
             if equivalent:
-                edit, reason = rng.choice(equivalent)
+                edit, reason = rng.choice(list(equivalent.values()))
                 temporal = (edit, [reason])
                 break
         if temporal:

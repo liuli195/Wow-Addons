@@ -1089,3 +1089,68 @@ def test_public_training_collects_three_gate_counts_without_full_process_history
     assert 0 < ga['breeding_counts']['target_changed'] <= ga['breeding_counts']['target_triggered']
     assert 'search_observability' not in case.store.state
     assert all(options['iterations'] != 2 for _, _, options in case.calls)
+
+
+
+@pytest.mark.parametrize('rule, parent, expected, reference_pairs, candidate_pairs, witness', [
+    ('reverse', ['outbreak','death_coil','outbreak','scourge_strike'],
+     ['outbreak','outbreak','death_coil','scourge_strike'],
+     {'1>2':6,'1>3':3,'2>1':1,'2>3':8,'3>1':1,'3>2':8},
+     {'1>2':1,'1>3':8,'2>1':6,'2>3':3,'3>1':8,'3>2':1}, ('2>3',[1,2,3])),
+    ('repeat', ['outbreak','outbreak','scourge_strike','outbreak','death_coil'],
+     ['outbreak','outbreak','death_coil','scourge_strike','outbreak'],
+     {'1>1':1,'1>2':4,'1>3':4,'2>1':4,'2>3':4,'3>1':4,'3>2':4},
+     {'1>1':3,'1>2':4,'1>3':1,'2>1':4,'2>3':4,'3>1':4,'3>2':4}, ('1>3',[1,3,2])),
+])
+def test_public_sequence_repair_uses_witness_positions_with_repeated_buttons(
+        monkeypatch, guided_training_memory, rule, parent, expected, reference_pairs, candidate_pairs, witness):
+    from collections import Counter
+    from copy import deepcopy
+    import random
+    from types import SimpleNamespace
+    import population_training, seed_training, sequence
+    from runtime import TaskCancelled
+    from test_search_syntax import SIMPLE
+    case = guided_training_memory
+    case.guidance_probabilities.update(random_mutation_probability=0., crossover_probability=0.)
+    source = deepcopy(case.sources[0]); source['program'] = [[name] for name in parent]
+    case.sources[:] = [source]
+    def summary(samples, coefficients, positions=None, witnesses=None):
+        pairs = {'spell:100'+a+'>spell:100'+b:n*samples for key,n in coefficients.items() for a,b in [key.split('>')]}
+        outgoing = Counter()
+        for key,n in pairs.items(): outgoing[key.split('>')[0]] += n
+        keys = ['spell:1001','spell:1002','spell:1003']
+        return dict(version=1,samples=samples,duration_ms=180000*samples,
+            successes={key:10*samples for key in keys},pairs=pairs,outgoing=dict(outgoing),
+            positions=positions or {},witnesses=witnesses or {},scope=dict(allowed=dict.fromkeys(keys,True),
+                excluded={},windows='',policy='/'.join(keys) if positions else '@apl',controlled=bool(positions)))
+    case.guidance_reference = summary(99, reference_pairs)
+    base_random = random.Random
+    class First(base_random):
+        _randbelow = base_random._randbelow
+        def random(self): return 0.
+        def choice(self, values): return values[0]
+    monkeypatch.setattr(population_training,'random',SimpleNamespace(Random=First))
+    evaluate = sequence.evaluate
+    def native_report(profile,candidate,folder,**kwargs):
+        result = evaluate(profile,candidate,folder,**kwargs); samples=result['summary']['samples']
+        occurrences = {}
+        for step,block in enumerate(candidate['blocks']):
+            for command in block: occurrences.setdefault(command['spell_id'],[]).append(step)
+        positions = {}
+        for skill,steps in occurrences.items():
+            for i,step in enumerate(steps):
+                positions[f'spell:{skill}@{step}'] = samples*(10//len(steps)+(i<10%len(steps)))
+        a,b = witness[0].split('>')
+        value = summary(samples,candidate_pairs,positions,{'spell:100'+a+'>spell:100'+b:witness[1]})
+        result['report']['sim']['players'][0]['sim2gse_action_summary'] = value
+        return result
+    monkeypatch.setattr(sequence,'evaluate',native_report)
+    checkpoint=case.store.checkpoint
+    def pause():
+        checkpoint()
+        if case.store.state['ga']['pending'] is not None: raise TaskCancelled('inspect witnessed edit')
+    monkeypatch.setattr(case.store,'checkpoint',pause)
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template,1,'/memory/work',syntax_config=SIMPLE)
+    assert case.store.state['ga']['pending']['programs'][0] == [[name] for name in expected]

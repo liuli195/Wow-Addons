@@ -37,6 +37,8 @@ def memory_ga(monkeypatch):
                       ('outbreak', 'death_coil', 'scourge_strike'))])
         config = dict(TRAINING_DEFAULTS, top_k=4, max_processes=1,
                       crossover_probability=0., target_mutation_probability=0., random_mutation_probability=0.)
+        if set(settings or {}) - set(config):
+            raise ValueError('训练样例包含未知参数')
         config.update(settings or {})
         # Overrides must not be duplicated in dict's keyword construction.
         search_values = dict(max_processes=1)
@@ -616,9 +618,11 @@ def test_training_simple_policy_closes_children_and_publication(memory_ga):
     # 两技能、长度1～4，共30条。变异与交叉都实际执行，不用复制补起点。
     programs = [[[name] for name in order] for size in range(1,5)
                 for order in product(('outbreak','death_coil'), repeat=size)]
-    case = memory_ga(programs=programs, settings=dict(random_random_mutation_probability=1., crossover_probability=1.),
-                     search_settings={'syntax': SIMPLE})
+    case = memory_ga(programs=programs, settings=dict(random_mutation_probability=1., crossover_probability=1.),
+                     search_settings={'syntax': SIMPLE, 'diagnostic_logging': True})
     ga = case.run()
+    assert ga['breeding_counts']['random_triggered'] > 0
+    assert ga['breeding_counts']['random_changed'] > 0
     assert ga['generation'] >= 2
     for _, candidate, _ in case.calls:
         check_search_syntax(candidate['program'], SIMPLE)
