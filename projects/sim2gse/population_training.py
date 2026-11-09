@@ -38,6 +38,54 @@ def _cross(left, right, rng, *, observation=None):
     return True
 
 
+def select_parents(population, count, rng, tournament_size):
+    """Production tournament selection, also used by the bounded pilot."""
+    return [max((rng.choice(population) for _ in range(tournament_size)),
+                key=lambda member: member.fitness) for _ in range(count)]
+
+
+def vary_offspring(population, toolbox, *, rng, config, capabilities, reference,
+                   legal, check, observe, flags=(), counts=None):
+    """The shared target/random/crossover gates; no global DEAP random changes."""
+    from breeding import target_mutation, random_operations
+    children = [toolbox.clone(parent) for parent in population]
+    for child in children:
+        check()
+        if rng.random() < config['target_mutation_probability']:
+            if counts is not None: counts['target_triggered'] += 1
+            changed, details = target_mutation(list(child), capabilities, rng, reference,
+                child.action_summary, legal)
+            before = deepcopy(list(child))
+            child[:] = changed
+            observe(before, child, dict(sampled_mutation='target', **details))
+            if child != before:
+                if counts is not None: counts['target_changed'] += 1
+                del child.fitness.values
+        if rng.random() < config['random_mutation_probability']:
+            if counts is not None: counts['random_triggered'] += 1
+            operations = random_operations(child, capabilities, flags)
+            if operations:
+                before = deepcopy(list(child))
+                details = {}
+                child[:] = mutate(child, capabilities, rng, operation_override=rng.choice(operations),
+                    observation=details, reset_flags=flags)
+                observe(before, child, dict(details, mutation_route='random'))
+                if child != before:
+                    if counts is not None: counts['random_changed'] += 1
+                    del child.fitness.values
+    for index in range(1, len(children), 2):
+        if rng.random() < config['crossover_probability']:
+            if counts is not None: counts['crossover_triggered'] += 1
+            before = (deepcopy(list(children[index-1])), deepcopy(list(children[index])))
+            toolbox.mate(children[index-1], children[index])
+            if counts is not None and any(child != original for child, original in zip(children[index-1:index+1], before)):
+                counts['crossover_changed'] += 1
+            for child, original in zip(children[index-1:index+1], before):
+                if child != original:
+                    del child.fitness.values
+    return children
+
+
 def _stage_plan(config, seed, *, scenarios=SCENARIOS):
     # Independent deterministic streams, frozen before the first request.
     rng = random.Random(seed)
@@ -121,8 +169,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
         child.parent_program, child.crossed = deepcopy(list(parent)), False
         return child
     def select(population, count):
-        return [max((rng.choice(population) for _ in range(config['tournament_size'])),
-                    key=lambda member: member.fitness) for _ in range(count)]
+        return select_parents(population, count, rng, config['tournament_size'])
     def mate(left, right):
         before = deepcopy(list(left)), deepcopy(list(right))
         details = {} if observe_search else None
@@ -177,46 +224,13 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
     last_variation_counts = None
     def three_gates(population, toolbox, cross_probability, unused_probability=None):
         nonlocal last_variation_counts
-        from breeding import target_mutation, random_operations
         counts = {route + suffix: 0 for route in ('target', 'random', 'crossover')
                   for suffix in ('_triggered', '_changed')} if store.diagnostic_logging else None
-        children = [toolbox.clone(parent) for parent in population]
-        for child in children:
-            runtime.check()
-            if rng.random() < config['target_mutation_probability']:
-                if counts is not None: counts['target_triggered'] += 1
-                changed, details = target_mutation(list(child), capabilities, rng, reference,
-                    child.action_summary, legal_for_guidance)
-                before = deepcopy(list(child))
-                child[:] = changed
-                observe_child(before, child, dict(sampled_mutation='target', **details))
-                if child != before:
-                    if counts is not None: counts['target_changed'] += 1
-                    del child.fitness.values
-            if rng.random() < config['random_mutation_probability']:
-                if counts is not None: counts['random_triggered'] += 1
-                flags = tuple(dict.fromkeys(kind for _, kind in store.state['config']['reset_events']
-                    if kind in ('target', 'combat', 'shift', 'ctrl', 'alt')))
-                operations = random_operations(child, capabilities, flags)
-                if operations:
-                    before = deepcopy(list(child))
-                    details = {}
-                    child[:] = mutate(child, capabilities, rng, operation_override=rng.choice(operations),
-                        observation=details, reset_flags=flags)
-                    observe_child(before, child, dict(details, mutation_route='random'))
-                    if child != before:
-                        if counts is not None: counts['random_changed'] += 1
-                        del child.fitness.values
-        for index in range(1, len(children), 2):
-            if rng.random() < cross_probability:
-                if counts is not None: counts['crossover_triggered'] += 1
-                before = (deepcopy(list(children[index-1])), deepcopy(list(children[index])))
-                toolbox.mate(children[index-1], children[index])
-                if counts is not None and any(child != original for child, original in zip(children[index-1:index+1], before)):
-                    counts['crossover_changed'] += 1
-                for child, original in zip(children[index-1:index+1], before):
-                    if child != original:
-                        del child.fitness.values
+        children = vary_offspring(population, toolbox, rng=rng, config=config,
+            capabilities=capabilities, reference=reference, legal=legal_for_guidance,
+            check=runtime.check, observe=observe_child,
+            flags=tuple(dict.fromkeys(kind for _, kind in store.state['config']['reset_events']
+                if kind in ('target', 'combat', 'shift', 'ctrl', 'alt'))), counts=counts)
         last_variation_counts = counts
         return children
     variation = three_gates if guided else legacy_variation
