@@ -1,0 +1,10 @@
+--- a/engine/report/json/report_json.cpp
++++ b/engine/report/json/report_json.cpp
+@@ -763,6 +763,7 @@
+     data[ "fight_length" ] = p.collected_data.fight_length;
+     gear_to_json( root[ "gear" ], p );
+     sim2gse::write_player_report( root, p, false );
++    p.sim2gse_control.write_report( root );
+     return;
+   }
+   root[ "name" ] = p.name();

@@ -387,7 +387,85 @@ def _open_redirect(path: Path, access: int, disposition: int):
     return handle
 
 
-def _create_windows_process(command, cwd: Path, folder: Path):
+class _PipeIO:
+    """有界双路读取；所有端点只传给受作业对象约束的子进程。"""
+
+    def __init__(self, data, limit):
+        import msvcrt
+        self.fds = []
+        self.child_handles = []
+        self.output = [bytearray(), bytearray()]
+        self.error = None
+        self.size = 0
+        self.lock = threading.Lock()
+        self.threads = []
+        self.data, self.limit = data, limit
+        try:
+            for index in range(3):
+                read, write = os.pipe()
+                self.fds.extend((read, write))
+                child = read if index == 0 else write
+                handle = msvcrt.get_osfhandle(child)
+                os.set_handle_inheritable(handle, True)
+                self.child_handles.append(handle)
+        except BaseException:
+            self.close()
+            raise
+
+    def release_children(self):
+        for index in (0, 3, 5):
+            self._close_fd(index)
+
+    def _close_fd(self, index):
+        fd = self.fds[index]
+        if fd is not None:
+            self.fds[index] = None
+            os.close(fd)
+
+    def start(self):
+        def transfer(index):
+            try:
+                if index == 1:
+                    remaining = memoryview(self.data)
+                    while remaining:
+                        remaining = remaining[os.write(self.fds[index], remaining[:65536]):]
+                else:
+                    while True:
+                        chunk = os.read(self.fds[index], 65536)
+                        if not chunk:
+                            break
+                        with self.lock:
+                            self.size += len(chunk)
+                            if self.size > self.limit:
+                                self.error = ValueError('原生进程输出超过内存上限')
+                            elif self.error is None:
+                                self.output[0 if index == 2 else 1].extend(chunk)
+            except BrokenPipeError:
+                # 子进程可以在读完输入前失败；退出码和错误输出仍由调用方核验。
+                pass
+            except BaseException as error:
+                with self.lock:
+                    self.error = error
+            finally:
+                self._close_fd(index)
+        for index in (1, 2, 4):
+            thread = threading.Thread(target=transfer, args=(index,), daemon=True)
+            self.threads.append(thread)
+            thread.start()
+
+    def finish(self):
+        for thread in self.threads:
+            thread.join()
+        if self.error is not None:
+            raise self.error
+        return bytes(self.output[0]), bytes(self.output[1])
+
+    def close(self):
+        for index in range(len(self.fds)):
+            self._close_fd(index)
+
+
+def _create_windows_process(command, cwd: Path, folder: Path, *, pipes=None):
     job = _kernel32.CreateJobObjectW(None, None)
     if not job:
         raise ctypes.WinError(ctypes.get_last_error())
@@ -403,9 +481,12 @@ def _create_windows_process(command, cwd: Path, folder: Path):
         if not _kernel32.SetInformationJobObject(job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
                                                   ctypes.byref(limits), ctypes.sizeof(limits)):
             raise ctypes.WinError(ctypes.get_last_error())
-        stdin_handle = _open_redirect("NUL", _GENERIC_READ, _OPEN_EXISTING)
-        stdout_handle = _open_redirect(stdout_path, _GENERIC_WRITE, _CREATE_ALWAYS)
-        stderr_handle = _open_redirect(stderr_path, _GENERIC_WRITE, _CREATE_ALWAYS)
+        if pipes is None:
+            stdin_handle = _open_redirect("NUL", _GENERIC_READ, _OPEN_EXISTING)
+            stdout_handle = _open_redirect(stdout_path, _GENERIC_WRITE, _CREATE_ALWAYS)
+            stderr_handle = _open_redirect(stderr_path, _GENERIC_WRITE, _CREATE_ALWAYS)
+        else:
+            stdin_handle, stdout_handle, stderr_handle = pipes.child_handles
         size = ctypes.c_size_t()
         _kernel32.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
         attribute_list = (ctypes.c_byte * size.value)()
@@ -441,6 +522,9 @@ def _create_windows_process(command, cwd: Path, folder: Path):
         _kernel32.CloseHandle(info.hThread)
         info.hThread=None
         owned = _OwnedProcess(info.hProcess, job, stdout_path, stderr_path)
+        if pipes is not None:
+            pipes.release_children()
+            pipes.start()
         created = True
         return owned
     except BaseException:
@@ -462,10 +546,11 @@ def _create_windows_process(command, cwd: Path, folder: Path):
     finally:
         if attribute_list is not None:
             _kernel32.DeleteProcThreadAttributeList(ctypes.byref(attribute_list))
-        for handle in (stdin_handle, stdout_handle, stderr_handle):
-            if handle:
-                _kernel32.CloseHandle(handle)
-        if not created:
+        if pipes is None:
+            for handle in (stdin_handle, stdout_handle, stderr_handle):
+                if handle:
+                    _kernel32.CloseHandle(handle)
+        if not created and pipes is None:
             stdout_path.unlink(missing_ok=True)
             stderr_path.unlink(missing_ok=True)
 
@@ -477,22 +562,40 @@ def _create_process(command, cwd: Path, folder: Path):
 
 
 def run_command(command, cwd, *, timeout_seconds: float, runtime: TaskRuntime | None = None,
-                output_dir=None, on_start=None):
+                output_dir=None, on_start=None, input_data=None, output_limit=256 * 1024 * 1024):
     """以 Job Object（作业对象）原子绑定方式运行一个外部命令。"""
 
     runtime = runtime or TaskRuntime(timeout_seconds)
     allowed = runtime.limit(timeout_seconds)
     folder = Path(output_dir or cwd)
-    folder.mkdir(parents=True, exist_ok=True)
+    if input_data is not None and (not isinstance(input_data, bytes) or len(input_data) > 64 * 1024 * 1024):
+        raise ValueError('原生进程输入必须为不超过64 MiB的字节')
+    if type(output_limit) is not int or output_limit < 1:
+        raise ValueError('原生进程输出上限必须为正整数')
+    if input_data is None:
+        folder.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     runtime.check()
     reservation = uuid.uuid4().hex
     if runtime.reservation:
         runtime.reservation(reservation, allowed)
     process = None
+    pipes = None
     try:
-        process = _create_process(command, Path(cwd), folder)
+        if input_data is None:
+            process = _create_process(command, Path(cwd), folder)
+        else:
+            if os.name != 'nt':
+                raise OSError('Sim2GSE 任务进程仅支持 Windows Job Object')
+            pipes = _PipeIO(input_data, output_limit)
+            process = _create_windows_process(command, Path(cwd), folder, pipes=pipes)
     except BaseException:
+        if pipes is not None:
+            pipes.release_children()
+            for thread in pipes.threads:
+                if thread.ident is not None:
+                    thread.join()
+            pipes.close()
         if runtime.reservation:
             runtime.reservation(reservation, None)
         raise
@@ -500,6 +603,8 @@ def run_command(command, cwd, *, timeout_seconds: float, runtime: TaskRuntime | 
         if on_start is not None:
             on_start()
         while True:
+            if pipes is not None and pipes.error is not None:
+                raise pipes.error
             if runtime.cancel_event.is_set():
                 process.terminate()
                 try:
@@ -517,14 +622,23 @@ def run_command(command, cwd, *, timeout_seconds: float, runtime: TaskRuntime | 
                 raise BudgetExceeded("原生进程耗尽任务预算") if runtime.remaining_seconds <= 0 else ProcessTimeout("原生进程超时")
             code = process.poll()
             if code is not None:
+                if pipes is not None:
+                    # 主进程先退出时，仍由共享预算约束持有管道的作业成员。
+                    try:
+                        process.wait(min(0.05, allowed - elapsed, runtime.remaining_seconds))
+                    except ProcessTimeout:
+                        continue
                 break
             # 程序退出时立即唤醒；最长仍每50毫秒检查取消与共享预算。
             try:
                 process.wait(min(0.05, allowed - elapsed, runtime.remaining_seconds))
             except ProcessTimeout:
                 pass
-        stdout = process.stdout_path.read_bytes() if process.stdout_path.exists() else b""
-        stderr = process.stderr_path.read_bytes() if process.stderr_path.exists() else b""
+        if pipes is not None:
+            stdout, stderr = pipes.finish()
+        else:
+            stdout = process.stdout_path.read_bytes() if process.stdout_path.exists() else b""
+            stderr = process.stderr_path.read_bytes() if process.stderr_path.exists() else b""
         return ProcessResult(code, stdout, stderr, time.monotonic() - started)
     finally:
         # 完整等待作业成员退出；两秒是收尾目标，不是假称成功的截止点。
@@ -538,7 +652,13 @@ def run_command(command, cwd, *, timeout_seconds: float, runtime: TaskRuntime | 
         process.close()
         if runtime.reservation:
             runtime.reservation(reservation, None)
-        for path in (process.stdout_path, process.stderr_path):
+        if pipes is not None:
+            try:
+                for thread in pipes.threads:
+                    thread.join()
+            finally:
+                pipes.close()
+        for path in (() if pipes is not None else (process.stdout_path, process.stderr_path)):
             for attempt in range(11):
                 try:
                     path.unlink(missing_ok=True)

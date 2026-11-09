@@ -1,6 +1,7 @@
 #include "controller.hpp"
 #include "catalogue.hpp"
 #include "simulationcraft.hpp"
+#include "report/json/report_configuration.hpp"
 
 namespace sim2gse
 {
@@ -667,11 +668,15 @@ void controller_t::write_trace( const char* event, action_t* a, unsigned origin,
   const auto source = input_steps_.empty() ? std::string() : fmt::format("\t{}\t{}",
       origin ? (burst_inputs_.at(origin - 1) ? "burst" : "loop") : "-",
       origin ? source_origins_.at(origin - 1) : 0);
-  owner_->sim->out_log.print("S2GSE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}{}", owner_->sim->current_time().total_millis(),
+  const auto line = fmt::format("S2GSE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}{}", owner_->sim->current_time().total_millis(),
       event, origin, origin ? static_cast<int>(step_for_origin(origin)) : -1, a ? a->name_str : "-", owner_->gcd_ready.total_millis(),
       owner_->resources.current[owner_->primary_resource()], owner_->health_percentage(), a ? a->cooldown->remains().total_millis() : 0,
       owner_->sim->current_iteration, command ? command->signature_str : a ? a->signature_str : "-", a ? a->execute_time().total_millis() : 0,
       sequence_step, sequence_member, source);
+  const bool memory_report = !owner_->sim->json_reports.empty() &&
+      owner_->sim->json_reports.front().destination().rfind("@sim2gse-", 0) == 0;
+  if (memory_report) fmt::print("{}\n", line);
+  else owner_->sim->out_log.print("{}", line);
 }
 
 void controller_t::sim2gse_dispatch_action(action_t* a, unsigned origin)
