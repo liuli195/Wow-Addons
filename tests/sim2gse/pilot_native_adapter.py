@@ -49,7 +49,10 @@ def boundary(root, output):
 
     def reference(*args, **kwargs):
         engine.run(args[0], Path(args[1]), options=[f"iterations={kwargs.get('iterations', 100)}"])
-        return fast._fast_reference(*args, **kwargs)
+        native = fast._fast_reference(*args, **kwargs)
+        if "San'layn" in Path(args[0]).read_text(encoding='utf-8'):
+            native['static_snapshot']['hero_subtree_ids'] = [31]
+        return native
 
     def evaluate(*args, **kwargs):
         engine.run(args[0], Path(args[2]), mode='controlled',

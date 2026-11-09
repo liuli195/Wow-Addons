@@ -35,6 +35,100 @@ def test_command_preflight_freezes_bounded_plan_without_running_native(installed
 
 
 @pytest.mark.real
+def test_command_can_freeze_different_role_target_and_independent_evaluation_plan(installed_result_center):
+    result = command('--output', PILOTS / 'unused', '--check-only',
+                     '--template', 'sanlayn', '--targets', 5, '--evaluation-seed', 404)
+    assert result.returncode == 0, result.stderr
+    plan = json.loads(result.stdout)
+    assert plan['template'] == 'sanlayn'
+    assert plan['target_count'] == 5
+    assert plan['evaluation_seed'] == 404
+    assert plan['seed'] == 20261109
+
+
+@pytest.mark.real
+def test_batch_preflight_freezes_twelve_blocks_under_one_budget(installed_result_center):
+    result = command('--output', PILOTS / 'unused', '--batch', '--check-only')
+    assert result.returncode == 0, result.stderr
+    plan = json.loads(result.stdout)
+    assert plan['limits'] == dict(seconds=1800, native_starts=3072, requested_iterations=72000)
+    assert len(plan['blocks']) == 12
+    assert [(b['template'], b['target_count']) for b in plan['blocks'][:4]] == [
+        ('rider', 1), ('rider', 5), ('sanlayn', 1), ('sanlayn', 5)]
+    assert [b['repeat'] for b in plan['blocks']] == [0] * 4 + [1] * 4 + [2] * 4
+    assert len({b['seed'] for b in plan['blocks']} | {
+        b['evaluation_seed'] for b in plan['blocks']}) == 24
+
+
+@pytest.mark.real
+def test_batch_command_compares_all_conditions_and_reports_only_independent_repeats(installed_result_center):
+    PILOTS.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=PILOTS) as folder:
+        result = command('--output', Path(folder) / 'batch', '--batch', '--native-adapter',
+                         ROOT / 'tests/sim2gse/pilot_native_adapter.py')
+        report = json.loads(result.stdout)
+        assert result.returncode == 0, (result.stderr, report.get('error'),
+            [b['report'].get('error') for b in report['blocks']])
+        assert report['status'] == 'completed'
+        assert report['published'] is False
+        assert len(report['blocks']) == 12
+        assert report['summary']['independent_repeats'] == 3
+        assert len(report['summary']['conditions']) == 4
+        assert 'p_value' not in report['summary']
+        assert report['counts']['requested_iterations'] <= 72000
+        for block in report['blocks']:
+            actual = block['report']
+            assert actual['status'] == 'completed'
+            assert actual['target_count'] == block['target_count']
+            assert actual['template'] == block['template']
+            assert actual['evidence_kind'] == 'constructed_native_boundary'
+
+
+@pytest.mark.real
+def test_batch_global_request_limit_does_not_restart_for_each_block(installed_result_center):
+    PILOTS.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=PILOTS) as folder:
+        result = command('--output', Path(folder) / 'batch', '--batch',
+                         '--max-requested-iterations', 1, '--native-adapter',
+                         ROOT / 'tests/sim2gse/pilot_native_adapter.py')
+        assert result.returncode == 2, result.stderr
+        report = json.loads(result.stdout)
+        assert report['status'] == 'incomplete'
+        assert report['counts']['requested_iterations'] <= 1
+        assert report['summary']['independent_repeats'] == 0
+        assert report['summary']['coverage_complete'] is False
+
+
+@pytest.mark.real
+def test_batch_deadline_keeps_partial_report_without_publishing(installed_result_center):
+    PILOTS.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=PILOTS) as folder:
+        result = command('--output', Path(folder) / 'batch', '--batch',
+                         '--max-wait-seconds', .05, '--native-adapter',
+                         ROOT / 'tests/sim2gse/pilot_native_adapter.py')
+        assert result.returncode == 2, result.stderr
+        report = json.loads(result.stdout)
+        assert report['status'] == 'incomplete'
+        assert report['published'] is False
+        assert report['summary']['coverage_complete'] is False
+        assert report['counts']['native_starts'] == 0
+
+
+@pytest.mark.real
+def test_command_refuses_changed_frozen_inputs_before_native_start(installed_result_center):
+    PILOTS.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=PILOTS) as folder:
+        frozen = Path(folder) / 'inputs.json'
+        frozen.write_text('{}', encoding='utf-8')
+        result = command('--output', Path(folder) / 'block', '--batch-inputs', frozen,
+                         '--native-adapter', ROOT / 'tests/sim2gse/pilot_native_adapter.py')
+        assert result.returncode == 2, result.stderr
+        report = json.loads(result.stdout)
+        assert '冻结输入已变化' in report['error']
+        assert report['counts']['native_starts'] == 0
+
+
+@pytest.mark.real
 def test_command_completes_isolated_comparison_with_locked_independent_confirmation(installed_result_center):
     PILOTS.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=PILOTS) as folder:

@@ -5,6 +5,7 @@ from copy import deepcopy
 from dataclasses import replace
 import hashlib
 import json
+import math
 from pathlib import Path
 import random
 import runpy
@@ -20,12 +21,143 @@ sys.path.insert(0, str(ROOT / 'projects/sim2gse'))
 PILOTS = ROOT / '.local/sim2gse/population-expansion-pilot'
 
 
+def frozen_inputs():
+    """Read production inputs before binding an isolated result center."""
+    import engine
+    import seed_training
+    from burst import select_definition
+    from simulation_config import load_training_config, load_training_search_config
+    templates = {name: dict(path=str(path.resolve()), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+                 for name, path in zip(('rider', 'sanlayn'), engine.training_templates())}
+    paths = [Path(__file__).resolve(), ROOT / 'projects/sim2gse/burst/unholy.json',
+             *sorted((ROOT / 'projects/sim2gse').glob('*.py'))]
+    inputs = dict(templates=templates, sources=seed_training.registry_rows(),
+        training_config=load_training_config(),
+        search_config=load_training_search_config(_default_interval_ms=200),
+        engines={mode: engine.identity(mode)[1] for mode in ('baseline', 'controlled')},
+        definitions={name: select_definition(seed_training.template_character(
+            Path(row['path']).read_text(encoding='utf-8'))) for name, row in templates.items()},
+        code_sha256={str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+                     for path in paths})
+    return json.loads(json.dumps(inputs))
+
+
+def summarize_blocks(blocks):
+    """Descriptive pilot results; candidates and fights are not independent repeats."""
+    rows = []
+    for block in blocks:
+        report = block.get('report', {})
+        if report.get('status') != 'completed':
+            continue
+        new = report['groups']['new_starts']['independent']['mean']
+        old = report['groups']['offspring']['independent']['mean']
+        baseline = report['baseline']['independent']['mean']
+        if not all(math.isfinite(v) and v > 0 for v in (new, old, baseline)):
+            raise ValueError('独立复评均值必须为有限正数')
+        rows.append(dict(repeat=block['repeat'], template=block['template'],
+            target_count=block['target_count'], vs_offspring_log=math.log(new / old),
+            vs_original_log=math.log(new / baseline)))
+
+    def describe(values):
+        return dict(count=len(values), mean_percent=100 * math.expm1(statistics.mean(values)),
+            observed_min_percent=100 * math.expm1(min(values)),
+            observed_max_percent=100 * math.expm1(max(values)),
+            log_standard_deviation=statistics.stdev(values) if len(values) > 1 else None)
+
+    conditions = []
+    for template in ('rider', 'sanlayn'):
+        for targets in (1, 5):
+            selected = [r for r in rows if r['template'] == template and r['target_count'] == targets]
+            conditions.append(dict(template=template, target_count=targets, completed=len(selected),
+                comparisons={key: describe([r[key] for r in selected]) for key in
+                    ('vs_offspring_log', 'vs_original_log')} if selected else {}))
+    repeats = []
+    for repeat in range(3):
+        selected = [r for r in rows if r['repeat'] == repeat]
+        if len(selected) == 4:
+            repeats.append({key: statistics.mean(r[key] for r in selected)
+                            for key in ('vs_offspring_log', 'vs_original_log')})
+    aggregate = {key: describe([r[key] for r in repeats]) for key in
+                 ('vs_offspring_log', 'vs_original_log')} if repeats else {}
+    return dict(coverage_complete=len(rows) == 12, completed_blocks=len(rows),
+        independent_repeats=len(repeats), conditions=conditions, aggregate=aggregate,
+        note='范围是本次观察到的最小/最大变化，不是置信区间；不设收益门槛。'
+             '三个完整计划用于估波动，不代表十二个独立角色；未完成时不判总体优劣。',
+        next_step='结合收益、波动和计算成本判断是否值得训练确认；确认次数与预算另定')
+
+
+def batch(args, plan, output):
+    from runtime import TaskRuntime, run_command
+    deadline = ENTRY + args.max_wait_seconds
+    runtime = TaskRuntime(args.max_wait_seconds,
+        used_seconds=min(args.max_wait_seconds, time.monotonic() - ENTRY))
+    report = dict(status='running', published=False, evidence_kind=plan['evidence_kind'],
+                  blocks=[], counts={}, limitation='起点筛选与一代繁殖探路，不是完整训练收益')
+
+    def checkpoint():
+        counts = dict(native_attempts=0, native_starts=0, requested_iterations=0)
+        for index in range(len(report['blocks'])):
+            path = output / f'block-{index:02}' / 'budget.json'
+            if path.is_file():
+                item = json.loads(path.read_text(encoding='utf-8'))
+                for key in counts:
+                    counts[key] += item[key]
+        report.update(counts=counts, elapsed_seconds=time.monotonic() - ENTRY,
+                      summary=summarize_blocks(report['blocks']))
+        write(output / 'report.json', report)
+
+    try:
+        adapter = (runpy.run_path(str(args.native_adapter))['boundary'](ROOT, output)
+                   if args.native_adapter else nullcontext())
+        with adapter:
+            inputs = frozen_inputs()
+        write(output / 'inputs.json', inputs)
+        for index, block in enumerate(plan['blocks']):
+            runtime.check()
+            checkpoint()
+            remaining_calls = plan['limits']['native_starts'] - report['counts']['native_attempts']
+            remaining_iterations = plan['limits']['requested_iterations'] - report['counts']['requested_iterations']
+            if min(remaining_calls, remaining_iterations) <= 0:
+                raise ValueError('整批累计额度已耗尽')
+            destination = output / f'block-{index:02}'
+            report['blocks'].append(dict(block, report=dict(status='not_started')))
+            command = [sys.executable, str(Path(__file__).resolve()), '--output', str(destination),
+                '--template', block['template'], '--targets', str(block['target_count']),
+                '--seed', str(block['seed']), '--evaluation-seed', str(block['evaluation_seed']),
+                '--max-wait-seconds', str(max(.001, deadline - time.monotonic())),
+                '--max-native-starts', str(min(256, remaining_calls)),
+                '--max-requested-iterations', str(min(6000, remaining_iterations)),
+                '--batch-inputs', str(output / 'inputs.json')]
+            if args.native_adapter:
+                command.extend(['--native-adapter', str(args.native_adapter)])
+            process = run_command(command, ROOT, timeout_seconds=runtime.remaining_seconds,
+                                  runtime=runtime, output_dir=output / f'process-{index:02}')
+            block_report = destination / 'report.json'
+            if not block_report.is_file():
+                raise ValueError('比较块未返回报告')
+            report['blocks'][-1]['report'] = json.loads(block_report.read_text(encoding='utf-8'))
+            checkpoint()
+            if process.returncode or report['blocks'][-1]['report']['status'] != 'completed':
+                raise ValueError(f'比较块{index}未完成，保留证据并停止，不替换条件')
+        report['status'] = 'completed'
+    except Exception as error:
+        report.update(status='incomplete', error=f'{type(error).__name__}: {error}')
+        if report['blocks']:
+            path = output / f"block-{len(report['blocks']) - 1:02}" / 'report.json'
+            if path.is_file():
+                report['blocks'][-1]['report'] = json.loads(path.read_text(encoding='utf-8'))
+    checkpoint()
+    print(json.dumps(report, ensure_ascii=False))
+    return 0 if report['status'] == 'completed' else 2
+
+
 def write(path, value):
+    from runtime import replace_file
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     pending = path.with_suffix(path.suffix + '.pending')
     pending.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    pending.replace(path)
+    replace_file(pending, path)
 
 
 class PilotBudget:
@@ -89,9 +221,14 @@ def compare(output, plan, budget, *, data_root=None):
         raise ValueError('探路必须使用未绑定生产项目的新进程')
     # Freeze existing production inputs read-only before changing the output center.
     from burst import select_definition
-    template = engine.training_template()
+    frozen = plan.get('frozen_inputs')
+    if frozen is not None and frozen_inputs() != frozen:
+        raise ValueError('冻结输入已变化，停止整批验证')
+    template = (Path(frozen['templates'][plan['template']]['path']) if frozen is not None else
+                engine.training_templates()[1] if plan['template'] == 'sanlayn'
+                else engine.training_template())
     definition = select_definition(seed_training.template_character(template.read_text(encoding='utf-8')))
-    sources = seed_training.registry_rows()
+    sources = frozen['sources'] if frozen is not None else seed_training.registry_rows()
     write(output / 'sources.json', sources)
     write(output / 'burst-definition.json', definition)
     data_root = Path(data_root or PILOTS / 'data').resolve()
@@ -103,14 +240,24 @@ def compare(output, plan, budget, *, data_root=None):
     result_store.ensure_available()
     result_store.write('burst_definitions', f"current_{definition['spec_id']}", [definition])
     training_config = plan['training_config']
-    inputs = seed_training._training_inputs(template, 1, use_burst=True,
+    targets = plan['target_count']
+    inputs = seed_training._training_inputs(template, targets, use_burst=True,
         max_processes=training_config['max_processes'], _frozen_config=plan['search_config'])
-    ready = seed_training.ensure_prepared(template, 1, output / 'workspace', sources=sources,
+    ready = seed_training.ensure_prepared(template, targets, output / 'workspace', sources=sources,
         use_burst=True, max_processes=training_config['max_processes'], inputs=inputs)
     budget.runtime.check()
+    if frozen is not None and (ready['engines'] != frozen['engines']
+            or hashlib.sha256(template.read_bytes()).hexdigest() != frozen['templates'][plan['template']]['sha256']):
+        raise ValueError('准备期间冻结输入已变化')
     if not ready['context'] or not ready['queue']:
         raise ValueError('当前原子语法下没有有效原材料，未运行对比')
     context = ready['context']
+    expected_scope = dict(specialization_id=252,
+        hero_talent='sanlayn' if plan['template'] == 'sanlayn' else 'rider_of_the_apocalypse',
+        target_type='single_target' if targets == 1 else 'aoe')
+    if (context['configuration_key'] != expected_scope
+            or ready['simulation_config']['target_count'] != targets):
+        raise ValueError('准备后的真实英雄或目标条件与冻结计划不符')
     capabilities = context['capabilities']
     reference = scoped(checked(context['native'].get('action_summary'),
                                context['native']['samples']), capabilities)
@@ -118,7 +265,7 @@ def compare(output, plan, budget, *, data_root=None):
         raise ValueError('当前参考没有可比较的普通技能')
     starts = [row['program'] for row in ready['queue']]
     config = ready['config']
-    stage_plan = _stage_plan(dict(training_config, retest_iterations=32, retest_batches=2), plan['seed'])
+    stage_plan = _stage_plan(dict(training_config, retest_iterations=32, retest_batches=2), plan['evaluation_seed'])
     manifest = dict(plan, status='frozen', sources=digest(sources), template_sha256=ready['template_sha'],
         engines=ready['engines'], configuration_key=context['configuration_key'],
         preparation=ready['preparation'], preparation_key=ready['config_key'],
@@ -134,7 +281,8 @@ def compare(output, plan, budget, *, data_root=None):
                         race=context['native']['identity']['race'])
     report = dict(status='running', published=False, evidence_kind=plan['evidence_kind'],
         data_root=str(result_store.DATA_ROOT), manifest_digest=digest(manifest),
-        target_count=1, counts=budget.counts, groups={}, untested_scenarios=list(SCENARIOS[1:]))
+        target_count=targets, template=plan['template'], counts=budget.counts,
+        groups={}, untested_scenarios=list(SCENARIOS[1:]))
     (output / 'task').mkdir()
     store = TaskStore(output / 'task')
     store.state.update(run_id=uuid.uuid4().hex, starts=starts, config=config,
@@ -357,12 +505,22 @@ def main(argv=None):
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--check-only', action='store_true')
     parser.add_argument('--max-wait-seconds', type=float, default=1800)
-    parser.add_argument('--max-requested-iterations', type=int, default=6000)
+    parser.add_argument('--max-requested-iterations', type=int)
+    parser.add_argument('--max-native-starts', type=int, help=argparse.SUPPRESS)
+    parser.add_argument('--batch', action='store_true', help='双英雄、单/五目标各三次固定重复')
+    parser.add_argument('--batch-inputs', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--seed', type=int, default=20261109)
+    parser.add_argument('--evaluation-seed', type=int)
+    parser.add_argument('--template', choices=('rider', 'sanlayn'), default='rider')
+    parser.add_argument('--targets', type=int, choices=(1, 5), default=1)
     parser.add_argument('--native-adapter', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--deadline', type=float, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.max_requested_iterations is None:
+        args.max_requested_iterations = 72000 if args.batch else 6000
+    if args.max_native_starts is None:
+        args.max_native_starts = 3072 if args.batch else 256
     from simulation_config import load_training_config, load_training_search_config
     config = load_training_search_config(_default_interval_ms=200)
     training_config = load_training_config()
@@ -371,11 +529,13 @@ def main(argv=None):
     if any(training_config[key] != value for key, value in required.items()):
         parser.error('本次探路固定32次粗评、三选一及80%/30%/30%繁殖配置')
     plan = dict(status='preflight', native_starts=0,
-                limits=dict(seconds=args.max_wait_seconds, native_starts=256,
+                limits=dict(seconds=args.max_wait_seconds, native_starts=args.max_native_starts,
                             requested_iterations=args.max_requested_iterations),
                 groups=dict(new_starts=32, offspring_slots=32),
                 confirmation=dict(candidates_per_group=4, batches=2, iterations=32),
-                target_count=1, syntax=config['syntax'], seed=args.seed, version=1,
+                target_count=args.targets, template=args.template,
+                evaluation_seed=args.seed if args.evaluation_seed is None else args.evaluation_seed,
+                syntax=config['syntax'], seed=args.seed, version=2,
                 search_config=config, training_config=training_config,
                 evidence_kind='constructed_native_boundary' if args.native_adapter else 'native_simulation')
     plan = json.loads(json.dumps(plan))
@@ -385,8 +545,11 @@ def main(argv=None):
             or not output.is_relative_to(PILOTS.resolve()) or output == PILOTS.resolve()
             or output.is_relative_to((PILOTS / 'data').resolve())):
         parser.error('输出必须在隔离探路目录内，且不能指向共享数据目录')
-    if (not 0 < args.max_wait_seconds <= 1800 or not 1 <= args.max_requested_iterations <= 6000
-            or type(args.seed) is not int or not 0 <= args.seed < 1000000000):
+    if (not 0 < args.max_wait_seconds <= 1800
+            or not 1 <= args.max_requested_iterations <= (72000 if args.batch else 6000)
+            or not 1 <= args.max_native_starts <= (3072 if args.batch else 256)
+            or not 0 <= args.seed < 1000000000
+            or not 0 <= plan['evaluation_seed'] < 1000000000):
         parser.error('预算或种子超出探路允许范围')
     if any(plan['syntax'].values()):
         parser.error('本次探路要求四项复杂语法全部关闭')
@@ -395,6 +558,27 @@ def main(argv=None):
         if (not args.native_adapter.is_relative_to(ROOT / 'tests/sim2gse')
                 or not args.native_adapter.is_file()):
             parser.error('构造报告适配器必须是仓库测试文件')
+    if args.batch_inputs:
+        source = args.batch_inputs.resolve()
+        if not source.is_relative_to(PILOTS.resolve()) or not source.is_file():
+            parser.error('批次冻结输入必须来自隔离探路目录')
+        plan['frozen_inputs'] = json.loads(source.read_text(encoding='utf-8'))
+    if args.batch and (args.worker or args.batch_inputs or args.template != 'rider'
+                      or args.targets != 1 or args.evaluation_seed is not None):
+        parser.error('批次条件固定，不得混用单块角色、评分计划或内部参数')
+    if args.batch:
+        from population_training import _stage_plan
+        rng = random.Random(args.seed)
+        seeds = rng.sample(range(1000000000), 24)
+        plan['blocks'] = []
+        for repeat in range(3):
+            for template in ('rider', 'sanlayn'):
+                for targets in (1, 5):
+                    index = len(plan['blocks']) * 2
+                    plan['blocks'].append(dict(repeat=repeat, template=template, target_count=targets,
+                        seed=seeds[index], evaluation_seed=seeds[index + 1],
+                        stage_plan=_stage_plan(dict(training_config, retest_iterations=32,
+                            retest_batches=2), seeds[index + 1])))
     if args.check_only:
         print(json.dumps(plan, ensure_ascii=False))
         return 0
@@ -409,6 +593,8 @@ def main(argv=None):
         parser.error('输出目录必须全新，保留已有证据')
     output.mkdir(parents=True)
     write(output / 'plan.json', plan)
+    if args.batch:
+        return batch(args, plan, output)
     from runtime import TaskRuntime, run_command
     deadline = ENTRY + args.max_wait_seconds
     runtime = TaskRuntime(args.max_wait_seconds, used_seconds=min(args.max_wait_seconds, time.monotonic() - ENTRY))
