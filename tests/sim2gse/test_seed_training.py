@@ -1101,6 +1101,10 @@ def test_public_training_collects_three_gate_counts_without_full_process_history
      ['outbreak','outbreak','death_coil','scourge_strike','outbreak'],
      {'1>1':1,'1>2':4,'1>3':4,'2>1':4,'2>3':4,'3>1':4,'3>2':4},
      {'1>1':3,'1>2':4,'1>3':1,'2>1':4,'2>3':4,'3>1':4,'3>2':4}, ('1>3',[1,3,2])),
+    ('ambiguous', [dict(kind='CastSequence',members=['outbreak','outbreak'],reset=None),'outbreak','death_coil','scourge_strike'],
+     [dict(kind='CastSequence',members=['outbreak','outbreak'],reset=None),'outbreak','scourge_strike','death_coil'],
+     {'1>2':6,'1>3':3,'2>1':1,'2>3':8,'3>1':1,'3>2':8},
+     {'1>2':1,'1>3':8,'2>1':6,'2>3':3,'3>1':8,'3>2':1}, None),
 ])
 def test_public_sequence_repair_uses_witness_positions_with_repeated_buttons(
         monkeypatch, guided_training_memory, rule, parent, expected, reference_pairs, candidate_pairs, witness):
@@ -1113,7 +1117,7 @@ def test_public_sequence_repair_uses_witness_positions_with_repeated_buttons(
     from test_search_syntax import SIMPLE
     case = guided_training_memory
     case.guidance_probabilities.update(random_mutation_probability=0., crossover_probability=0.)
-    source = deepcopy(case.sources[0]); source['program'] = [[name] for name in parent]
+    source = deepcopy(case.sources[0]); source['program'] = [[name] if isinstance(name,str) else deepcopy(name) for name in parent]
     case.sources[:] = [source]
     def summary(samples, coefficients, positions=None, witnesses=None):
         pairs = {'spell:100'+a+'>spell:100'+b:n*samples for key,n in coefficients.items() for a,b in [key.split('>')]}
@@ -1141,8 +1145,14 @@ def test_public_sequence_repair_uses_witness_positions_with_repeated_buttons(
         for skill,steps in occurrences.items():
             for i,step in enumerate(steps):
                 positions[f'spell:{skill}@{step}'] = samples*(10//len(steps)+(i<10%len(steps)))
-        a,b = witness[0].split('>')
-        value = summary(samples,candidate_pairs,positions,{'spell:100'+a+'>spell:100'+b:witness[1]})
+        witnesses = {}
+        if witness is not None:
+            a,b = witness[0].split('>')
+            witnesses = {'spell:100'+a+'>spell:100'+b:witness[1]}
+        if rule == 'ambiguous':
+            positions = {'spell:1001@0':7*samples,'spell:1001@1':3*samples,
+                         'spell:1002@2':10*samples,'spell:1003@3':10*samples}
+        value = summary(samples,candidate_pairs,positions,witnesses)
         result['report']['sim']['players'][0]['sim2gse_action_summary'] = value
         return result
     monkeypatch.setattr(sequence,'evaluate',native_report)
@@ -1152,5 +1162,6 @@ def test_public_sequence_repair_uses_witness_positions_with_repeated_buttons(
         if case.store.state['ga']['pending'] is not None: raise TaskCancelled('inspect witnessed edit')
     monkeypatch.setattr(case.store,'checkpoint',pause)
     with pytest.raises(TaskCancelled):
-        seed_training.run_training(case.template,1,'/memory/work',syntax_config=SIMPLE)
-    assert case.store.state['ga']['pending']['programs'][0] == [[name] for name in expected]
+        seed_training.run_training(case.template,1,'/memory/work',
+            syntax_config=dict(SIMPLE,castsequence=rule == 'ambiguous'))
+    assert case.store.state['ga']['pending']['programs'][0] == [[name] if isinstance(name,str) else deepcopy(name) for name in expected]

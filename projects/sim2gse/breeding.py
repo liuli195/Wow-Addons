@@ -183,10 +183,15 @@ def target_mutation(program, capabilities, rng, reference, current, legal):
         return [] if path and path[-1] == 'members' and len(matches) > 1 else matches
 
     successful = {}
+    unbound_buttons = set()
     for position, count in current.get('positions', {}).items():
         if count:
             key, step = position.rsplit('@', 1)
-            for row in locations_for_step(int(step), key):
+            matches = locations_for_step(int(step), key)
+            units = {(tuple(row['path']), row['index']) for row in matches}
+            if len(units) != 1:
+                unbound_buttons.add(key)
+            for row in matches:
                 successful[_token(row)] = row
     def unit(row):
         return (tuple(row['path']), row['index'])
@@ -201,7 +206,7 @@ def target_mutation(program, capabilities, rng, reference, current, legal):
     for pair, count in current['pairs'].items():
         a, b = pair.split('>')
         left, right = list(by_button.get(a, {}).values()), list(by_button.get(b, {}).values())
-        if count and len(left) == len(right) == 1:
+        if count and a not in unbound_buttons and b not in unbound_buttons and len(left) == len(right) == 1:
             add_pair(a, b, left[0], right[0])
     step_keys = {}
     for position, count in current.get('positions', {}).items():
