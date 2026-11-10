@@ -18,7 +18,7 @@ from test_character_export import sample_profile
 
 
 @pytest.mark.parametrize('retain', [False, True])
-def test_memory_evaluation_keeps_validated_report_text_only_when_requested(tmp_path, monkeypatch, retain):
+def test_memory_evaluation_keeps_validated_report_text_only_when_requested(monkeypatch, retain):
     import engine
     from runtime import ProcessResult
     from test_search import _fast_report
@@ -31,11 +31,11 @@ def test_memory_evaluation_keeps_validated_report_text_only_when_requested(tmp_p
     report['sim']['players'][0]['unknown'] = {'完整字段😀': [None, True, 1.25]}
     body = json.dumps(report, ensure_ascii=False)
     output = ('S2GBLOCK\t0\t0\toutbreak\nS2GJSON_BEGIN\n' + body + '\nS2GJSON_END\n').encode('utf-8')
-    source = tmp_path / 'role.simc'
-    source.write_text(sample_profile(), encoding='utf-8')
+    source = Path('/memory/role.simc')
+    monkeypatch.setattr(Path, 'read_text', lambda path, **kwargs: sample_profile())
     monkeypatch.setattr(engine, 'identity', lambda *args: (Path('simc-test'), {}))
     monkeypatch.setattr(engine, 'run_command', lambda *args, **kwargs: ProcessResult(0, output, b'', 0))
-    result = evaluate(source, candidate, tmp_path / 'unused', character=character, iterations=2,
+    result = evaluate(source, candidate, Path('/memory/unused'), character=character, iterations=2,
                       input_times=[0], trace=False, memory_io=True, retain_report_json=retain)
     assert result['report'] == report and result['summary']['dps'] == 100.0
     assert ('report_json' in result) == retain
