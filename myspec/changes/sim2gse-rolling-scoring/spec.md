@@ -1,6 +1,6 @@
 # 同一代评分连续补位
 
-Status（状态）：ready-for-agent；门禁一已确认，实施中。
+Status（状态）：ready-for-agent；实施、验证及独立审查完成，待门禁二交付确认。
 
 ## 问题
 
