@@ -1939,13 +1939,23 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         store.checkpoint(**(dict(boundary='initial') if store.memory_execution else {}))
     candidates = {}
     burst_context = state.get('burst')
-    def planned_inputs(times):
-        if burst_context is None:
-            return times, {}
-        from burst import combined_inputs
-        times, sources = combined_inputs(times, burst_context, config['input_interval_ms'])
-        return times, dict(burst_candidate=burst_context['candidate'], input_sources=sources,
-                           burst_plan=burst_context['plan'])
+    input_plans = {}
+    def planned_inputs(scenario, input_seed):
+        # 本次optimize的角色、条件、间隔和爆发已经冻结；不跨任务共享。
+        with store.lock:
+            key = (scenario, input_seed)
+            if key not in input_plans:
+                times = input_times(scenario, input_seed, config['input_interval_ms'])
+                sources = None
+                if burst_context is not None:
+                    from burst import combined_inputs
+                    times, sources = combined_inputs(times, burst_context, config['input_interval_ms'])
+                input_plans[key] = (tuple(times), tuple(sources) if sources is not None else None)
+            times, sources = input_plans[key]
+        # 保持公开请求的列表类型，各请求修改列表时不会污染冻结底本。
+        options = (dict(burst_candidate=burst_context['candidate'], input_sources=list(sources),
+                        burst_plan=burst_context['plan']) if burst_context is not None else {})
+        return list(times), options
     prepared = {}
     compiling = {}
     candidate_compilations = 0
@@ -2082,8 +2092,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             raise ValueError('GA评分必须使用冻结阶段与样本数')
         seed = plan['seeds'][index]
         input_seed = seed + 500000
-        times = input_times(scenario, input_seed, config["input_interval_ms"])
-        times, burst_options = planned_inputs(times)
+        times, burst_options = planned_inputs(scenario, input_seed)
         compiled = prepared_candidate if prepared_candidate is not None else candidate(program)
         behavior_id = candidate_key(program)
         request = dict(condition=condition_key, program=compiled_identity(compiled), purpose=purpose,
