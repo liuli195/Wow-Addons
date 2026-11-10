@@ -1503,6 +1503,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 finally:
                     _discard_native_exchange(destination / 'reference',
                                              keep_valid=reference_valid and not reference_stored)
+                # 完整参考报告已读回保存；后续评分仅使用 native 的冻结摘要。
+                del reference_report, memory_reference
                 effective_character = parse_character(effective_bytes.decode('utf-8')) if use_burst else character
                 all_capabilities, capabilities, context = prepare_loop(
                     native, effective_character, destination, runtime, definition=definition,

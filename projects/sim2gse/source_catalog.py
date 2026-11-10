@@ -4,12 +4,56 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterator
 
 import result_store
 from search import digest
 
 VERSION = 1
 CHUNK_CHARS = 4 * 1024 * 1024
+
+
+def _json_chunks(value):
+    # 与 search.digest 的编码完全相同，但大字符串不会生成同样大的转义副本。
+    if isinstance(value, str):
+        yield '"'
+        for index in range(0, len(value), CHUNK_CHARS):
+            yield json.dumps(value[index:index + CHUNK_CHARS], ensure_ascii=False)[1:-1]
+        yield '"'
+    elif isinstance(value, dict):
+        yield '{'
+        for index, key in enumerate(sorted(value)):
+            if index: yield ','
+            yield json.dumps(key, ensure_ascii=False)
+            yield ':'
+            yield from _json_chunks(value[key])
+        yield '}'
+    elif isinstance(value, (list, tuple, Iterator)):
+        yield '['
+        for index, item in enumerate(value):
+            if index: yield ','
+            yield from _json_chunks(item)
+        yield ']'
+    else:
+        yield json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+
+
+def bounded_digest(value):
+    checksum = hashlib.sha256()
+    for chunk in _json_chunks(value):
+        checksum.update(chunk.encode('utf-8'))
+    return checksum.hexdigest()
+
+
+def digest_rows(rows):
+    """逐条校验同一个规范JSON数组，保留旧摘要及顺序。"""
+    checksum = hashlib.sha256(b'[')
+    for index, row in enumerate(rows):
+        if index: checksum.update(b',')
+        for chunk in _json_chunks(row):
+            checksum.update(chunk.encode('utf-8'))
+    checksum.update(b']')
+    return checksum.hexdigest()
 
 
 class Sources(list):
@@ -130,6 +174,19 @@ def _store_original(text):
         if result_store.read_records('seed_originals', key) != expected:
             raise result_store.InvalidRecordError('来源原件保存读回不符')
     return ref
+
+
+def freeze(row):
+    """冻结单条来源；调用方不会把完整原文带入准备队列和恢复计划。"""
+    value = dict(row)
+    if isinstance(value.get('original'), str):
+        value['original_ref'] = _store_original(value['original'])
+    else:
+        _check_reference(value.get('original_ref'))
+        if 'legacy_field' in value['original_ref']:
+            value['original_ref'] = _store_original(original(value))
+    value.pop('original', None)
+    return value
 
 
 

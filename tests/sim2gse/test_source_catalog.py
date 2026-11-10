@@ -192,3 +192,24 @@ def test_registration_rejects_a_concurrent_catalog_revision(catalog_cli, capsys,
     monkeypatch.setattr(result_store, 'write', concurrent_writer)
     assert seeds.main(['--project', '/memory', 'register', '/material.json']) == 2
     assert records['seed_catalog', 'current'] == changed[0]
+
+
+def test_history_refresh_updates_active_catalog_and_retains_original_archive(catalog_cli, monkeypatch):
+    from unittest.mock import MagicMock
+    import result_store, seed_training as seeds, source_catalog
+    from test_character_export import sample_profile
+    records, _ = catalog_cli
+    source_catalog.activate()
+    old = deepcopy(records['seed_candidates', 'registry'])
+    cursor = MagicMock()
+    cursor.__enter__.return_value.fetchone.return_value = ('runs',)
+    monkeypatch.setattr(result_store, 'query', lambda *a, **kw: cursor)
+    monkeypatch.setattr(result_store, 'iter_rows', lambda *a, **kw: iter([
+        dict(run_id='new', profile=dict(identity={'class': 'deathknight', 'spec': 'unholy'}),
+             status='completed', candidate_data_key='winner', candidate_key='winner', search_dps=100.)]))
+    candidate = dict(candidate_data_key='winner', run_id='new', candidate_key='winner', program=[['outbreak']])
+    monkeypatch.setattr(result_store, 'read_many', lambda *a, **kw: [candidate])
+    rows = seeds.sync_history(seeds.template_character(sample_profile()))
+    assert 'history:new' in {row['source_id'] for row in rows}
+    assert 'history:new' in {row['source_id'] for row in seeds.registry_rows()}
+    assert records['seed_candidates', 'registry'] == old

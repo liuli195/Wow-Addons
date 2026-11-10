@@ -2,3 +2,4 @@ cbor2==6.1.4
 cryptography==50.0.1
 duckdb==1.5.6
 deap==1.4.4
+ijson==3.6.0

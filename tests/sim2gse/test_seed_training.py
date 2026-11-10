@@ -31,7 +31,7 @@ def training_cli(monkeypatch):
     monkeypatch.setattr(result_store,'ensure_available',lambda:None)
     monkeypatch.setattr(seed_training,'writer_lock',nullcontext)
     monkeypatch.setattr(seed_activity,'training_activity',lambda:nullcontext(threading.Event()))
-    monkeypatch.setattr(seed_training,'registry_rows',lambda:[])
+    monkeypatch.setattr(seed_training,'registry_rows',lambda **kwargs:[])
     monkeypatch.setattr(seed_training,'sync_history',lambda character,**kwargs:kwargs.get('sources',[]))
     template=Path('/.tools/sim2gse/build/baseline/Rider.simc').resolve()
     monkeypatch.setattr(engine,'training_templates',lambda:(template,))
@@ -69,16 +69,75 @@ def prepared_input(monkeypatch):
                      representations={}))
     header['checksum']=digest([{name:value for name,value in header.items() if name!='checksum'}])
     writes=[]
-    monkeypatch.setattr(result_store,'read_records',lambda table,key:deepcopy([header]))
-    monkeypatch.setattr(result_store,'write',lambda *args,**kwargs:writes.append(deepcopy(args)))
+    records = {}
+    def read(table, key, **kwargs):
+        return deepcopy([header] if table == 'seed_prepared' else records.get((table, key), []))
+    def write(*args, **kwargs):
+        records[args[0], args[1]] = deepcopy(args[2])
+        writes.append(deepcopy(args))
+    monkeypatch.setattr(result_store,'read_records',read)
+    monkeypatch.setattr(result_store,'write',write)
     monkeypatch.setattr(codec,'load_targeting',lambda **kwargs:dict(target_masks={}))
     monkeypatch.setattr(program,'compile_program',lambda *args,**kwargs:{})
     monkeypatch.setattr(task,'_rule_hashes',lambda **kwargs:{})
     def source(label,program):
+        import hashlib
+        records['seed_originals', hashlib.sha256(b'fixture').hexdigest() + '_0'] = [
+            dict(version=1, index=0, text='fixture')]
         return dict(dict.fromkeys(seeds.CANDIDATE_SCHEMA),candidate_id=label,source_id=label,label=label,
             class_name='deathknight',spec='unholy',source='fixture',original='fixture',instructions='repeat',
             semantic='preserved',changes=[],family='plain',core=[],program=program,active=True)
-    return SimpleNamespace(inputs=inputs,header=header,writes=writes,source=source)
+    return SimpleNamespace(inputs=inputs,header=header,writes=writes,source=source,records=records,read=read)
+
+
+def test_prepare_freezes_original_reference_without_copying_archive(prepared_input):
+    import seed_training as seeds
+    case = prepared_input
+    row = case.source('archive', [['outbreak']])
+    row.update(active=False, original='保留的完整原文😀' * 10000)
+    ready = seeds.ensure_prepared('/profile', 1, '/memory', sources=[row], inputs=case.inputs)
+    frozen = ready['entries'][0]
+    assert frozen.get('original') is None
+    assert frozen['original_ref']['characters'] == len(row['original'])
+    assert row['original'].startswith('保留的完整原文')
+    assert case.writes[-1][2][1] == frozen
+
+
+@pytest.mark.parametrize('damaged', [False, True])
+def test_prepare_reuses_verified_old_snapshot_without_full_registry_or_resimulation(
+        prepared_input, monkeypatch, damaged):
+    from copy import deepcopy
+    import engine, result_store, seed_training as seeds
+    from search import digest
+    case = prepared_input
+    source = case.source('retained', [['outbreak']])
+    ready = seeds.ensure_prepared('/profile', 1, '/memory', sources=[source], inputs=case.inputs)
+    old = deepcopy(case.writes[-1][2])
+    old_input = dict(ready['context']['preparation_input'], version='seed-preparation-v2-scoped-sources')
+    old_key = digest(old_input)
+    for row in old:
+        row.pop('original_ref')
+        row.update(version=old_input['version'], config_key=old_key)
+        if row['kind'] == 'source': row['original'] = 'fixture'
+    old[0]['checksum'] = digest([{k: v for k, v in row.items() if k != 'checksum'} for row in old])
+    if damaged: old[1]['original'] = 'tampered'
+    untouched = deepcopy(old)
+    monkeypatch.setattr(result_store, 'read_records', lambda table, key, **kw:
+        [] if table == 'seed_prepared' else case.read(table, key, **kw))
+    monkeypatch.setattr(result_store, 'iter_group', lambda table, key:
+        iter(deepcopy(old)) if (table, key) == ('seed_prepared', old_key) else iter(()))
+    def reference(*args, **kwargs): raise RuntimeError('需要重建参考')
+    monkeypatch.setattr(engine, 'reference', reference)
+    if damaged:
+        with pytest.raises(RuntimeError, match='需要重建参考'):
+            seeds.ensure_prepared('/profile', 1, '/memory', sources=[source], inputs=case.inputs)
+    else:
+        restored = seeds.ensure_prepared('/profile', 1, '/memory', sources=[source], inputs=case.inputs)
+        assert restored['config_key'] != old_key
+        assert restored['preparation']['context_rebuilt'] is False
+        assert restored['preparation']['sources_rebuilt'] == 0
+        assert restored['queue'][0]['program'] == ready['queue'][0]['program']
+    assert old == untouched
 
 def test_training_check_locates_current_template_without_starting_compute(monkeypatch,capsys,training_cli):
     from seed_training import main
@@ -421,14 +480,13 @@ def test_training_prepare_freezes_burst_across_scenes_and_checks_current_definit
 
 
 @pytest.mark.parametrize('failure',['missing','unreadable'])
-def test_training_prepare_keeps_history_missing_and_read_failure_semantics(monkeypatch,failure):
+def test_training_prepare_keeps_history_missing_and_read_failure_semantics(monkeypatch,prepared_input,failure):
     from copy import deepcopy
     from unittest.mock import MagicMock,Mock
     from seed_training import sync_history,template_character
     from test_character_export import sample_profile
     import result_store
-    registered=dict(candidate_id='registered',source_id='registered',class_name='deathknight',spec='unholy',
-        semantic='preserved',program=[['outbreak']],core=[])
+    registered=prepared_input.source('registered', [['outbreak']])
     registry=[registered]
     before=deepcopy(registry)
     histories=[dict(run_id=name,profile=dict(identity=dict(**{'class':'deathknight'},spec='unholy')),
@@ -444,7 +502,15 @@ def test_training_prepare_keeps_history_missing_and_read_failure_semantics(monke
     monkeypatch.setattr(result_store,'read_many',many)
     fallback=Mock(side_effect=[valid,None])
     monkeypatch.setattr(result_store,'one',fallback)
-    writer=Mock()
+    stored=deepcopy(registry)
+    monkeypatch.setattr(result_store,'iter_group',lambda table,key:iter(deepcopy(stored)))
+    monkeypatch.setattr(result_store,'read_records',lambda table,key,**kw:
+        [] if table == 'seed_catalog' else [r for r in deepcopy(stored)
+        if all(r.get(k)==v for k,v in kw.get('filters',{}).items())])
+    from contextlib import nullcontext
+    import seed_training
+    monkeypatch.setattr(seed_training, 'writer_lock', nullcontext)
+    writer=Mock(side_effect=lambda table,key,rows,**kw:stored.__setitem__(slice(None),deepcopy(rows)))
     monkeypatch.setattr(result_store,'write',writer)
     if failure=='unreadable':
         with pytest.raises(PermissionError,match='临时历史读取失败'):
@@ -550,7 +616,7 @@ def public_training_memory(monkeypatch, training_cli, prepared_input, memory_ga)
         reset_events=[(500, 'target')]))
     sources = [prepared_input.source(str(index), program) for index, program in enumerate(case.starts)]
     monkeypatch.setattr(seed_training, 'sync_history', lambda *args, **kwargs: deepcopy(sources))
-    monkeypatch.setattr(seed_training, 'registry_rows', lambda: deepcopy(sources))
+    monkeypatch.setattr(seed_training, 'registry_rows', lambda **kwargs: deepcopy(sources))
     monkeypatch.setattr(simulation_config, '_load_document', lambda path=None: dict(training=dict(
         max_processes=1, max_trainings=1, top_k=4, crossover_probability=0., target_mutation_probability=0., random_mutation_probability=0.)))
     files = {}
@@ -579,7 +645,7 @@ def public_training_memory(monkeypatch, training_cli, prepared_input, memory_ga)
     native = header['context']['native']
     native.update(dps=100., samples=99)
     def read_records(table, key):
-        if table != 'seed_prepared': return []
+        if table != 'seed_prepared': return prepared_input.read(table, key)
         row = deepcopy(header)
         row['config_key'] = key
         row['checksum'] = digest([{name: value for name, value in row.items() if name != 'checksum'}])
