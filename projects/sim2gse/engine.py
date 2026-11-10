@@ -33,6 +33,11 @@ COMMON = ['item_db_source=local', 'threads=1', 'seed=20260912', 'target_error=0'
           'override.allow_food=0', 'override.allow_flasks=0', 'override.allow_augmentations=0']
 
 
+def _binary_digest(path):
+    with path.open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
 def identity(mode, runtime=None):
     if mode not in ('baseline', 'controlled'):
         raise ValueError('未知引擎模式')
@@ -60,7 +65,7 @@ def identity(mode, runtime=None):
     if (manifest['exit_code'] or manifest['upstream_commit'] != lock['upstream_commit'] or
             manifest['upstream_tree'] != lock['upstream_tree'] or
             manifest['build_options'] != lock['build_options'] or
-            manifest['binary_sha256'] != hashlib.sha256(executable.read_bytes()).hexdigest()):
+            manifest['binary_sha256'] != _binary_digest(executable)):
         raise ValueError('独立引擎身份或构建状态不符，请重新构建')
     if mode == 'controlled':
         expected = lock['patches']
