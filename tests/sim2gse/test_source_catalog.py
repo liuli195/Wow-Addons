@@ -79,6 +79,49 @@ def test_register_does_not_activate_catalog_without_explicit_conversion(catalog_
     assert records['seed_candidates', 'registry'][0]['original'] == '旧原文必须保留'
 
 
+def test_activation_streams_originals_without_reopening_registry_for_each_source(catalog_cli, monkeypatch):
+    import result_store, source_catalog
+    records, _ = catalog_cli
+    original = deepcopy(records['seed_candidates', 'registry'][0])
+    rows = [dict(original, candidate_id=str(index), source_id=str(index), original='完整原文😀'+str(index))
+            for index in range(12)]
+    records['seed_candidates', 'registry'] = deepcopy(rows)
+    read = result_store.read_records
+    def bounded_read(table, key, **options):
+        assert not (table == 'seed_candidates' and options.get('filters')), '迁移逐条重开旧来源总表'
+        return read(table, key, **options)
+    monkeypatch.setattr(result_store, 'read_records', bounded_read)
+    revision = source_catalog.activate()
+    migrated = source_catalog.read_sources()
+    assert migrated.revision == revision and len(migrated) == 12
+    assert [source_catalog.original(row) for row in migrated] == [row['original'] for row in rows]
+    assert records['seed_candidates', 'registry'] == rows
+
+
+@pytest.mark.parametrize('change', ['original', 'removed', 'added'])
+def test_activation_rejects_changed_or_incomplete_stream_before_catalog_switch(catalog_cli, monkeypatch, change):
+    import result_store, source_catalog
+    records, _ = catalog_cli
+    read = result_store.iter_group
+    scans = 0
+    def concurrent_read(table, key):
+        nonlocal scans
+        if table == 'seed_candidates':
+            scans += 1
+            if scans == 2:
+                if change == 'original':
+                    records[table, key][0]['original'] = '转换时已变更'
+                elif change == 'removed':
+                    records[table, key].clear()
+                else:
+                    records[table, key].append(dict(records[table, key][0], candidate_id='added', source_id='added'))
+        return read(table, key)
+    monkeypatch.setattr(result_store, 'iter_group', concurrent_read)
+    with pytest.raises(ValueError, match='变化'):
+        source_catalog.activate()
+    assert ('seed_catalog', 'current') not in records
+
+
 def test_corrupt_reference_is_an_error_not_an_empty_source_library(catalog_cli, capsys):
     import seed_training as seeds
     from search import digest

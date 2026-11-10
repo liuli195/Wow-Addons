@@ -111,7 +111,7 @@ def _check_reference(ref):
         raise result_store.InvalidRecordError('旧来源原件引用无效')
 
 
-def _legacy():
+def _legacy(*, originals=False):
     try:
         for row in result_store.iter_group('seed_candidates', 'registry'):
             value = dict(row)
@@ -120,6 +120,8 @@ def _legacy():
                 field = 'source_id' if value.get('source_id') else 'candidate_id'
                 value['original_ref'] = dict(_text_identity(text), legacy_field=field,
                                              legacy_id=value[field])
+                if originals:
+                    value['original'] = text
             else:
                 value['original'] = text
             value.setdefault('source_id', value['candidate_id'])
@@ -271,8 +273,23 @@ def publish(rows, *, expected_revision, activate=False):
 
 def activate():
     """仅供明确批准的资料切换；普通读取与登记不自动迁移旧中心。"""
-    rows = read_sources()
-    return publish(rows, expected_revision=rows.revision, activate=True)
+    frozen = read_sources()
+    rows = frozen
+    if frozen.revision.startswith('legacy:'):
+        def originals():
+            count = 0
+            for row in _legacy(originals=True):
+                checked = dict(row)
+                if isinstance(checked.get('original'), str):
+                    checked.pop('original')
+                if count >= len(frozen) or checked != frozen[count]:
+                    raise ValueError('旧来源在转换期间变化，拒绝切换清单')
+                count += 1
+                yield row
+            if count != len(frozen):
+                raise ValueError('旧来源在转换期间变化，拒绝切换清单')
+        rows = originals()
+    return publish(rows, expected_revision=frozen.revision, activate=True)
 
 
 def print_sources(*, unsupported):
