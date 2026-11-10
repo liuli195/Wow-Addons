@@ -1065,7 +1065,7 @@ class TaskStore:
                         connection = sqlite3.connect(':memory:', check_same_thread=False)
                         previous = Path(destination) / 'task.sqlite3'
                         if previous.is_file():
-                            source = sqlite3.connect(previous.resolve().as_uri() + '?mode=ro&immutable=1', uri=True)
+                            source = sqlite3.connect(previous.resolve().as_uri() + '?mode=ro', uri=True)
                             try:
                                 source.backup(connection)
                             finally:

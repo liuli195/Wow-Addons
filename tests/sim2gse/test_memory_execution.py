@@ -10,6 +10,57 @@ from search import TaskStore, digest
 
 
 @pytest.mark.real
+def test_memory_restore_checks_committed_wal_instead_of_older_main_file(tmp_path):
+    store = TaskStore(tmp_path, memory_execution=True)
+    store.state.update(run_id='wal-view', ga=dict(phase='initial'), archive=[])
+    store.checkpoint(boundary='pause')
+    store.close()
+    path = tmp_path / 'task.sqlite3'
+    with sqlite3.connect(path) as writer:
+        writer.execute('PRAGMA journal_mode=WAL')
+        writer.execute("DELETE FROM state_fields WHERE key='memory_checkpoint'")
+        writer.commit()
+        assert path.with_name(path.name + '-wal').is_file()
+        previous = path.read_bytes()
+        opened = None
+        try:
+            with pytest.raises(ValueError, match='校验|恢复点|检查点'):
+                opened = TaskStore(tmp_path, memory_execution=True)
+        finally:
+            if opened is not None:
+                opened.close()
+        assert path.read_bytes() == previous
+
+
+@pytest.mark.real
+def test_memory_restore_uses_the_complete_valid_wal_snapshot(tmp_path):
+    paths = []
+    for name in ('older', 'latest'):
+        folder = tmp_path / name
+        store = TaskStore(folder, memory_execution=True)
+        store.state.update(run_id=name, ga=dict(phase='initial'), archive=[])
+        store.checkpoint(boundary='pause')
+        store.close()
+        paths.append(folder / 'task.sqlite3')
+    writer = sqlite3.connect(paths[0])
+    try:
+        writer.execute('PRAGMA journal_mode=WAL')
+        writer.execute('ATTACH DATABASE ? AS latest', (str(paths[1]),))
+        writer.execute('DELETE FROM state_fields')
+        writer.execute('INSERT INTO state_fields SELECT * FROM latest.state_fields')
+        writer.commit()
+        previous = paths[0].read_bytes()
+        restored = TaskStore(paths[0].parent, memory_execution=True)
+        try:
+            assert restored.state['run_id'] == 'latest'
+        finally:
+            restored.close()
+        assert paths[0].read_bytes() == previous
+    finally:
+        writer.close()
+
+
+@pytest.mark.real
 def test_recovery_save_streams_history_without_accumulating_all_serialized_rows(tmp_path):
     import tracemalloc
     store = TaskStore(tmp_path, memory_execution=True)

@@ -1030,6 +1030,34 @@ def test_public_training_preparation_closes_recovery_without_replacing_diagnosti
     capsys.readouterr()
 
 
+def test_public_training_resume_rejects_another_hero_scope_without_changing_old_checkpoint(
+        monkeypatch, public_training_memory):
+    import result_store, search, seed_training, sequence
+    from runtime import TaskCancelled
+    case = public_training_memory
+    def pause(*args, **kwargs):
+        raise TaskCancelled('pause before native scoring')
+    monkeypatch.setattr(sequence, 'evaluate', pause)
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work')
+    previous = case.store.db.serialize()
+    previous_files = dict(case.files)
+    read = result_store.read_records
+    def another_hero(table, key, **kwargs):
+        rows = read(table, key, **kwargs)
+        if table == 'seed_prepared':
+            rows[0]['context']['native']['static_snapshot']['hero_subtree_ids'] = [31]
+            rows[0]['checksum'] = search.digest([
+                {name:value for name,value in row.items() if name!='checksum'} for row in rows])
+        return rows
+    monkeypatch.setattr(result_store, 'read_records', another_hero)
+    monkeypatch.setattr(sequence, 'evaluate', lambda *args, **kwargs: pytest.fail('changed hero must not score'))
+    with pytest.raises(ValueError, match='分组.*恢复'):
+        seed_training.run_training(case.template, 1, '/memory/work')
+    assert case.store.db.serialize() == previous
+    assert case.files == previous_files
+
+
 
 def test_public_training_uses_independent_probability_settings(public_training_memory):
     import seed_training

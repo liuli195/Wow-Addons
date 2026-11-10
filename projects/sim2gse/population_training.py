@@ -630,6 +630,8 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
                         population_size=len(ready['queue']), config_key=ready['config_key'],
                         preparation=ready['preparation'], **syntax_result)
         scope = seeds.shared_scope(configuration_key, ready['config']['syntax'])
+        if frozen and frozen[0][0].parent.name != scope:
+            raise ValueError('当前分组与冻结恢复任务不一致，拒绝换组恢复；请使用原模板或新工作目录')
         root = Path(workspace).resolve() / 'ga' / scope
         environment = dict(template=ready['template_sha'], engines=ready['engines'],
             simulation=ready['simulation_config'], burst=context['burst'],
@@ -666,7 +668,8 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
             profile.write_text(ready['text'], encoding='utf-8')
         elif profile.read_text(encoding='utf-8') != ready['text']:
             raise ValueError('GA冻结标准角色副本已变化')
-        store = frozen[0][3] if frozen and len(frozen[0]) > 3 else None
+        store = (frozen[0][3] if active and frozen and len(frozen[0]) > 3
+                 and frozen[0][0] == folder else None)
         if store is None:
             store = TaskStore(folder, **(dict(memory_execution=True,
                 checkpoint_interval_seconds=ready['config']['checkpoint_interval_seconds'])
