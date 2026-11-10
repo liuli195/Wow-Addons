@@ -10,6 +10,35 @@ from search import TaskStore, digest
 
 
 @pytest.mark.real
+def test_pending_final_report_releases_parsed_tree_and_keeps_complete_readback(tmp_path):
+    import gc
+    import json
+    import weakref
+    class Report(dict):
+        pass
+    store = TaskStore(tmp_path, memory_execution=True)
+    store.state.update(run_id='pending-body', archive=[], completed_batches=0)
+    expected = dict(sim=dict(players=[dict(name='角色😀', unknown=[None, True, 1, 1.25,
+        {'nested': '完整诊断'}])]))
+    report = Report(expected)
+    reference = weakref.ref(report)
+    original = json.dumps(report, ensure_ascii=False, indent=2)
+    stored = dict(report=report, batch_index=0, scenario='nominal', purpose='nominal')
+    try:
+        store.stage_report('final', dict(request=dict(purpose='nominal')), stored,
+                           report_json=original, report_bytes=len(original.encode('utf-8')))
+        del report, stored
+        gc.collect()
+        assert reference() is None, '待发布报告仍持有展开后的整份对象'
+        first = store.staged_report('final')
+        assert first['report'] == expected and first['scenario'] == 'nominal'
+        first['report']['sim']['players'][0]['unknown'].clear()
+        assert store.staged_report('final')['report'] == expected
+    finally:
+        store.close()
+
+
+@pytest.mark.real
 def test_memory_restore_checks_committed_wal_instead_of_older_main_file(tmp_path):
     store = TaskStore(tmp_path, memory_execution=True)
     store.state.update(run_id='wal-view', ga=dict(phase='initial'), archive=[])
@@ -223,7 +252,9 @@ def test_final_publication_releases_verified_groups_before_starting_later_groups
             program_identity=json.dumps([]), purpose='nominal', seed=index, input_seed=index+500000,
             iterations=32, times=[0], stats_version='paired-bootstrap-v1', trace=False,
             batch_index=0, scenario='nominal', report=report, dps=42., samples=31, variance=0.)
-        store.stage_report(key, row, stored, report_bytes=1)
+        # 响应丢失分支使用原文暂存；普通分支继续覆盖无原文的旧调用。
+        store.stage_report(key, row, stored, report_bytes=1,
+                           **(dict(report_json=json.dumps(report, ensure_ascii=False)) if lost_reply else {}))
     del report, stored
     write = result_store.write
     writes, guard = [], threading.Lock()

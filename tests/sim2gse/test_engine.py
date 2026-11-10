@@ -44,6 +44,20 @@ def test_memory_report_parses_without_retaining_whole_text_copies(monkeypatch):
     assert peak < len(body) * 3, f'报告解析保留了重复全文：{peak}字节'
 
 
+def test_memory_report_can_retain_only_the_validated_body_for_later_publication(monkeypatch):
+    import json
+    import engine
+    from runtime import ProcessResult
+    body = '{\r\n  "sim": {"players": [{"name": "角色😀", "detail": [null, true, 1.25]}]}\r\n}'
+    output = ('before\r\nS2GJSON_BEGIN\r\n' + body + '\r\nS2GJSON_END\r\nafter\r\n').encode('utf-8')
+    monkeypatch.setattr(engine, 'identity', lambda *args: (Path('simc-test'), {}))
+    monkeypatch.setattr(engine, 'run_command', lambda *args, **kwargs: ProcessResult(0, output, b'', 0))
+    value = engine.run(None, Path('/memory/unused'), profile_text='role=invalid', retain_report_json=True)
+    assert value['report_json'] == body
+    assert json.loads(value['report_json']) == value['report']
+    assert value['log'] == 'before\nafter\n'
+
+
 @pytest.mark.parametrize('newline', ['\n', '\r\n'])
 @pytest.mark.parametrize('split', [False, True])
 def test_memory_report_keeps_unicode_logs_boundaries_and_normalized_size(monkeypatch, newline, split):

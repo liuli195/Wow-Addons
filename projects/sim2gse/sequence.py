@@ -138,7 +138,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
              failure_events=None, reset_events=None,
              runtime=None, simulation_config=None, on_native_start=None,
              burst_candidate=None, input_sources=None, allow_zero=False, burst_plan=None,
-             memory_io=False, report_kind='full'):
+             memory_io=False, report_kind='full', retain_report_json=False):
     runtime = runtime or TaskRuntime()
     simulation_config = config_for(simulation_config)
     runtime.check()
@@ -306,11 +306,14 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                  if any(c['kind'] == 'potion' for b in all_commands for c in b) else []),
                'output=' + ('native.txt' if trace or getattr(runtime, 'diagnostic_logging', False) else os.devnull)], runtime=runtime,
               simulation_config=simulation_config, **start_callback,
+              **(dict(retain_report_json=True) if memory_io and retain_report_json else {}),
               **(dict(profile_text=generated_text, report_kind=report_kind) if memory_io else {}))
     memory_report = None
     memory_report_bytes = None
+    memory_report_json = None
     if memory_io:
         memory_report_bytes = log['report_bytes']
+        memory_report_json = log.get('report_json')
         memory_report, log = log['report'], log['log']
     native_blocks = []
     skipped_commands = []
@@ -444,7 +447,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                 diagnostic_finish(runtime, 'evaluation.trace', started)
     if not memory_io:
         replace_file(folder / 'native.pending.json', folder / 'native.json')
-    return dict(blocks=blocks, native_blocks=native_blocks, input_times=input_times,
+    result = dict(blocks=blocks, native_blocks=native_blocks, input_times=input_times,
                 precombat_commands=native_precombat,
                 skipped_commands=skipped_commands, effective_blocks=effective_blocks,
                 input_sources=input_sources, burst_offset=(burst_offset if input_sources is not None else None),
@@ -454,3 +457,6 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                 castsequences=castsequences,
                 summary=summary, report=report, report_bytes=memory_report_bytes, trace=events,
                 game_validation='not_run', model='native_controlled')
+    if memory_report_json is not None:
+        result['report_json'] = memory_report_json
+    return result

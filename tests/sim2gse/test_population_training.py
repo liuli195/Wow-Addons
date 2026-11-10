@@ -144,6 +144,22 @@ def memory_ga(monkeypatch):
         store.diagnostic_logging_override = False
         store.close()
 
+
+@pytest.mark.real
+@pytest.mark.parametrize('formal', [False, True], ids=['training', 'formal'])
+def test_memory_search_requests_raw_text_only_for_reports_kept_until_publication(memory_ga, tmp_path, formal):
+    settings = dict(max_processes=1, top_k=4, stagnation_generations=1,
+        target_mutation_probability=0., random_mutation_probability=0., crossover_probability=0.)
+    case = memory_ga(programs=[[['outbreak']], [['death_coil']], [['scourge_strike']]], formal=formal,
+        settings=None if formal else settings, search_settings=settings if formal else dict(max_processes=1),
+        memory_destination=tmp_path)
+    case.run()
+    coarse = [options for _, _, options in case.calls if options.get('report_kind') == 'summary']
+    finals = [options for _, _, options in case.calls if options.get('report_kind') == 'full']
+    assert coarse and finals
+    assert not any(options.get('retain_report_json') for options in coarse)
+    assert all(options.get('retain_report_json') for options in finals)
+
 @pytest.mark.real
 @pytest.mark.parametrize('formal', [False, True], ids=['training', 'formal'])
 def test_memory_compile_allows_another_candidate_and_live_progress(memory_ga, tmp_path, monkeypatch, formal):

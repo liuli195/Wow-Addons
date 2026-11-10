@@ -1408,15 +1408,17 @@ class TaskStore:
                 temporary.unlink(missing_ok=True)
 
     def stage_report(self, key, row, stored, *, diagnostic_logging=False, replace_group=None, report_path=None,
-                     report_bytes=None):
+                     report_bytes=None, report_json=None):
         with self.lock:
             if self.memory_execution:
                 row.update(batch_index=stored['batch_index'], scenario=stored['scenario'])
                 self.unsaved_batches[key] = row
                 self.verified_batches[key] = row
                 if row['request']['purpose'] not in ('search', 'feedback', 'diagnostic'):
-                    self.memory_reports[key] = dict(stored, _wire_bytes=report_bytes or
-                        len(_json(stored['report']).encode('utf-8')))
+                    pending = (dict({name: value for name, value in stored.items() if name != 'report'},
+                                    _report_json=report_json) if report_json is not None else dict(stored))
+                    pending['_wire_bytes'] = report_bytes or len(_json(stored['report']).encode('utf-8'))
+                    self.memory_reports[key] = pending
                 if row['request']['purpose'] != 'diagnostic':
                     self.state['completed_batches'] += 1
                 return
@@ -1435,7 +1437,11 @@ class TaskStore:
 
     def staged_report(self, key):
         if self.memory_execution:
-            return self.memory_reports.get(key)
+            stored = self.memory_reports.get(key)
+            if stored is not None and '_report_json' in stored:
+                return dict({name: value for name, value in stored.items() if name != '_report_json'},
+                            report=json.loads(stored['_report_json']))
+            return stored
         for stored_key, _, metadata in self.report_buffer:
             if stored_key == key:
                 return dict({name: value for name, value in metadata.items()
@@ -1601,7 +1607,7 @@ class TaskStore:
                 rows = [prepare_batch(dict({key: value for key, value in stored.items() if not key.startswith('_')},
                     storage_group_key=group),
                     diagnostic_logging=self.diagnostic_logging, runtime=getattr(self, 'runtime', None))
-                    for stored in expected.values()]
+                    for stored in (self.staged_report(key) for key in plan)]
                 from runtime import check_memory_limit
                 check_memory_limit(self.state.get('config', {}).get('memory_limit_mb', 8192))
                 try:
@@ -2208,6 +2214,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             kwargs['allow_zero'] = True
             if store.memory_execution:
                 kwargs['report_kind'] = 'summary' if purpose == 'search' else 'full'
+                if purpose not in ('search', 'feedback', 'diagnostic'):
+                    kwargs['retain_report_json'] = True
             def native_started():
                 with store.lock:
                     batch_counters['native_batch_starts'] = batch_counters.get('native_batch_starts', 0) + 1
@@ -2264,7 +2272,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 state['inflight'].pop(key, None)
                 state['batch_estimate'] = max(0.1, 0.8 * state['batch_estimate'] + 0.2 * (time.monotonic()-started))
                 store.stage_report(key, row, stored, diagnostic_logging=config['diagnostic_logging'],
-                                   **(dict(report_bytes=result.get('report_bytes')) if store.memory_execution else {}),
+                                   **(dict(report_bytes=result.get('report_bytes'),
+                                           report_json=result.get('report_json')) if store.memory_execution else {}),
                                    replace_group=(cached.get('storage_group_key') or key)
                                    if cached and cached['status'] == 'success' else None)
                 center_stored = not any(k == key for k, _, _ in store.report_buffer)
