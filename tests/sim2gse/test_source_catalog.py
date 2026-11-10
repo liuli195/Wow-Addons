@@ -19,7 +19,10 @@ def catalog_cli(monkeypatch):
                active=False, unavailable_reason='仅留证据')
     records = {('seed_candidates', 'registry'): [old]}
     def read(table, key, **kwargs):
-        return deepcopy(records.get((table, key), []))
+        rows = deepcopy(records.get((table, key), []))
+        rows = [row for row in rows if all(row.get(name) == value
+                for name, value in kwargs.get('filters', {}).items())]
+        return [{name: row[name] for name in kwargs['columns']} for row in rows] if kwargs.get('columns') else rows
     def write(table, key, rows, **kwargs):
         records[table, key] = deepcopy(rows)
         return len(rows)
@@ -133,3 +136,59 @@ def test_repeated_registration_does_not_reorder_the_active_catalog(catalog_cli, 
     frozen = deepcopy(records['seed_catalog', 'current'])
     assert seeds.main(['--project', '/memory', 'register', '/material.json']) == 0
     assert records['seed_catalog', 'current'] == frozen
+
+
+def test_existing_registry_consumers_keep_complete_legacy_rows(catalog_cli):
+    import seed_training as seeds
+    records, _ = catalog_cli
+    rows = seeds.registry_rows()
+    assert rows[0]['original'] == '旧原文必须保留'
+    assert set(rows[0]) == set(seeds.CANDIDATE_SCHEMA)
+    assert rows[0]['program'] == []
+
+
+@pytest.mark.parametrize('failure', ['missing', 'damaged', 'unavailable'])
+def test_original_read_failure_preserves_the_catalog(catalog_cli, capsys, monkeypatch, failure):
+    import result_store
+    import seed_training as seeds
+    import source_catalog
+    records, _ = catalog_cli
+    source_catalog.activate()
+    frozen = deepcopy(records['seed_catalog', 'current'])
+    part = next(key for key in records if key[0] == 'seed_originals')
+    if failure == 'missing':
+        records.pop(part)
+    elif failure == 'damaged':
+        records[part][0]['text'] = '损坏原文'
+    else:
+        read = result_store.read_records
+        def unavailable(table, key, **kwargs):
+            if table == 'seed_originals':
+                raise result_store.DataReadError('暂时不可读取')
+            return read(table, key, **kwargs)
+        monkeypatch.setattr(result_store, 'read_records', unavailable)
+    assert seeds.main(['--project', '/memory', 'list', '--state', 'unsupported', '--legacy']) == 2
+    assert records['seed_catalog', 'current'] == frozen
+    assert records['seed_candidates', 'registry'][0]['original'] == '旧原文必须保留'
+
+
+def test_registration_rejects_a_concurrent_catalog_revision(catalog_cli, capsys, monkeypatch):
+    import result_store
+    import seed_training as seeds
+    import source_catalog
+    from search import digest
+    records, _ = catalog_cli
+    source_catalog.activate()
+    save = result_store.write
+    changed = []
+    def concurrent_writer(table, key, rows, **kwargs):
+        result = save(table, key, rows, **kwargs)
+        if table == 'seed_originals' and not changed:
+            current = records['seed_catalog', 'current'][0]
+            current['entries'][0]['label'] = '另一更新已发布'
+            current['revision'] = digest(current['entries'])
+            changed.append(deepcopy(records['seed_catalog', 'current']))
+        return result
+    monkeypatch.setattr(result_store, 'write', concurrent_writer)
+    assert seeds.main(['--project', '/memory', 'register', '/material.json']) == 2
+    assert records['seed_catalog', 'current'] == changed[0]

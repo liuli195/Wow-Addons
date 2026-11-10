@@ -123,7 +123,7 @@ def register(path):
     row['unavailable_reason'] = '' if row['active'] else '来源已明确停用'
     row['source_revision'] = digest(row)
     from source_catalog import publish, same_source
-    rows = registry_rows()
+    rows = registry_rows(originals=False)
     previous = next((item for item in rows if item['source_id'] == row['source_id']), None)
     if row.get('allowed_groups') is None and (previous is None or source_groups(previous) is not None):
         raise ValueError('新增材料必须提供明确适用组；只有既有旧来源可保留共享政策')
@@ -186,9 +186,9 @@ def search_program(shared):
     return output
 
 
-def registry_rows():
+def registry_rows(*, originals=True):
     from source_catalog import read_sources
-    rows = read_sources()
+    rows = read_sources(originals=originals)
     for row in rows:
         row['program'], row['core'] = decode(row['program']), decode(row['core'])
         row.setdefault('source_id', row['candidate_id'])
