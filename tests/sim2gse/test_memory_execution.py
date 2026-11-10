@@ -458,7 +458,7 @@ def test_final_history_is_bounded_retryable_and_fully_verified(
     result_store.DATA_ROOT.mkdir(parents=True, exist_ok=True)
     store = TaskStore(tmp_path / 'task', memory_execution=True)
     records = []
-    for index in range(513):
+    for index in range(1025):
         identity = 'candidate-' + str(index)
         request = dict(condition='frozen', purpose='search', behavior_identity=identity, program=[])
         batch = dict(status='success', request=request, data_key=digest(request),
@@ -472,7 +472,7 @@ def test_final_history_is_bounded_retryable_and_fully_verified(
         nonlocal fail
         if table == 'search_records':
             assert len(rows) <= 512, '历史保存仍把全部记录交给一次转换'
-            if published and fail:
+            if len(published) >= 2 and fail:
                 fail = False
                 if lost_response:
                     writer(table, key, rows, **kwargs)
@@ -493,7 +493,7 @@ def test_final_history_is_bounded_retryable_and_fully_verified(
             dict(candidate_key=record['key']) for record in records]
         complete = result_store.read_search_records(storage, store.state['run_id'])
         assert [row['batches'] for row in complete] == [row['batches'] for row in records]
-        assert len(published) == 2
+        assert len(published) == 3
         for invalid in (dict(storage, archive_format=99),
                         dict(storage, archive_groups=[storage['archive_group']] * 2),
                         {key: value for key, value in storage.items() if key != 'archive_groups'}):

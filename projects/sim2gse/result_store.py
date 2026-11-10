@@ -602,6 +602,16 @@ def _validate_search_record(row, run_id, condition):
         raise InvalidRecordError('搜索摘要成绩不符')
 
 
+def _decode_search_record(row):
+    try:
+        for key in ('program', 'batches', 'candidate'):
+            if isinstance(row.get(key), str):
+                row[key] = json.loads(row[key])
+    except (TypeError, json.JSONDecodeError) as error:
+        raise InvalidRecordError('搜索摘要字段缺失或损坏') from error
+    return row
+
+
 def read_search_records(storage, run_id, *, condition=None, columns=None):
     """完整验真全部历史后才交出结果；可只保留消费者需要的字段。"""
     from contextlib import closing
@@ -630,9 +640,7 @@ def read_search_records(storage, run_id, *, condition=None, columns=None):
         nonlocal count, ordinals_contiguous, first_error
         for row in source:
             try:
-                for key in ('program', 'batches', 'candidate'):
-                    if isinstance(row.get(key), str):
-                        row[key] = json.loads(row[key])
+                _decode_search_record(row)
                 ordinals_contiguous = ordinals_contiguous and row['search_order'] == count
                 identities.add(row['candidate_key'])
             except (KeyError, TypeError, json.JSONDecodeError) as error:
@@ -711,13 +719,17 @@ def publish_search_records(state):
                 write('search_records', key, part, schema=schema)
                 continue
             try:
-                with _api()['read_key'](DATA_ROOT, 'search_records', key, columns=['candidate_key']):
-                    pass
-            except _api()['MissingKeyError']:
+                read_many('search_records', [key], columns=['candidate_key'])
+            except DataReadError as error:
+                if not isinstance(error.__cause__, _api()['MissingKeyError']):
+                    raise
                 write('search_records', key, part, schema=schema)
             else:
-                receipt = dict(version=3, archive_group=key, archive_count=len(part), archive_digest=digest_rows(part))
-                read_search_records(receipt, state['run_id'], condition=state.get('condition'), columns=['candidate_key'])
+                from contextlib import closing
+                with closing(_ordered_search_records(key)) as source:
+                    saved_digest = digest_rows(_decode_search_record(row) for row in source)
+                if saved_digest != digest_rows(part):
+                    raise InvalidRecordError('已保存搜索分片与当前冻结历史不符')
         read_search_records(storage, state['run_id'], condition=state.get('condition'), columns=['candidate_key'])
     state['evidence_storage'] = storage
 
