@@ -49,6 +49,7 @@ SEARCH_CHAMPION_SCHEMA = dict(
 _SKILL_API = None
 _SKILL_LOCK = threading.Lock()
 _PUBLICATION_LOCK = threading.RLock()
+_SCOPE_LOCKS = {}
 _BOUND_PROJECT = None
 _REPORT_LOCATIONS = None
 
@@ -222,10 +223,13 @@ def read_search_champion(condition_key):
 
 
 @contextmanager
-def _search_champion_lock():
+def _publication_lock(name):
     import msvcrt
-    # ponytail: one short global publication lock; split by condition only if contention matters.
-    with _PUBLICATION_LOCK, (DATA_ROOT / '.search-champions.lock').open('a+b') as lease:
+    if not re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', name):
+        raise ValueError('成果切换锁名称无效')
+    with _PUBLICATION_LOCK:
+        process_lock = _SCOPE_LOCKS.setdefault(name, threading.RLock())
+    with process_lock, (DATA_ROOT / ('.' + name + '.lock')).open('a+b') as lease:
         if lease.tell() == 0:
             lease.write(b'0')
             lease.flush()
@@ -237,13 +241,49 @@ def _search_champion_lock():
                 break
             except OSError:
                 if time.monotonic() >= deadline:
-                    raise DataReadError('等待正式冠军发布锁超时')
+                    raise DataReadError('等待当前成果切换锁超时')
                 time.sleep(.05)
         try:
             yield
         finally:
             lease.seek(0)
             msvcrt.locking(lease.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+@contextmanager
+def _search_champion_lock():
+    with _publication_lock('search-champions'):
+        yield
+
+
+def _seed_rows_digest(rows):
+    from search import digest
+    normalized = []
+    for row in rows:
+        row = dict(row)
+        for key in ('configuration_key', 'program', 'engines', 'evaluation'):
+            if isinstance(row.get(key), str):
+                row[key] = json.loads(row[key])
+        normalized.append(row)
+    return digest(sorted(normalized, key=lambda row: row['candidate_id']))
+
+
+def seed_selected_revision(scope):
+    return _seed_rows_digest(read_records('seed_selected', scope))
+
+
+def publish_seed_selected(scope, rows, expected_revision, *, schema):
+    """完整证据已验真后，只在同一范围的短锁内比较旧版并切换。"""
+    revision = _seed_rows_digest(rows)
+    with _publication_lock('seed-selected-' + scope):
+        current = seed_selected_revision(scope)
+        if current == revision:
+            return
+        if current != expected_revision:
+            raise ValueError('当前训练成果已经变化，本次完整证据保留，未替换现有四条')
+        write('seed_selected', scope, rows, schema=schema)
+        if seed_selected_revision(scope) != revision:
+            raise DataReadError('训练四条切换后读回不一致')
 
 
 def publish_search_champion(record, expected_version, *, expected_incumbent=None):
@@ -480,6 +520,103 @@ def read_many(table: str, keys, *, columns=None, filters=None):
     if not keys:
         return []
     return _read_records("read_keys", table, keys, columns=columns, filters=filters)
+
+
+def iter_group(table, key):
+    """只读取明确指定的一组，逐条交出完整报告，避免整组读回峰值。"""
+    api = _api()
+    try:
+        with api['read_key'](DATA_ROOT, table, key) as cursor:
+            names = [column[0] for column in cursor.description]
+            while values := cursor.fetchone():
+                row = dict(zip(names, values))
+                yield _restore_batch(row) if table == 'batches' else row
+    except api['MissingKeyError'] as error:
+        raise DataReadError('指定报告组缺失') from error
+    except api['CorruptDataError'] as error:
+        raise InvalidRecordError('指定报告组损坏') from error
+
+
+def read_search_records(storage, run_id, *, condition=None):
+    """新版只读成绩凭据；不把未保存的粗评摘要冒称为完整模拟报告。"""
+    from search import digest
+    import math
+    if (not isinstance(storage, dict) or storage.get('version') != 3
+            or not isinstance(storage.get('archive_group'), str)
+            or not isinstance(storage.get('archive_digest'), str)
+            or type(storage.get('archive_count')) is not int or storage['archive_count'] < 1):
+        raise InvalidRecordError('搜索摘要位置或版本缺失')
+    rows = read_many('search_records', [storage['archive_group']])
+    try:
+        for row in rows:
+            for key in ('program', 'batches', 'candidate'):
+                if isinstance(row.get(key), str):
+                    row[key] = json.loads(row[key])
+        rows.sort(key=lambda row: row['search_order'])
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise InvalidRecordError('搜索摘要字段缺失或损坏') from error
+    if (len(rows) != storage.get('archive_count') or digest(rows) != storage['archive_digest']
+            or [row['search_order'] for row in rows] != list(range(len(rows)))
+            or len({row['candidate_key'] for row in rows}) != len(rows)):
+        raise InvalidRecordError('搜索摘要数量、顺序或总摘要不符')
+    for row in rows:
+        if (row['run_id'] != run_id or digest(row['program']) != row['program_digest']
+                or not isinstance(row['batches'], list) or not row['batches']):
+            raise InvalidRecordError('搜索摘要的任务或程序身份不符')
+        for batch in row['batches']:
+            request = batch.get('request') or {}
+            if (request.get('purpose') != 'search' or request.get('behavior_identity') != row['candidate_key']
+                    or condition is not None and request.get('condition') != condition
+                    or digest(request) != batch.get('data_key') or batch.get('status') != 'success'
+                    or type(batch.get('samples')) is not int or batch['samples'] < 1
+                    or type(batch.get('dps')) not in (int, float)
+                    or not math.isfinite(batch['dps']) or batch['dps'] < 0):
+                raise InvalidRecordError('搜索轻量成绩凭据身份或数值不符')
+        samples = sum(batch['samples'] for batch in row['batches'])
+        if sum(batch['dps'] * batch['samples'] for batch in row['batches']) / samples != row['score']:
+            raise InvalidRecordError('搜索摘要成绩不符')
+    return rows
+
+
+def publish_search_records(state):
+    """完成或主动暂停时保存一份轻量归档；普通运行不调用。"""
+    from search import digest
+    rows = []
+    for index, record in enumerate(state.get('archive', [])):
+        candidate = record.get('candidate')
+        if candidate is not None:
+            candidate = {key: candidate.get(key) for key in ('source', 'program', 'text', 'simulation')}
+            candidate['identity'] = record['key']
+        rows.append(dict(run_id=state['run_id'], candidate_key=record['key'], search_order=index,
+            program=record['program'], program_digest=digest(record['program']), score=float(record['score']),
+            batches=record['batches'], candidate=candidate))
+    if not rows:
+        return
+    previous = state.get('evidence_storage') or {}
+    if previous.get('archive_group'):
+        saved = read_search_records(previous, state['run_id'], condition=state.get('condition'))
+        def core(record):
+            return (record['candidate_key'], record['program_digest'], record['score'],
+                    [{key: batch.get(key) for key in ('data_key', 'request', 'dps', 'samples', 'variance')}
+                     for batch in record['batches']])
+        if len(saved) > len(rows) or any(core(left) != core(right) for left, right in zip(saved, rows)):
+            raise InvalidRecordError('已保存搜索摘要与当前冻结成绩冲突')
+        if len(saved) == len(rows):
+            return  # 恢复时少了历史编译对象，不改变已验证的来源身份。
+    checksum = digest(rows)
+    group = state['run_id'] + '_a' + checksum[:20]
+    storage = dict(state.get('evidence_storage') or dict(version=3, report_groups={}),
+        archive_group=group, archive_digest=checksum, archive_count=len(rows))
+    schema = dict(run_id='VARCHAR', candidate_key='VARCHAR', search_order='UBIGINT', program='JSON',
+        program_digest='VARCHAR', score='DOUBLE', batches='JSON', candidate='JSON')
+    try:
+        read_search_records(storage, state['run_id'], condition=state.get('condition'))
+    except DataReadError as error:
+        if error.__cause__ is None or not isinstance(error.__cause__, _api()['MissingKeyError']):
+            raise
+        write('search_records', group, rows, schema=schema)
+        read_search_records(storage, state['run_id'], condition=state.get('condition'))
+    state['evidence_storage'] = storage
 
 
 def _read_records(operation, table, keys, *, columns, filters):

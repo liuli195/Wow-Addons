@@ -129,6 +129,64 @@ def memory_ga(monkeypatch):
         store.diagnostic_logging_override = False
         store.close()
 
+def test_v3_selected_independently_reads_full_source_cohort(monkeypatch, memory_ga):
+    from copy import deepcopy
+    import hashlib
+    from types import SimpleNamespace
+    import population_training as training
+    import result_store
+    from search import digest
+    from test_character_export import sample_profile
+    text = sample_profile()
+    environment = dict(template=hashlib.sha256(text.encode()).hexdigest(), engines={},
+                       simulation=dict(target_count=1, scene='single_target'))
+    case = memory_ga(manifest_fields=dict(seed=20260912, environment=environment))
+    ga = case.run()
+    records = {}
+    read_many = result_store.read_many
+    monkeypatch.setattr(result_store, 'write', lambda table, key, rows, **kwargs:
+                        records.__setitem__((table, key), deepcopy(rows)))
+    monkeypatch.setattr(result_store, 'read_records', lambda table, key:
+                        deepcopy(records.get((table, key), [])))
+    monkeypatch.setattr(result_store, 'read_many', lambda table, keys, **kwargs:
+        read_many(table, keys, **kwargs) if table == 'batches' else
+        [deepcopy(row) for key in keys for row in records.get((table, key), [])])
+    receipts = {}
+    groups = {}
+    for identity in ga['finalists']:
+        for batches in ga['finals'][identity].values():
+            for row in batches.values():
+                key = row['batch_key']
+                receipts[key] = dict(case.store.batch(key), storage_version=3, storage_group_key=key)
+                groups[key] = key
+    state = dict(case.store.state, capabilities=case.capabilities,
+                 evidence_storage=dict(version=3, report_groups=groups))
+    archive = [dict(run_id=state['run_id'], candidate_key=row['key'], search_order=index,
+        program=row['program'], program_digest=digest(row['program']), score=row['score'],
+        batches=row['batches'], candidate=None) for index, row in enumerate(state['archive'])]
+    records['search_records', 'archive'] = archive
+    state['evidence_storage'].update(archive_group='archive', archive_digest=digest(archive),
+                                     archive_count=len(archive))
+    store = SimpleNamespace(memory_execution=True, state=state, batch=receipts.get,
+                            published_report_receipts={})
+    manifest = case.manifest
+    ready = dict(case.ready, text=text, template_sha=environment['template'])
+    key = dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target')
+    state['configuration_key'] = key
+    training._publish_seed_evidence(ga, store, manifest, case.character, ready)
+    selected = training._selected(ga, store, manifest, case.character, ready, key)
+    training.verify_selected_evidence(selected)
+    wrong_group = deepcopy(selected)
+    for row in wrong_group:
+        row['configuration_key'] = dict(key, hero_talent='sanlayn')
+    with pytest.raises(ValueError, match='分组'):
+        training.verify_selected_evidence(wrong_group)
+    missing = next(iter(receipts))
+    case.reports.pop(missing)
+    with pytest.raises(ValueError, match='完整复测报告'):
+        training.verify_selected_evidence(selected)
+
+
 def test_public_check_freezes_both_verified_heroes_and_four_groups(monkeypatch):
     from unittest.mock import mock_open, patch
     import engine
@@ -797,3 +855,47 @@ def test_single_resume_missing_simulation_keeps_saved_and_explicit_difference_re
     with pytest.raises(task.TaskError, match='恢复模拟配置发生变化'):
         task.resume_task('/memory/ga', simulation_config=dict(target_count=1, scene='single_target'))
     close_store()
+
+
+def test_shared_variation_keeps_frozen_baseline_random_stream_and_children():
+    """Oracle captured from 37a44b53's original gates, not from the new helper."""
+    from copy import deepcopy
+    import hashlib
+    import random
+    from deap import base
+    from population_training import vary_offspring, _cross
+    from program import canonicalize_search_program
+    from test_search import _fast_capabilities
+    capabilities = _fast_capabilities()
+    reference = dict(version=1, samples=31, duration_ms=5580000, successes={'spell:1001': 31},
+        pairs={}, outgoing={}, scope=dict(allowed={'spell:1001': True}, excluded={},
+                                          windows='', policy='@apl', controlled=False))
+
+    class Fitness(base.Fitness):
+        weights = (1.,)
+
+    class Member(list):
+        pass
+
+    outputs = []
+    for seed in range(30):
+        rng = random.Random(seed)
+        toolbox = base.Toolbox()
+        toolbox.register('clone', deepcopy)
+        toolbox.register('mate', lambda a, b: _cross(a, b, rng))
+        parents = []
+        for program in ([['outbreak'], ['death_coil']], [['scourge_strike'], ['outbreak']]):
+            member = Member(deepcopy(program))
+            member.fitness = Fitness((100.,))
+            member.action_summary = reference
+            parents.append(member)
+        counts = {route + suffix: 0 for route in ('target', 'random', 'crossover')
+                  for suffix in ('_triggered', '_changed')}
+        children = vary_offspring(parents, toolbox, rng=rng,
+            config=dict(target_mutation_probability=.8, random_mutation_probability=.3, crossover_probability=.3),
+            capabilities=capabilities, reference=reference,
+            legal=lambda p: canonicalize_search_program(p, capabilities)['identity'],
+            check=lambda: None, observe=lambda *a, **k: None, counts=counts)
+        outputs.append(dict(children=[list(child) for child in children], rng=rng.getstate(), counts=counts))
+    assert hashlib.sha256(json.dumps(outputs, sort_keys=True).encode()).hexdigest() == (
+        '18c2223cfab8f5e99e77627a365db8c4da7dd3bdf55d3f68e4e110f7a8100750')

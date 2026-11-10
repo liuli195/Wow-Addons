@@ -7,6 +7,10 @@
 
 from __future__ import annotations
 
+import sys
+if __name__ == '__main__':
+    sys.dont_write_bytecode = True
+
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -15,7 +19,6 @@ import re
 import string
 import sqlite3
 import argparse
-import sys
 import os
 import threading
 import time
@@ -362,6 +365,11 @@ def _store_candidate(run_id: str, candidate: dict, *, search_order=None) -> tupl
 def _store_run(destination: Path, result: dict, *, state=None) -> dict:
     from result_store import RUN_SCHEMA, write as write_records
 
+    if (state is not None and state.get('execution_storage_version') == 3
+            and state.get('archive') and not state.get('evidence_storage', {}).get('archive_group')):
+        from result_store import publish_search_records
+        publish_search_records(state)
+
     profile_path = destination / 'profile.json'
     profile = json.loads(profile_path.read_text(encoding='utf-8'))
     run_id = profile.get('run_id')
@@ -433,9 +441,15 @@ def _store_run(destination: Path, result: dict, *, state=None) -> dict:
         for name in ('seed_adaptations', 'training_champion_snapshot',
                      'training_champion_adaptation', 'start_sources', 'formal_champion_snapshot',
                      'formal_champion_adaptation', 'formal_champion_publication', 'formal_search', 'stop_policy',
-                     'start_adaptations'):
+                     'start_adaptations', 'evidence_storage'):
             if name in state:
                 search_metrics[name] = state[name]
+    storage = search_metrics.get('evidence_storage')
+    if storage is not None:
+        if storage.get('version') != 3:
+            raise TaskError('未知的成果保存版本')
+        batch_keys = set(storage['report_groups'])
+        batch_keys.update(key for key in (reference_data_key, controlled_data_key) if isinstance(key, str))
     cache_hit_keys = sorted({row['data_key'] for record in search.get('records', [])
                              for row in record.get('batches', [])
                              if row.get('cached') and isinstance(row.get('data_key'), str)})
@@ -851,9 +865,15 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
             or binding['target_count'] != state['simulation_config']['target_count']):
         raise InvalidRecordError('正式冠军条件与当前冻结角色不符')
     contract = 1 if record.get('contract_version') is None else record['contract_version']
-    if type(contract) is not int or contract not in (1, 2):
+    if type(contract) is not int or contract not in (1, 2, 3):
         raise InvalidRecordError('正式冠军成果契约版本格式无效或未知')
-    if contract == 2 and run is None and not verify_reports:
+    if contract == 3:
+        finalists = (record.get('evaluation') or {}).get('finalists') or []
+        if not finalists or any(batch.get('storage_version') != 3
+                or not isinstance(batch.get('storage_group_key'), str) or not batch['storage_group_key']
+                for finalist in finalists for batch in finalist.get('batches', [])):
+            raise InvalidRecordError('新版正式冠军缺少复测证据直接位置')
+    if contract in (2, 3) and run is None and not verify_reports:
         # A complete cohort is bound to the separately saved source, not to a
         # self-declared subset of the champion's otherwise valid receipts.
         run = one('runs', 'run_id', record['source_run_id'], columns=['run_id', 'status', 'profile',
@@ -893,7 +913,7 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
                != record['behavior_identity']
             or canonicalize_search_program(record['program'], state['capabilities'])['identity'] != record['behavior_identity']):
         raise InvalidRecordError('正式冠军程序、导出或正式来源行为不符')
-    if contract == 2:
+    if contract in (2, 3):
         from formal_search import validate_evidence
         evaluation = record.get('evaluation') or {}
         if run is not None:
@@ -908,7 +928,7 @@ def _validate_formal_source(record, state, character, *, run=None, candidate=Non
         if (evidence.get('status') != 'completed' or not cohort
                 or evaluation.get('finalists') != cohort):
             raise InvalidRecordError('正式遗传冠军入围名单与完整正式来源不符')
-        validate_evidence(record, state, character, verify_reports=verify_reports)
+        validate_evidence(record, state, character, verify_reports=verify_reports or contract == 3)
         return evidence
     if not verify_reports:
         import math
@@ -1019,14 +1039,14 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
     by_key = {row['candidate_data_key']: row for row in candidates}
     if len(by_key) != len(candidates):
         raise TaskError('明确历史候选身份不唯一')
-    from simulation_config import FORMAL_ALGORITHM_DEFAULTS
+    from simulation_config import FORMAL_ALGORITHM_DEFAULTS, EXECUTION_DEFAULTS
     eligible = []
     for run in runs:
         profile, config = decode(run['profile']), decode(run['config'])
         candidate = by_key.get(run['candidate_data_key'])
         identity = (profile or {}).get('identity', {})
         comparable_config = lambda value: {key: item for key, item in value.items()
-            if key not in (*RETIRED_SEARCH_SETTINGS, *FORMAL_ALGORITHM_DEFAULTS,
+            if key not in (*RETIRED_SEARCH_SETTINGS, *FORMAL_ALGORITHM_DEFAULTS, *EXECUTION_DEFAULTS,
                                'search_observability', 'diagnostics', 'diagnostic_logging', 'search_timeline', 'syntax')}
         source_burst, current_burst = decode(run['burst']) or {}, state.get('burst') or {}
         source_context = {key: item for key, item in source_burst.items()
@@ -1039,7 +1059,8 @@ def _historical_formal_champion(state, character, native, capabilities, snapshot
                 or decode(run['engines']) != state['engines']
                 or decode(run['simulation_config']) != state['simulation_config']
                 or set(comparable_config(config)) != set(comparable_config(state['config']))
-                or comparable_config(config_for(config, legacy=True)) != comparable_config(state['config'])
+                or comparable_config(config_for({key: value for key, value in config.items()
+                    if key not in EXECUTION_DEFAULTS}, legacy=True)) != comparable_config(state['config'])
                 or source_context != current_context or not run['condition_key']
                 or run['selected_candidate_key'] != run['locked_candidate_key']
                 or not run['selected_candidate_key'] or candidate is None
@@ -1142,7 +1163,7 @@ def _prepare_formal_publication(store, result=None):
                   source_candidate_data_key=digest(dict(run_id=state['run_id'], candidate_key=source_key)),
                   source_condition_key=state['condition'], score=winner['score'],
                   samples=sum(row['samples'] for row in winner['batches']),
-                  contract_version=2, promotion_evidence=[],
+                  contract_version=3 if state.get('evidence_storage', {}).get('version') == 3 else 2, promotion_evidence=[],
                   batch_keys=[batch['data_key'] for row in state['formal_finalists'] for batch in row['batches']],
                   evaluation=dict(search=state['formal_search'], engines=state['engines'],
                       complete_generations=state['ga']['generation'], stagnant=state['ga']['stagnant'],
@@ -1182,7 +1203,7 @@ def _restore_formal_result(store, destination, character):
         return
     record = intent['record']
     if (not state.get('formal_search') or type(record.get('contract_version')) is not int
-            or record['contract_version'] != 2):
+            or record['contract_version'] not in (2, 3)):
         raise TaskError('旧正式搜索补保存已退役；原完整成果仅可读取')
     run = one('runs', 'run_id', record['source_run_id'], columns=['run_id', 'status', 'profile',
         'condition_key', 'selected_candidate_key', 'locked_candidate_key', 'candidate_key',
@@ -1239,7 +1260,7 @@ def _publish_formal_champion(store, destination):
         return
     record = intent['record']
     if (not state.get('formal_search') or type(record.get('contract_version')) is not int
-            or record['contract_version'] != 2):
+            or record['contract_version'] not in (2, 3)):
         raise TaskError('旧正式搜索补发布已退役；原完整成果仅可读取')
     try:
         native = state['native']['identity']
@@ -1338,7 +1359,9 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                   burst_identity=None, formal_source_run_ids=None):
     from engine import identity, prepare_loop, reference, damage_statistics, COMMON
     from search import TaskStore, _export_search_observability, digest, initial_programs
-    store = TaskStore(destination)
+    store = TaskStore(destination, **(dict(memory_execution=True,
+        checkpoint_interval_seconds=config['checkpoint_interval_seconds'])
+        if config.get('memory_execution') else {}))
     state = store.state
     try:
         run_id = json.loads((destination / 'profile.json').read_text(encoding='utf-8')).get('run_id')
@@ -1360,6 +1383,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
     if formal_source_run_ids is not None:
         state['formal_history_scope'] = formal_source_run_ids
     runtime.diagnostic_logging = config['diagnostic_logging']
+    runtime.memory_limit_mb = config.get('memory_limit_mb', 4096)
     def reservation(key, allowance):
         with store.lock:
             inflight = state.setdefault('inflight', {})
@@ -1373,6 +1397,7 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
     try:
         original_bytes, _ = _read_utf8(destination / "input.original.simc", description="原始输入副本")
         effective_bytes, _ = _read_utf8(destination / "input.simc", description="任务输入副本")
+        runtime.profile_texts = {str((destination / 'input.simc').resolve()): effective_bytes.decode('utf-8')}
         input_original_sha256 = hashlib.sha256(original_bytes).hexdigest()
         input_effective_sha256 = hashlib.sha256(effective_bytes).hexdigest()
         if (state.get("input_original_sha256") not in (None, input_original_sha256)
@@ -1446,11 +1471,13 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
             if state['phase'] == 'initialize':
                 state['inflight'] = {'initialize': dict(start=runtime.elapsed_seconds, allowance=min(30,runtime.remaining_seconds))}
                 store.save()
+                memory_reference = {} if store.memory_execution else None
                 try:
                     native = reference(destination/'input.simc', destination/'reference', character, runtime=runtime,
                                        iterations=config['iterations'], seed=config['random_seed'],
                                        simulation_config=simulation_config,
-                                       summary_excluded_spell_ids=definition['excluded_spell_ids'] if definition else ())
+                                       summary_excluded_spell_ids=definition['excluded_spell_ids'] if definition else (),
+                                       **(dict(report_sink=memory_reference) if store.memory_execution else {}))
                 finally:
                     if not config['diagnostic_logging']:
                         from engine import discard_diagnostic_files
@@ -1458,7 +1485,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 reference_report_path = destination / 'reference' / 'native.json'
                 reference_valid = reference_stored = False
                 try:
-                    reference_report = json.loads(reference_report_path.read_text(encoding='utf-8'))
+                    reference_report = (memory_reference if store.memory_execution else
+                        json.loads(reference_report_path.read_text(encoding='utf-8')))
                     reference_key = digest(dict(run_id=run_id, purpose='reference',
                                                 condition=condition, seed=config['random_seed'],
                                                 iterations=config['iterations']))
@@ -1501,8 +1529,11 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                     else:
                         state['seed_selected_snapshot'] = read_records('seed_selected', shared_scope(configuration_key))
                         contract = selected_contract_version(state['seed_selected_snapshot'])
+                    if contract == 3:
+                        from population_training import verify_selected_evidence
+                        verify_selected_evidence(state['seed_selected_snapshot'])
                     state['training_champion_snapshot'] = (dict(source_kind='training_champion',
-                        status='not_applicable', reason='v2四条已包含正常冠军及稳定代表') if contract == 2 else training_champion(
+                        status='not_applicable', reason='新版四条已包含正常冠军及稳定代表') if contract in (2, 3) else training_champion(
                         character.class_name, character.spec, simulation_config, engines=identities,
                         input_interval_ms=config['input_interval_ms'], use_burst=use_burst,
                         configuration_key=configuration_key,
@@ -1566,7 +1597,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                                           current_samples=sum(batch.get('samples', 0)
                                                               for batch in scored.get('batches', [])))
             store.checkpoint()
-            store.defer_persistence = False
+            if not store.memory_execution:
+                store.defer_persistence = False
             _prepare_formal_publication(store, result)
             store.save()  # Intent freezes the completed archive while heartbeats remain nonterminal.
             pointer = _store_run(destination, result, state=state)
@@ -1606,6 +1638,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                 result['search_observability'] = _export_search_observability(
                     observation, include_details=observation.get('mode') == 'full')
         _save_failure(destination, result, state=state)
+        if store.memory_execution:
+            store.checkpoint(boundary='pause')
         if getattr(runtime, 'search_timeline', None) is not None:
             runtime.search_timeline.saved(result['status'])
         return result
@@ -1616,6 +1650,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
         failure = dict(status='failed', phase=state.get('phase', 'done'),
                        elapsed_seconds=runtime.elapsed_seconds, error=str(error))
         _save_failure(destination, failure, state=state)
+        if store.memory_execution:
+            store.checkpoint(boundary='pause')
         raise TaskError(str(error)) from error
     finally:
         runtime.reservation = None
@@ -1941,7 +1977,7 @@ def _require_current_formal_resume(state):
     if intent:
         record = intent.get('record', {}) if isinstance(intent, dict) else {}
         if (not state.get('formal_search') or not isinstance(record, dict)
-                or type(record.get('contract_version')) is not int or record['contract_version'] != 2):
+                or type(record.get('contract_version')) is not int or record['contract_version'] not in (2, 3)):
             raise TaskError('旧正式搜索补保存和补发布已退役；原完整成果仅可读取')
     if state.get('rule_snapshot') or state.get('rule_context'):
         raise TaskError('旧规则任务身份不兼容，不能续跑；原完整成果仍可读取')
@@ -1984,8 +2020,12 @@ def _resume_task(output_root, **kwargs):
         _verify_task_inputs(destination, profile)
         from search import (TaskStore, _export_search_observability, config_for,
                             verify_behavior_identity_state)
-        _require_current_formal_resume(_read_resume_checkpoint(destination))
-        store = TaskStore(destination)
+        checkpoint = _read_resume_checkpoint(destination)
+        _require_current_formal_resume(checkpoint)
+        policy = checkpoint.get('config', {})
+        store = TaskStore(destination, **(dict(memory_execution=True,
+            checkpoint_interval_seconds=policy.get('checkpoint_interval_seconds', 600))
+            if checkpoint.get('memory_checkpoint') else {}))
         try:
             state = store.state
             _require_current_formal_resume(state)
@@ -2178,11 +2218,19 @@ def _batch_locations(destination, keys, *, receipts=None):
         connection = None
         try:
             connection = sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)
+            templates = None
+            from search import _expand_checkpoint_request
             for offset in range(0, len(keys), 500):
                 chunk = keys[offset:offset + 500]
                 sql = 'SELECT key,value FROM batches WHERE key IN (' + ','.join('?' for _ in chunk) + ')'
                 for key, payload in connection.execute(sql, chunk):
                     row = json.loads(payload)
+                    if (isinstance(row, dict) and isinstance(row.get('request'), dict)
+                            and 'checkpoint_request_key' in row['request'] and templates is None):
+                        saved_templates = connection.execute(
+                            "SELECT value FROM state_fields WHERE key='checkpoint_requests'").fetchone()
+                        templates = json.loads(saved_templates[0]) if saved_templates else {}
+                    row = _expand_checkpoint_request(row, templates or {})
                     if not isinstance(row, dict):
                         raise ValueError('批次位置记录必须是对象')
                     locations[key] = row.get('storage_group_key') or row.get('data_key') or key
@@ -2202,6 +2250,12 @@ def _batch_locations(destination, keys, *, receipts=None):
 def _read_task(output_root, *, include_search_records=False, include_reports=False,
                include_rule_initialization=True):
     destination = Path(output_root).resolve()
+    from search import _LIVE_TASKS
+    live = _LIVE_TASKS.get(str(destination))
+    if live is not None:
+        progress = live.publish()
+        if progress is not None and progress.get('status') in ('running', 'stopping'):
+            return progress
     progress_path = destination / 'progress.json'
     progress = None
     if progress_path.is_file():
@@ -2358,6 +2412,19 @@ def _read_task(output_root, *, include_search_records=False, include_reports=Fal
             controlled_simulation['report'] = controlled['report']
         task_result['controlled_simulation'] = controlled_simulation
 
+    storage = search.get('evidence_storage')
+    if include_search_records and storage is not None:
+        from result_store import read_search_records
+        rows = read_search_records(storage, run_id, condition=saved['condition_key'])
+        records = []
+        for row in rows:
+            candidate = row['candidate'] or dict(identity=row['candidate_key'], source='search',
+                program=row['program'], text=None, simulation=None)
+            records.append(dict(key=row['candidate_key'], program=row['program'], score=row['score'],
+                batches=row['batches'], candidate=candidate, export_available=bool(candidate.get('text')),
+                evidence_kind='verified_score_summary'))
+        search['records'] = records
+        return task_result
     if include_search_records and search_batch_keys:
         from search import digest
         wanted = set(search_batch_keys)

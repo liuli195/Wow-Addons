@@ -113,6 +113,8 @@ def run(*, profile, character, capabilities, reference, destination, runtime,
         training_runner=_evolution(store, capabilities, runtime, ga_config, scenarios=('nominal',)))
     if timeline is not None:
         timeline.stop('stagnation')
+    if store.memory_execution:
+        store.flush_reports(final=True)
     qualified = _retest_scores(ga, store, condition=condition_key, stage_plan=plan,
         config=ga_config, character=character, simulation_config=simulation_config, scenarios=('nominal',))
     if len(qualified) != len(ga['finalists']) or not qualified:
@@ -247,7 +249,8 @@ def validate_evidence(record, state, character, *, verify_reports):
         raise InvalidRecordError('正式遗传冠军不是完整入围名单的正常复测赢家')
     if not verify_reports:
         return
-    locations = report_locations(list(receipts))
+    missing = [key for key, (cached, _) in receipts.items() if not cached.get('storage_group_key')]
+    locations = report_locations(missing) if missing else {}
     groups = {}
     for key, (cached, index) in receipts.items():
         group = cached.get('storage_group_key') or locations.get(key) or key

@@ -31,7 +31,21 @@ for _, path in ipairs({"Statics", "InitialOptions", "StringFunctions", "Characte
 end
 loadSource("GSE_Utils/Utils.lua")
 -- Explicit client-boundary fixtures. Unknown spells fail, never echo the input.
-local expected = assert(loadfile(expectedPath))()
+local inputData, expected
+if input == "-" then
+    local length = assert(tonumber(io.stdin:read("*l")), "missing expected length")
+    assert(length > 0 and length <= 67108864, "expected input too large")
+    local source = assert(io.stdin:read(length), "missing expected input")
+    assert(#source == length, "truncated expected input")
+    expected = assert(loadstring(source))()
+    local hex = io.stdin:read("*a")
+    assert(#hex <= 67108864 and #hex % 2 == 0 and not hex:find("[^0-9a-f]"), "invalid CBOR input")
+    inputData = hex:gsub("..", function(pair) return string.char(tonumber(pair, 16)) end)
+else
+    expected = assert(loadfile(expectedPath))()
+    local file = assert(io.open(input, "rb"))
+    inputData = file:read("*a"); file:close()
+end
 local spellNames = expected.spells
 GSE.GetSpellInfo = function(value)
     local id = tonumber(value)
@@ -40,8 +54,7 @@ GSE.GetSpellInfo = function(value)
 end
 GSE.GetClassIDforSpec = function(id) assert(id == expected.identity.spec_id); return expected.identity.class_id end
 local cbor = loadSource("spec/cbor.lua")
-local file = assert(io.open(input, "rb"))
-local payload = cbor.decode(file:read("*a")); file:close()
+local payload = cbor.decode(inputData)
 local function same(a, b)
     if type(a) ~= type(b) then return false end
     if type(a) ~= "table" then return a == b end

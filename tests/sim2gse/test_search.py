@@ -48,7 +48,7 @@ def public_formal_memory(monkeypatch, memory_ga):
     monkeypatch.setattr(os,'replace',lambda a,b:files.__setitem__(path(b),files.pop(path(a))))
     monkeypatch.setattr(task,'_task_lease',lambda *a,**k:nullcontext())
     monkeypatch.setattr(seed_activity,'foreground_search',nullcontext)
-    monkeypatch.setattr(search,'TaskStore',lambda folder:case.store)
+    monkeypatch.setattr(search,'TaskStore',lambda folder, **kwargs:case.store)
     monkeypatch.setattr(case.store,'close',lambda:None)
     monkeypatch.setattr(case.store,'recover_reports',lambda *a:None)
     monkeypatch.setattr(engine,'identity',_fast_identity)
@@ -197,6 +197,84 @@ def test_formal_command_keeps_actual_rejection_count(monkeypatch,capsys,public_f
     assert result['start_rejection_count']==1
 
 
+def test_new_public_task_honors_custom_memory_limit_before_reference(public_formal_memory, monkeypatch):
+    import engine
+    import task
+    original = engine.reference
+    seen = []
+    def reference(*args, **kwargs):
+        seen.append(kwargs['runtime'].memory_limit_mb)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(engine, 'reference', reference)
+    task.run_task('/memory/role.simc', '/memory/formal', search_config=dict(memory_limit_mb=512),
+                  simulation_config=dict(target_count=1, scene='single_target'))
+    assert seen == [512]
+
+
+def test_public_task_rejects_v3_seeds_when_complete_source_evidence_is_missing(public_formal_memory):
+    from copy import deepcopy
+    import seed_training
+    import simulation_config
+    import task
+    from search import digest
+    from test_search_syntax import SIMPLE
+    case = public_formal_memory
+    key = dict(specialization_id=252, hero_talent='rider_of_the_apocalypse', target_type='single_target')
+    groups = {f'{scene}-{index}': 'missing-report' for scene in
+        ('nominal', 'jitter', 'pause', 'slow', 'phase') for index in range(3)}
+    storage = dict(version=3, report_groups=groups, archive_group='missing-archive', archive_count=4,
+        archive_digest='0' * 64, seed_source_group='missing-source', seed_source_digest='0' * 64)
+    scenarios = {scene: dict(batches=[dict(batch_key=f'{scene}-{index}', storage_version=3,
+        storage_group_key='missing-report') for index in range(3)])
+        for scene in ('nominal', 'jitter', 'pause', 'slow', 'phase')}
+    programs = [[['outbreak']], [['death_coil']], [['scourge_strike']], [['outbreak'], ['death_coil']]]
+    rows = [dict(candidate_id=str(index), class_name='deathknight', spec='unholy',
+        configuration_key=key, program=program, contract_version=3,
+        evaluation=dict(syntax=simulation_config.syntax_receipt(SIMPLE), program_digest=digest(program),
+            scenarios=deepcopy(scenarios), evidence_storage=deepcopy(storage)))
+        for index, program in enumerate(programs)]
+    case.records['seed_selected', seed_training.shared_scope(key, SIMPLE)] = rows
+    with pytest.raises(task.TaskError, match='训练.*证据'):
+        task.run_task('/memory/role.simc', '/memory/formal',
+            syntax_config=SIMPLE, simulation_config=dict(target_count=1, scene='single_target'))
+
+
+def test_public_memory_failure_preserves_frozen_state_and_failed_attempts(public_formal_memory, monkeypatch):
+    from copy import deepcopy
+    import engine
+    import sequence
+    import task
+    from test_search_syntax import SIMPLE
+    case = public_formal_memory
+    snapshots = []
+    case.store.memory_execution = True
+    monkeypatch.setattr(case.store, '_memory_checkpoint', lambda boundary: snapshots.append(deepcopy(case.store.state)))
+    def fail(*args, **kwargs):
+        raise engine.NativeEvaluationError('injected native failure')
+    monkeypatch.setattr(sequence, 'evaluate', fail)
+    with pytest.raises(task.TaskError, match='injected native failure'):
+        task.run_task('/memory/role.simc', '/memory/formal', syntax_config=SIMPLE,
+                      simulation_config=dict(target_count=1, scene='single_target'))
+    saved = snapshots[-1]
+    assert saved['run_id'] and saved['condition'] and saved['starts'] and saved['ga']
+    assert saved['config']['syntax'] == SIMPLE
+    assert saved['training_failures'] and max(saved['training_failures'].values()) == 2
+
+
+def test_old_batch_receipt_without_field_table_remains_readable(monkeypatch):
+    import sqlite3
+    import task
+    database = sqlite3.connect(':memory:')
+    database.execute('CREATE TABLE batches(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
+    receipt = dict(data_key='old-batch', status='success', storage_group_key='old-group', request=dict(purpose='search'))
+    database.execute('INSERT INTO batches VALUES (?,?)', ('old-batch', json.dumps(receipt)))
+    monkeypatch.setattr(sqlite3, 'connect', lambda *args, **kwargs: database)
+    monkeypatch.setattr(Path, 'is_file', lambda path: True)
+    receipts = {}
+    assert task._batch_locations(Path('/memory/old-task').resolve(), ['old-batch'], receipts=receipts) == {'old-batch': 'old-group'}
+    assert receipts == {'old-batch': receipt}
+
+
 def test_mutate_fetches_parent_feedback_only_after_its_usage_gate():
     import random
     from search import mutate
@@ -258,15 +336,21 @@ def _fast_capabilities():
 
 
 def _fast_reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912,
-                    simulation_config=None, import_spell_ids=(), import_spell_names=(), summary_excluded_spell_ids=()):
+                    simulation_config=None, import_spell_ids=(), import_spell_names=(), summary_excluded_spell_ids=(),
+                    profile_text=None, report_sink=None):
     folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=True)
+    memory = profile_text is not None or getattr(runtime, 'memory_execution', False)
+    if not memory:
+        folder.mkdir(parents=True, exist_ok=True)
     report = _fast_report(character, 100.0, max(1, iterations-1))
     summary = report['sim']['players'][0]['sim2gse_action_summary']
     summary['successes'] = {'spell:1001': max(1, iterations-1)}
     summary['scope']['allowed'] = {'spell:1001': True}
     summary['scope']['excluded'] = {f'spell:{i}': True for i in summary_excluded_spell_ids}
-    (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")
+    if report_sink is not None:
+        report_sink.update(report)
+    if not memory:
+        (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")
     return dict(action_summary=summary, static_snapshot=static_snapshot(), dps=100.0, metric="dps", personal_dps=100.0, samples=max(1, iterations-1), seconds=180,
                 identity=dict(class_id=6, spec_id=252, spec=character.spec, race=character.race,
                               role=character.fields.get("role", "attack"), resource="runic_power"),
@@ -276,8 +360,9 @@ def _fast_reference(profile, folder, character, *, runtime=None, iterations=100,
 
 
 def _fast_inspect(reference, folder, *, include_item=True):
-    folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=True)
+    folder = Path(folder) if folder is not None else None
+    if folder is not None:
+        folder.mkdir(parents=True, exist_ok=True)
     capabilities = _fast_capabilities()
     if not include_item:
         capabilities["actions"] = [row for row in capabilities["actions"]
@@ -285,7 +370,8 @@ def _fast_inspect(reference, folder, *, include_item=True):
         spell_ids = {"outbreak": 77575, "death_coil": 47541, "scourge_strike": 55090}
         for row in capabilities["actions"]:
             row["spell_id"] = row["base_spell_id"] = spell_ids[row["simc_action"]]
-    (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
+    if folder is not None:
+        (folder / "catalogue.json").write_text(json.dumps(capabilities), encoding="utf-8")
     return capabilities
 
 
@@ -311,10 +397,13 @@ def _fast_report(character, score, samples):
 def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
                    seed=20260912, trace=True, mode="controlled", input_times=None,
                    runtime=None, score_offset=0, simulation_config=None, reset_events=None,
-                   on_native_start=None, score=None, rule_observation_request=None, allow_zero=False, burst_plan=None):
+                   on_native_start=None, score=None, rule_observation_request=None, allow_zero=False, burst_plan=None,
+                   report_kind='full', memory_io=False):
     """构造稳定报告，保留 search.optimize 的选择、缓存和发布逻辑。"""
     folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=True)
+    memory = memory_io or getattr(runtime, 'memory_execution', False)
+    if not memory:
+        folder.mkdir(parents=True, exist_ok=True)
     if on_native_start is not None:
         on_native_start()
     input_times = list(range(0, 180000, 300)) if input_times is None else list(input_times)
@@ -328,7 +417,8 @@ def _fast_evaluate(profile, candidate, folder, *, character, iterations=100,
     report = _fast_report(character, score, samples)
     targets = (simulation_config or {}).get('target_count', 1)
     report['sim']['targets'] = [dict(report['sim']['targets'][0]) for _ in range(targets)]
-    (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")
+    if not memory:
+        (folder / "native.json").write_text(json.dumps(report), encoding="utf-8")
     trace_rows = []
     if trace:
         trace_rows = [

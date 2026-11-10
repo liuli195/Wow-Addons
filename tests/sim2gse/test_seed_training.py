@@ -172,7 +172,7 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
     from copy import deepcopy
     from unittest.mock import Mock
     import result_store,seed_training
-    source=dict(label='ABC-C',spec='unholy',class_name='deathknight',source='plugin:Smolbreather',
+    source=dict(source_id='manual:registration-fixture',label='ABC-C',spec='unholy',class_name='deathknight',source='plugin:Smolbreather',
         original='15 ordered spell ids',instructions='continuous unmodified key',semantic='rewritten',
         changes=['remove movement'],family='plugin-opener',core=[['putrefy'],['death_coil']],
         program=[['outbreak'],['putrefy'],['death_coil']])
@@ -181,6 +181,10 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
     writes=Mock()
     monkeypatch.setattr(result_store,'write',writes)
     monkeypatch.setattr(seed_training,'registry_rows',Mock(return_value=[]))
+    with pytest.raises(ValueError, match='新增材料必须提供明确适用组'):
+        seed_training.register('/memory/cleaned.json')
+    source['allowed_groups'] = [dict(specialization_id=252,hero_talent='rider_of_the_apocalypse',
+                                     target_type='single_target',target_count=1)]
     first=seed_training.register('/memory/cleaned.json')
     table,key,rows=writes.call_args.args
     assert (table,key)==('seed_candidates','registry') and len(rows)==1 and rows[0]['label']=='ABC-C'
@@ -188,6 +192,10 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
     writes.reset_mock()
     assert seed_training.register('/memory/cleaned.json')==first
     writes.assert_not_called()
+    scope = source.pop('allowed_groups')
+    with pytest.raises(ValueError, match='新增材料必须提供明确适用组'):
+        seed_training.register('/memory/cleaned.json')
+    source['allowed_groups'] = scope
     source.pop('changes')
     with pytest.raises(ValueError,match='清洗件必须包含'): seed_training.register('/memory/cleaned.json')
     writes.assert_not_called()
@@ -448,6 +456,8 @@ def test_training_prepare_keeps_history_missing_and_read_failure_semantics(monke
         assert {row['source_id'] for row in rows if row.get('active',True)}=={'registered','history:valid'}
         assert {call.args[2] for call in fallback.call_args_list}=={'valid_candidate','affected_candidate'}
         assert writer.call_count==1
+        # Every newly synchronized row must satisfy the nullable JSON column contract.
+        assert all(row['allowed_groups'] is None for row in rows if row['source_id'].startswith('history:'))
     assert registry==before
 
 
@@ -550,7 +560,7 @@ def public_training_memory(monkeypatch, training_cli, prepared_input, memory_ga)
     monkeypatch.setattr(Path, 'glob', lambda path, pattern: iter(
         [path for path in files if path.name == 'identity.json']
         if pattern == '*/*/identity.json' else []))
-    def open_store(folder): return case.store
+    def open_store(folder, **kwargs): return case.store
     open_store.load_state = search.TaskStore.load_state
     monkeypatch.setattr(population_training, 'TaskStore', open_store)
     import sqlite3
@@ -743,6 +753,29 @@ def test_three_public_training_calls_keep_latest_checkpoint_observation_when_omi
     assert case.files[manifest_path] == frozen
     assert case.calls[0][2]['input_times'][:3] == [0, 250, 500]
     assert all(call[2]['reset_events'] == [(500, 'target')] for call in case.calls)
+
+
+def test_public_training_command_releases_registry_lock_before_native_scoring(
+        monkeypatch, public_training_memory, capsys):
+    from contextlib import contextmanager
+    import seed_training
+    import sequence
+    held = [False]
+    @contextmanager
+    def registry_lock():
+        held[0] = True
+        try:
+            yield
+        finally:
+            held[0] = False
+    evaluate = sequence.evaluate
+    def native_boundary(*args, **kwargs):
+        assert not held[0], '正式评分不能占住材料登记锁'
+        return evaluate(*args, **kwargs)
+    monkeypatch.setattr(seed_training, 'writer_lock', registry_lock)
+    monkeypatch.setattr(sequence, 'evaluate', native_boundary)
+    assert seed_training.main(['--project', '/memory', 'run', '--template', str(public_training_memory.template),
+        '--targets', '1', '--workspace', '/memory/work', '--legacy']) == 0
 
 
 def test_training_memory_io_recognizes_windows_paths(public_training_memory):

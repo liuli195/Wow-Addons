@@ -95,7 +95,10 @@ def test_postcheck_reads_the_real_incremental_archive_layout_without_writing(mon
 
 
 @pytest.mark.parametrize('tamper_plan', [False, True])
-def test_postcheck_verifies_current_ga_to_page_evidence_and_rejects_changed_plan(memory_ga, monkeypatch, tamper_plan):
+@pytest.mark.parametrize('storage_version', [2, 3])
+@pytest.mark.parametrize('serialized_snapshot', [False, True])
+def test_postcheck_verifies_current_ga_to_page_evidence_and_rejects_changed_plan(
+        memory_ga, monkeypatch, tamper_plan, storage_version, serialized_snapshot):
     from copy import deepcopy
     import hashlib
     import sqlite3
@@ -142,8 +145,47 @@ def test_postcheck_verifies_current_ga_to_page_evidence_and_rejects_changed_plan
         simulation_config=page.ready['simulation_config'], config=page.search_config,
         batch_keys=list(page.reports), burst=environment['burst'])
     reports = {**trained.reports, **page.reports}
+    metadata = {}
     monkeypatch.setattr(result_store, 'read_many', lambda table, keys, **kwargs:
-                        [deepcopy(reports[value]) for value in keys if value in reports])
+                        [deepcopy(reports[value]) for value in keys if value in reports] if table == 'batches'
+                        else [deepcopy(row) for value in keys for row in metadata.get((table, value), [])])
+    if storage_version == 3:
+        from types import SimpleNamespace
+        from population_training import _publish_seed_evidence
+        from search import digest
+        monkeypatch.setattr(result_store, 'read_records', lambda table, group, **kwargs:
+                            deepcopy(metadata.get((table, group), [])))
+        monkeypatch.setattr(result_store, 'write', lambda table, group, rows, **kwargs:
+                            metadata.__setitem__((table, group), deepcopy(rows)))
+        for case, group in ((trained, 'training-archive'), (page, 'page-archive')):
+            archive = [dict(run_id=case.store.state['run_id'], candidate_key=row['key'], search_order=index,
+                program=row['program'], program_digest=digest(row['program']), score=row['score'],
+                batches=row['batches'], candidate=None) for index, row in enumerate(case.store.state['archive'])]
+            metadata['search_records', group] = archive
+            case.store.state.update(execution_storage_version=3, evidence_storage=dict(version=3,
+                archive_group=group, archive_digest=digest(archive), archive_count=len(archive), report_groups={}))
+        for identity in ga['finalists']:
+            for batches in ga['finals'][identity].values():
+                for row in batches.values():
+                    cached = trained.store.batch(row['batch_key'])
+                    cached.update(storage_version=3, storage_group_key=row['batch_key'])
+                    trained.store.put_batch(row['batch_key'], cached, verified=True)
+                    trained.store.state['evidence_storage']['report_groups'][row['batch_key']] = row['batch_key']
+        source = SimpleNamespace(state=trained.store.state, batch=trained.store.batch,
+                                 memory_execution=True, published_report_receipts={})
+        _publish_seed_evidence(ga, source, trained.manifest, trained.character, dict(trained.ready, text=raw))
+        selected = _selected(ga, source, trained.manifest, trained.character, trained.ready, key)
+        page.store.state['seed_selected_snapshot'] = selected
+        run['search_metrics'] = dict(evidence_storage=page.store.state['evidence_storage'])
+        run['batch_keys'] = [key for key, row in page.reports.items() if row['purpose'] != 'search']
+        scene['batches'] = [dict(key=row['batch_key'], group='page-archive') for row in coarse]
+        trained.store.checkpoint()
+        page.store.checkpoint()
+    if serialized_snapshot:
+        from seed_training import SELECTED_V2_SCHEMA
+        page.store.state['seed_selected_snapshot'] = [{name: json.dumps(value) if
+            SELECTED_V2_SCHEMA.get(name) == 'JSON' else value for name, value in row.items()} for row in selected]
+        page.store.checkpoint()
     original_connect = sqlite3.connect
     def connect(path, **kwargs):
         assert path.endswith('?mode=ro') and kwargs == {'uri': True}

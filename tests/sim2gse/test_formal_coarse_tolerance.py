@@ -42,7 +42,7 @@ def memory_case(monkeypatch, *, fault='score', formal=True, phase='breed', stop=
                 probabilities=dict(target_mutation_probability=0., random_mutation_probability=1., crossover_probability=0.))))
     if formal:
         state['formal_search'] = dict(coarse_failure_policy=POLICY)
-    store = SimpleNamespace(state=state, lock=threading.RLock(), report_buffer=[],
+    store = SimpleNamespace(state=state, lock=threading.RLock(), report_buffer=[], memory_execution=False,
         diagnostic_logging=False, receipts={}, calls=[], saved=None, stop=stop)
     def checkpoint():
         store.saved = deepcopy((store.state, store.receipts))

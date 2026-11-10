@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import replace
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -36,6 +37,54 @@ def _cross(left, right, rng, *, observation=None):
         return False
     a[cut:], b[cut:] = deepcopy(b[cut:]), deepcopy(a[cut:])
     return True
+
+
+def select_parents(population, count, rng, tournament_size):
+    """Production tournament selection, also used by the bounded pilot."""
+    return [max((rng.choice(population) for _ in range(tournament_size)),
+                key=lambda member: member.fitness) for _ in range(count)]
+
+
+def vary_offspring(population, toolbox, *, rng, config, capabilities, reference,
+                   legal, check, observe, flags=(), counts=None):
+    """The shared target/random/crossover gates; no global DEAP random changes."""
+    from breeding import target_mutation, random_operations
+    children = [toolbox.clone(parent) for parent in population]
+    for child in children:
+        check()
+        if rng.random() < config['target_mutation_probability']:
+            if counts is not None: counts['target_triggered'] += 1
+            changed, details = target_mutation(list(child), capabilities, rng, reference,
+                child.action_summary, legal)
+            before = deepcopy(list(child))
+            child[:] = changed
+            observe(before, child, dict(sampled_mutation='target', **details))
+            if child != before:
+                if counts is not None: counts['target_changed'] += 1
+                del child.fitness.values
+        if rng.random() < config['random_mutation_probability']:
+            if counts is not None: counts['random_triggered'] += 1
+            operations = random_operations(child, capabilities, flags)
+            if operations:
+                before = deepcopy(list(child))
+                details = {}
+                child[:] = mutate(child, capabilities, rng, operation_override=rng.choice(operations),
+                    observation=details, reset_flags=flags)
+                observe(before, child, dict(details, mutation_route='random'))
+                if child != before:
+                    if counts is not None: counts['random_changed'] += 1
+                    del child.fitness.values
+    for index in range(1, len(children), 2):
+        if rng.random() < config['crossover_probability']:
+            if counts is not None: counts['crossover_triggered'] += 1
+            before = (deepcopy(list(children[index-1])), deepcopy(list(children[index])))
+            toolbox.mate(children[index-1], children[index])
+            if counts is not None and any(child != original for child, original in zip(children[index-1:index+1], before)):
+                counts['crossover_changed'] += 1
+            for child, original in zip(children[index-1:index+1], before):
+                if child != original:
+                    del child.fitness.values
+    return children
 
 
 def _stage_plan(config, seed, *, scenarios=SCENARIOS):
@@ -121,8 +170,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
         child.parent_program, child.crossed = deepcopy(list(parent)), False
         return child
     def select(population, count):
-        return [max((rng.choice(population) for _ in range(config['tournament_size'])),
-                    key=lambda member: member.fitness) for _ in range(count)]
+        return select_parents(population, count, rng, config['tournament_size'])
     def mate(left, right):
         before = deepcopy(list(left)), deepcopy(list(right))
         details = {} if observe_search else None
@@ -177,46 +225,13 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
     last_variation_counts = None
     def three_gates(population, toolbox, cross_probability, unused_probability=None):
         nonlocal last_variation_counts
-        from breeding import target_mutation, random_operations
         counts = {route + suffix: 0 for route in ('target', 'random', 'crossover')
                   for suffix in ('_triggered', '_changed')} if store.diagnostic_logging else None
-        children = [toolbox.clone(parent) for parent in population]
-        for child in children:
-            runtime.check()
-            if rng.random() < config['target_mutation_probability']:
-                if counts is not None: counts['target_triggered'] += 1
-                changed, details = target_mutation(list(child), capabilities, rng, reference,
-                    child.action_summary, legal_for_guidance)
-                before = deepcopy(list(child))
-                child[:] = changed
-                observe_child(before, child, dict(sampled_mutation='target', **details))
-                if child != before:
-                    if counts is not None: counts['target_changed'] += 1
-                    del child.fitness.values
-            if rng.random() < config['random_mutation_probability']:
-                if counts is not None: counts['random_triggered'] += 1
-                flags = tuple(dict.fromkeys(kind for _, kind in store.state['config']['reset_events']
-                    if kind in ('target', 'combat', 'shift', 'ctrl', 'alt')))
-                operations = random_operations(child, capabilities, flags)
-                if operations:
-                    before = deepcopy(list(child))
-                    details = {}
-                    child[:] = mutate(child, capabilities, rng, operation_override=rng.choice(operations),
-                        observation=details, reset_flags=flags)
-                    observe_child(before, child, dict(details, mutation_route='random'))
-                    if child != before:
-                        if counts is not None: counts['random_changed'] += 1
-                        del child.fitness.values
-        for index in range(1, len(children), 2):
-            if rng.random() < cross_probability:
-                if counts is not None: counts['crossover_triggered'] += 1
-                before = (deepcopy(list(children[index-1])), deepcopy(list(children[index])))
-                toolbox.mate(children[index-1], children[index])
-                if counts is not None and any(child != original for child, original in zip(children[index-1:index+1], before)):
-                    counts['crossover_changed'] += 1
-                for child, original in zip(children[index-1:index+1], before):
-                    if child != original:
-                        del child.fitness.values
+        children = vary_offspring(population, toolbox, rng=rng, config=config,
+            capabilities=capabilities, reference=reference, legal=legal_for_guidance,
+            check=runtime.check, observe=observe_child,
+            flags=tuple(dict.fromkeys(kind for _, kind in store.state['config']['reset_events']
+                if kind in ('target', 'combat', 'shift', 'ctrl', 'alt'))), counts=counts)
         last_variation_counts = counts
         return children
     variation = three_gates if guided else legacy_variation
@@ -319,7 +334,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
             if policy:
                 ga['effective_population_size'] = len(ga['population'])
             ga.update(phase='breed', baseline=baseline())
-            store.checkpoint()
+            store.checkpoint(**(dict(boundary='initial') if store.memory_execution else {}))
         while ga['phase'] == 'breed':
             runtime.check()
             if policy and (type(ga.get('effective_population_size')) is not int
@@ -385,7 +400,8 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                 if timeline is not None and store.state.get('formal_search'):
                     timeline.stop('stagnation')
                     timeline.mark('normal_retest_started')
-            store.checkpoint()
+            store.checkpoint(**(dict(boundary='retest' if ga['phase'] == 'retest' else 'generation')
+                                if store.memory_execution else {}))
         archive = {row['key']: row for row in store.state['archive']}
         if ga['phase'] == 'retest':
             finalists = ga['finalists']
@@ -563,12 +579,15 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
         profile.write_text(ready['text'], encoding='utf-8')
     elif profile.read_text(encoding='utf-8') != ready['text']:
         raise ValueError('GA冻结标准角色副本已变化')
-    store = TaskStore(folder)
+    store = TaskStore(folder, **(dict(memory_execution=True,
+        checkpoint_interval_seconds=ready['config']['checkpoint_interval_seconds'])
+        if ready['config'].get('memory_execution') else {}))
     character = replace(ready['character'], spec_id=context['native']['identity']['spec_id'],
                         race=context['native']['identity']['race'])
     execution_config = ready['config']
     runtime = TaskRuntime(float('inf'), cancel_event=cancel_event,
                           diagnostic_logging=execution_config['diagnostic_logging'])
+    runtime.profile_texts = {str(profile.resolve()): ready['text']}
     timeline = None
     if execution_config['search_timeline']:
         from search_timeline import Timeline
@@ -586,6 +605,9 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
                 breeding_reference=manifest.get('breeding_reference'),
                 ga=dict(algorithm=ALGORITHM, phase='initial', generation=0, stagnant=0,
                         population=[], pending=None, rng=rng.getstate(), finals={}))
+            if store.memory_execution:
+                from result_store import seed_selected_revision
+                store.state['seed_selection_base'] = seed_selected_revision(scope)
         if store.state.get('breeding_reference') != manifest.get('breeding_reference'):
             raise ValueError('训练参考摘要与冻结任务不符')
         if (store.state.get('ga', {}).get('algorithm') != ALGORITHM
@@ -610,14 +632,22 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
                 training_runner=_evolution(store, context['capabilities'], runtime, config))
             if timeline is not None:
                 timeline.stop('stagnation')
+            if store.memory_execution:
+                store.flush_reports(final=True)
+                _publish_seed_evidence(ga, store, manifest, character, ready)
             selected = _selected(ga, store, manifest, character, ready, configuration_key)
             runtime.check()
             # Evidence verification precedes the only current-snapshot replacement.
             result_store = __import__('result_store')
-            result_store.write('seed_selected', scope, selected, schema=seeds.SELECTED_V2_SCHEMA)
+            if store.memory_execution:
+                result_store.publish_seed_selected(scope, selected, store.state['seed_selection_base'],
+                    schema=seeds.SELECTED_V2_SCHEMA)
+            else:
+                result_store.write('seed_selected', scope, selected, schema=seeds.SELECTED_V2_SCHEMA)
             ga['phase'] = 'published'
             store.state['status'] = 'completed'
-            store.checkpoint()
+            if not store.memory_execution:
+                store.checkpoint()
             if timeline is not None:
                 timeline.saved('completed')
         return dict(status='completed', algorithm=ALGORITHM, breeding=ga.get('breeding'),
@@ -629,7 +659,7 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
             ineligible=ga.get('ineligible', {}), **syntax_result)
     except BaseException as error:
         store.state.update(status='paused', error=str(error))
-        store.checkpoint()
+        store.checkpoint(**(dict(boundary='pause') if store.memory_execution else {}))
         if timeline is not None:
             status = 'cancelled' if isinstance(error, (TaskCancelled, KeyboardInterrupt)) else 'failed'
             timeline.stop(status)
@@ -658,6 +688,9 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
                 if not cached or cached.get('status') != 'success':
                     raise ValueError('发布缺少可靠复测批次')
                 request = cached['request']
+                if cached.get('storage_version') == 3:
+                    row.update(storage_version=3, storage_group_key=cached['storage_group_key'])
+                    row.pop('cached', None)
                 expected_seed = stage_plan[scenario]['seeds'][index]
                 if (digest(request) != row['batch_key'] or request['condition'] != condition
                         or request['behavior_identity'] != identity or request['purpose'] != scenario
@@ -678,6 +711,10 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
             continue
         loss = max(((nominal - results[name]['dps']) / nominal for name in scenarios[1:]), default=0.)
         qualified.append(dict(identity=identity, nominal=nominal, loss=loss, scenarios=results))
+    if getattr(store, 'memory_execution', False) and receipts and all(
+            getattr(store, 'published_report_receipts', {}).get(key) == digest(cached)
+            for key, (cached, _, _) in receipts.items()):
+        return qualified
     missing_locations = [key for key, (cached, _, _) in receipts.items()
                          if not cached.get('storage_group_key')]
     locations = (report_locations(missing_locations)
@@ -688,8 +725,9 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
         groups.setdefault(group, {})[key] = receipt
     for group, targets in groups.items():
         saved_rows = read_many('batches', [group])
-        if len(saved_rows) > 12:
-            raise ValueError('发布报告组超过十二份；旧四条保持不变')
+        maximum = 64 if all(row[0].get('storage_version') == 3 for row in targets.values()) else 12
+        if len(saved_rows) > maximum:
+            raise ValueError('发布报告组超过对应版本上限；旧四条保持不变')
         found = set()
         for saved in saved_rows:
             key = saved.get('batch_key')
@@ -708,11 +746,97 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
     return qualified
 
 
+_SEED_EVIDENCE_JSON = ('manifest', 'capabilities', 'ga', 'receipts', 'storage', 'character', 'configuration_key')
+
+
+def _read_seed_evidence(group, checksum):
+    import result_store
+    rows = result_store.read_records('seed_evidence', group)
+    if len(rows) != 1:
+        raise ValueError('新版训练完整来源证据缺失')
+    record = dict(rows[0])
+    for key in _SEED_EVIDENCE_JSON:
+        if isinstance(record.get(key), str):
+            record[key] = json.loads(record[key])
+    if digest(record) != checksum:
+        raise ValueError('新版训练完整来源证据摘要不符')
+    return record
+
+
+def _publish_seed_evidence(ga, store, manifest, character, ready):
+    """只保存一次冻结输入与完整复测目录；原生报告仍保留原有结构。"""
+    import result_store
+    final_keys = {row['batch_key'] for identity in ga['finalists']
+                  for batches in ga['finals'][identity].values() for row in batches.values()}
+    receipts = {key: store.batch(key) for key in sorted(final_keys)}
+    finals = deepcopy(ga['finals'])
+    for identity in ga['finalists']:
+        for batches in finals[identity].values():
+            for row in batches.values():
+                cached = receipts[row['batch_key']]
+                row.update(storage_version=3, storage_group_key=cached['storage_group_key'])
+                row.pop('cached', None)
+    storage = {key: value for key, value in store.state['evidence_storage'].items()
+               if key not in ('seed_source_group', 'seed_source_digest')}
+    record = dict(run_id=store.state['run_id'], condition=digest(manifest),
+        configuration_key=store.state['configuration_key'],
+        profile_text=ready['text'], manifest=manifest,
+        capabilities=store.state['capabilities'],
+        character=dict(spec_id=character.spec_id, race=character.race),
+        ga=dict(finalists=ga['finalists'], finals=finals,
+                **(dict(breeding=ga['breeding']) if ga.get('breeding') else {})),
+        receipts=receipts, storage=storage)
+    checksum = digest(record)
+    group = store.state['run_id'] + '_s' + checksum[:20]
+    if not result_store.read_records('seed_evidence', group):
+        schema = dict(run_id='VARCHAR', condition='VARCHAR', profile_text='VARCHAR',
+                      **dict.fromkeys(_SEED_EVIDENCE_JSON, 'JSON'))
+        result_store.write('seed_evidence', group, [record], schema=schema)
+    _read_seed_evidence(group, checksum)
+    store.state['evidence_storage'].update(seed_source_group=group, seed_source_digest=checksum)
+
+
+def verify_selected_evidence(rows):
+    """独立读取完整来源和全部入围者报告，重新选出四条；不补算、不写入。"""
+    from types import SimpleNamespace
+    import result_store
+    from seed_training import decode, template_character
+    decoded = [{key: decode(value) if key in ('configuration_key', 'program', 'engines', 'evaluation')
+                else value for key, value in row.items()} for row in rows]
+    storage = decoded[0]['evaluation']['evidence_storage']
+    if any(row['evaluation']['evidence_storage'] != storage for row in decoded):
+        raise ValueError('新版训练四条的完整来源证据不一致')
+    record = _read_seed_evidence(storage['seed_source_group'], storage['seed_source_digest'])
+    if any(row['configuration_key'] != record['configuration_key'] for row in decoded):
+        raise ValueError('新版训练四条分组与冻结完整来源证据不符')
+    manifest = record['manifest']
+    condition = digest(manifest)
+    if (record['condition'] != condition or any(row['condition'] != condition for row in decoded)
+            or record['storage'] != {key: value for key, value in storage.items()
+                                   if key not in ('seed_source_group', 'seed_source_digest')}
+            or hashlib.sha256(record['profile_text'].encode('utf-8')).hexdigest()
+               != manifest['environment']['template']
+            or manifest['stage_plan'] != _stage_plan(manifest['training_config'], manifest['seed'])):
+        raise ValueError('新版训练冻结输入与完整来源证据不符')
+    archive = result_store.read_search_records(storage, record['run_id'], condition=condition)
+    store = SimpleNamespace(memory_execution=True, published_report_receipts={},
+        state=dict(archive=[dict(key=row['candidate_key'], program=row['program']) for row in archive],
+                   evidence_storage=storage), batch=lambda key: record['receipts'].get(key))
+    character = replace(template_character(record['profile_text']), **record['character'])
+    ready = dict(template_sha=manifest['environment']['template'], engines=manifest['environment']['engines'],
+                 simulation_config=manifest['environment']['simulation'],
+                 context=dict(capabilities=record['capabilities']))
+    selected = _selected(record['ga'], store, manifest, character, ready, record['configuration_key'])
+    if digest(selected) != digest(decoded):
+        raise ValueError('新版训练四条与完整来源证据重新计算结果不符')
+
+
 def _selected(ga, store, manifest, character, ready, configuration_key):
     from seed_training import SELECTED_V2_SCHEMA
     from program import canonicalize_search_program
     from simulation_config import syntax_receipt
     archive = {row['key']: row for row in store.state['archive']}
+    memory_mode = getattr(store, 'memory_execution', store.state.get('execution_storage_version') == 3)
     condition = digest(manifest)
     qualified = _retest_scores(ga, store, condition=condition,
         stage_plan=manifest['stage_plan'], config=manifest['training_config'], character=character,
@@ -738,12 +862,14 @@ def _selected(ga, store, manifest, character, ready, configuration_key):
             class_name=character.class_name, spec=character.spec, targets=ready['simulation_config']['target_count'],
             program=program, family='ga', score=row['nominal'],
             scores=[item['dps'] for item in row['scenarios']['nominal']['batches']],
-            template_sha256=ready['template_sha'], engines=ready['engines'], contract_version=2,
+            template_sha256=ready['template_sha'], engines=ready['engines'], contract_version=3 if memory_mode else 2,
             evaluation=dict(**(dict(breeding=deepcopy(ga['breeding'])) if ga.get('breeding') else {}),
                 syntax=syntax_receipt(ready['context']['capabilities']['search_syntax']),
                 program_digest=digest(program),
                 scenarios=row['scenarios'], stability_loss=row['loss'],
                 nominal_champion=row['identity'] == nominal[0]['identity'],
                 stable_representative=row['identity'] == stable['identity']))
+        if memory_mode:
+            record['evaluation']['evidence_storage'] = deepcopy(store.state['evidence_storage'])
         result.append(record)
     return result

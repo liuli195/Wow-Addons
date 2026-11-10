@@ -34,6 +34,8 @@ build-and-verify verify --project .
 
 Sim2GSE 普通层在云端直接运行纯计算与真实 SQLite :memory: 状态规则；原生引擎、Windows 进程/锁及浏览器代表由相应环境验收。普通层不能以 DuckDB :memory: 或物理 TaskStore 冒充受保护内存测试。
 
+两次扩大初始种群的独立实验已撤除，不再提供实验命令及专用测试。正式训练共用的繁殖一致性检查保留在 `test_population_training.py`；参考加权补齐30条由 `test_reference_seeds.py` 验证。
+
 Sim2GSE 正式GA搜索及GA预训练使用 `projects/sim2gse/requirements.txt` 中的锁定依赖；已移除自适应选择器专属依赖组和测试。`sim2gse/test_*.py` 仍由统一入口发现，当前真实层仅承诺上文4条核心，普通层保留现存规则检查，不再承诺已删除的公开CLI、恢复或存储故障交叉。PR的 `verify.sim2gse` 仍为 `pr: false`，远端PR通过不替代必要本机验证或真实模拟验收。
 
 PR（拉取请求）中的代码、配置和工作流变更运行素材构建及全部 PR 可执行验证；仅配置中登记的文档或 MySpec（自有规格）路径变更按目标分支固定提交运行匹配检查。PR 不准备或缓存 SimulationCraft（战斗模拟器）引擎。缺文件、缺工具、断言失败和超时均返失败，不将跳过记为通过。依赖私人角色、本机研究引擎或历史报告的检查作为本机验收，在对应项目改动后按下方入口单独执行并记录结果。

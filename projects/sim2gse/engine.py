@@ -128,7 +128,7 @@ def prepare_loop(native, character, folder, runtime, *, definition=None, interva
     """页面、训练及复测共用的原生目录和审核爆发准备。"""
     from dataclasses import replace
     folder = Path(folder)
-    all_capabilities = inspect(native, folder / 'capabilities')
+    all_capabilities = inspect(native, None if getattr(runtime, 'memory_execution', False) else folder / 'capabilities')
     from action_summary import scoped
     if definition is None:
         if 'action_summary' in native:
@@ -148,14 +148,24 @@ def prepare_loop(native, character, folder, runtime, *, definition=None, interva
 
 
 def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_seconds=30,
-        simulation_config=None, on_start=None):
+        simulation_config=None, on_start=None, profile_text=None, report_kind='full'):
     runtime = runtime or TaskRuntime(timeout_seconds)
     simulation_config = config_for(simulation_config)
     executable, manifest = identity(mode, runtime)
-    folder.mkdir(parents=True, exist_ok=True)
+    memory_io = profile_text is not None
+    if report_kind not in ('full', 'summary'):
+        raise ValueError('未知原生报告种类')
+    if not memory_io:
+        folder.mkdir(parents=True, exist_ok=True)
     options = tuple(options)
+    if memory_io:
+        options = tuple(option for option in options if not option.startswith(('json2=', 'output=')))
+        options += ('json2=@sim2gse-' + report_kind, 'output=' + os.devnull)
+    if hasattr(runtime, 'reserve_native'):
+        requested = [option.split('=', 1)[1] for option in options if option.startswith('iterations=')]
+        runtime.reserve_native(int(requested[-1]) if requested else 100)
     reports = [] if any(option.startswith('json2=') for option in options) else ['json2=native.json']
-    command = [str(executable), os.path.relpath(profile, folder), *COMMON, *engine_options(simulation_config),
+    command = [str(executable), '-' if memory_io else os.path.relpath(profile, folder), *COMMON, *engine_options(simulation_config),
                'iterations=100', 'max_time=180',
                *reports,
                'output=' + ('native.txt' if runtime.diagnostic_logging else os.devnull),
@@ -163,25 +173,41 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
     try:
         started = diagnostic_start() if runtime.diagnostic_logging else None
         try:
-            proc = run_command(command, folder, timeout_seconds=timeout_seconds, runtime=runtime,
-                               on_start=on_start)
+            proc = run_command(command, ROOT if memory_io else folder, timeout_seconds=timeout_seconds, runtime=runtime,
+                               on_start=on_start, **(dict(input_data=profile_text.encode('utf-8'),
+                                   output_limit=64 * 1024 * 1024) if memory_io else {}))
         finally:
             if runtime.diagnostic_logging:
                 diagnostic_finish(runtime, 'native.execute', started)
     except ProcessTimeout as error:
-        if runtime.diagnostic_logging:
+        if runtime.diagnostic_logging and not memory_io:
             (folder / 'process.log').write_text(str(error), encoding='utf-8')
         raise CandidateError('原生引擎运行超时，已停止本次进程') from error
     except (TaskCancelled, BudgetExceeded):
         raise
-    log = (proc.stdout + proc.stderr).decode('utf-8', errors='replace')
-    if runtime.diagnostic_logging:
+    try:
+        log = (proc.stdout + proc.stderr).decode('utf-8', errors='strict' if memory_io else 'replace').replace('\r\n', '\n')
+    except UnicodeDecodeError as error:
+        raise NativeEvaluationError('原生内存输出不是有效UTF-8') from error
+    if runtime.diagnostic_logging and not memory_io:
         (folder / 'process.log').write_text(log, encoding='utf-8')
         (folder / 'invocation.json').write_text(json.dumps(dict(command=command, identity=manifest,
                                                                exit_code=proc.returncode,
                                                                elapsed_seconds=proc.elapsed_seconds), indent=2), encoding='utf-8')
     if proc.returncode:
         raise NativeEvaluationError('原生引擎失败: ' + log[-2000:])
+    if memory_io:
+        before, marker, body = log.partition('\nS2GJSON_BEGIN\n')
+        encoded, end, after = body.partition('\nS2GJSON_END\n')
+        if not marker or not end or '\nS2GJSON_BEGIN\n' in after:
+            raise NativeEvaluationError('原生内存报告缺失或边界无效')
+        try:
+            report = json.loads(encoded)
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise NativeEvaluationError('原生内存报告不是有效JSON') from error
+        if not isinstance(report, dict) or not isinstance(report.get('sim'), dict):
+            raise NativeEvaluationError('原生内存报告缺少模拟对象')
+        return dict(log=before + '\n' + after, report=report, report_bytes=len(encoded.encode('utf-8')))
     return log
 
 
@@ -415,9 +441,9 @@ def check_report(report, character, iterations, *, simulation_config=None, allow
                               data_version=sim['options']['dbc']['Live']['wow_version']))
 
 
-def _profile_with_import_queries(profile, folder, spell_ids, spell_names=()):
+def _profile_with_import_queries(profile, folder, spell_ids, spell_names=(), *, profile_text=None):
     if not spell_ids and not spell_names:
-        return profile
+        return profile if profile_text is None else profile_text
     if (not isinstance(spell_ids, (list, tuple)) or len(spell_ids) > 256
             or any(type(spell_id) is not int or spell_id <= 0 for spell_id in spell_ids)):
         raise ValueError('GSE 动作核对的法术编号无效')
@@ -426,9 +452,8 @@ def _profile_with_import_queries(profile, folder, spell_ids, spell_names=()):
                    or any(ord(character) < 32 or ord(character) == 127 for character in name)
                    for name in spell_names)):
         raise ValueError('GSE 动作核对的法术名称无效')
-    text = Path(profile).read_text(encoding='utf-8')
+    text = Path(profile).read_text(encoding='utf-8') if profile_text is None else profile_text
     probe_profile = Path(folder) / 'import-action-query.simc'
-    probe_profile.parent.mkdir(parents=True, exist_ok=True)
     separator = '' if not text or text.endswith(('\n', '\r')) else '\n'
     query_options = []
     if spell_ids:
@@ -437,23 +462,33 @@ def _profile_with_import_queries(profile, folder, spell_ids, spell_names=()):
         names = sorted({name.strip() for name in spell_names}, key=str.casefold)
         encoded = ','.join(name.encode('utf-8').hex() for name in names)
         query_options.append('sim2gse_action_names_hex=' + encoded)
-    probe_profile.write_text(text + separator + '\n'.join(query_options) + '\n', encoding='utf-8')
+    text += separator + '\n'.join(query_options) + '\n'
+    if profile_text is not None:
+        return text
+    probe_profile.parent.mkdir(parents=True, exist_ok=True)
+    probe_profile.write_text(text, encoding='utf-8')
     return probe_profile
 
 
 def reference(profile, folder, character, *, runtime=None, iterations=100, seed=20260912,
-              simulation_config=None, import_spell_ids=(), import_spell_names=(), summary_excluded_spell_ids=()):
+              simulation_config=None, import_spell_ids=(), import_spell_names=(), summary_excluded_spell_ids=(),
+              profile_text=None, report_sink=None):
     folder = Path(folder)
     runtime = runtime or TaskRuntime()
-    probe_profile = _profile_with_import_queries(profile, folder, import_spell_ids, import_spell_names)
+    if profile_text is None and getattr(runtime, 'memory_execution', False):
+        profile_text = Path(profile).read_text(encoding='utf-8')
+    memory_io = profile_text is not None
+    probe_profile = _profile_with_import_queries(profile, folder, import_spell_ids, import_spell_names,
+        **(dict(profile_text=profile_text) if memory_io else {}))
     if any(type(i) is not int or i <= 0 for i in summary_excluded_spell_ids):
         raise ValueError('成功摘要爆发排除身份无效')
-    run(profile, folder, options=[f'iterations={iterations}', f'seed={seed}',
+    response = run(profile, folder, options=[f'iterations={iterations}', f'seed={seed}',
         'sim2gse_summary_buttons=@apl',
         'sim2gse_summary_exclude=' + '/'.join(f'spell:{i}' for i in sorted(set(summary_excluded_spell_ids))),
-        'json2=native.pending.json'], runtime=runtime, simulation_config=simulation_config)
+        'json2=native.pending.json'], runtime=runtime, simulation_config=simulation_config,
+        **(dict(profile_text=profile_text) if memory_io else {}))
     try:
-        report = json.loads((folder / 'native.pending.json').read_text(encoding='utf-8'))
+        report = response['report'] if memory_io else json.loads((folder / 'native.pending.json').read_text(encoding='utf-8'))
     except (OSError, ValueError) as error:
         raise ValueError('原生参考报告缺失或不是有效 JSON') from error
     if 'dps' not in player_report(report, character)['collected_data']:
@@ -466,7 +501,10 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
     result['action_summary'] = checked(player.get('sim2gse_action_summary'), result['samples'],
         expected_scope=dict(policy='@apl', controlled=False, windows='',
                             excluded={f'spell:{i}': True for i in summary_excluded_spell_ids}))
-    replace_file(folder / 'native.pending.json', folder / 'native.json')
+    if report_sink is not None:
+        report_sink.update(report)
+    if not memory_io:
+        replace_file(folder / 'native.pending.json', folder / 'native.json')
     result['action_sequence'] = player['collected_data'].get('action_sequence', [])
     result['precombat_sequence'] = player['collected_data'].get('action_sequence_precombat', [])
     result['static_snapshot'] = player.get('sim2gse_static_snapshot')
@@ -480,10 +518,11 @@ def reference(profile, folder, character, *, runtime=None, iterations=100, seed=
     result['import_action_candidates'] = []
     if import_spell_ids or import_spell_names:
         probe_folder = folder / 'import_action_probe'
-        run(probe_profile, probe_folder, options=['iterations=1', 'max_time=1'],
-            runtime=runtime, simulation_config=simulation_config)
+        response = run(None if memory_io else probe_profile, probe_folder, options=['iterations=1', 'max_time=1'],
+            runtime=runtime, simulation_config=simulation_config,
+            **(dict(profile_text=probe_profile) if memory_io else {}))
         try:
-            probe_report = json.loads((probe_folder / 'native.json').read_text(encoding='utf-8'))
+            probe_report = response['report'] if memory_io else json.loads((probe_folder / 'native.json').read_text(encoding='utf-8'))
         except (OSError, ValueError) as error:
             raise ValueError('原生动作查询报告缺失或不是有效 JSON') from error
         probe_player = player_report(probe_report, character)

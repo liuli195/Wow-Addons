@@ -120,12 +120,30 @@ TRAINING_DEFAULTS = dict(max_processes=5, max_trainings=4, coarse_iterations=32,
     retest_batches=3, retest_iterations=128, stagnation_generations=2, top_k=8,
     tournament_size=3, crossover_probability=0.3, target_mutation_probability=0.8, random_mutation_probability=0.3)
 
+REFERENCE_SEED_DEFAULTS = dict(reference_seed_mode='disabled', reference_seed_target=30)
+
+
+def load_reference_seed_config(path=None, *, document=None):
+    section = (_load_document(path) if document is None else document).get('training', {})
+    if not isinstance(section, dict):
+        raise ValueError('[training] 必须是TOML表')
+    values = dict(REFERENCE_SEED_DEFAULTS,
+                  **{k: v for k, v in section.items() if k in REFERENCE_SEED_DEFAULTS})
+    if values['reference_seed_mode'] not in ('disabled', 'weighted-v1'):
+        raise ValueError('模拟来源生成模式无效')
+    if type(values['reference_seed_target']) is not int or not 1 <= values['reference_seed_target'] <= 30:
+        raise ValueError('模拟来源目标必须为1至30的整数')
+    return values
+
 
 def load_training_config(path: str | Path | BinaryIO | TextIO | None = None, *, max_processes=None, max_trainings=None,
                          _document=None) -> dict:
     """启动读取的GA白名单；普通搜索的资源和采样上限不变。"""
     import math
     section = (_load_document(path) if _document is None else _document).get("training", {})
+    load_reference_seed_config(document={'training': section})
+    if isinstance(section, dict):
+        section = {k: v for k, v in section.items() if k not in REFERENCE_SEED_DEFAULTS}
     if isinstance(section, dict) and 'mutation_probability' in section:
         raise ValueError('训练mutation_probability已退役，请改用target_mutation_probability和random_mutation_probability')
     if not isinstance(section, dict) or set(section) - set(TRAINING_DEFAULTS):
@@ -177,6 +195,8 @@ FORMAL_ALGORITHM_DEFAULTS = dict(max_processes=5, coarse_iterations=32,
 SEARCH_RUNTIME_DEFAULTS = dict(iterations=128, random_seed=20260912, search_timeline=False,
     diagnostic_logging=False, diagnostics='summary', search_observability='full',
     input_interval_ms=300, reset_events=())
+EXECUTION_DEFAULTS = dict(memory_execution=True, checkpoint_interval_seconds=600, memory_limit_mb=8192)
+SEARCH_RUNTIME_DEFAULTS.update(EXECUTION_DEFAULTS)
 SEARCH_DEFAULTS = dict(FORMAL_ALGORITHM_DEFAULTS, **SEARCH_RUNTIME_DEFAULTS)
 
 
@@ -227,10 +247,10 @@ def load_training_search_config(path=None, *, syntax_config=SYNTAX_UNSET, _docum
     if 'mutation_probability' in overrides:
         raise ValueError('训练mutation_probability已退役，请改用训练区的target_mutation_probability和random_mutation_probability')
     unsupported = set(overrides) - {'search_timeline', 'diagnostic_logging', 'diagnostics',
-                                    'search_observability', 'input_interval_ms', 'reset_events'}
+                                    'search_observability', 'input_interval_ms', 'reset_events', *EXECUTION_DEFAULTS}
     if unsupported:
         raise ValueError('预训练不支持搜索参数，请使用专用训练配置: ' + ', '.join(sorted(unsupported)))
-    values = {key: value for key, value in section.items() if key == 'search_timeline'}
+    values = {key: value for key, value in section.items() if key in ('search_timeline', *EXECUTION_DEFAULTS)}
     values.update({key: value for key, value in overrides.items() if value is not None})
     values.setdefault('input_interval_ms', _default_interval_ms)
     if values.get('diagnostic_logging'):

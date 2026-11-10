@@ -13,6 +13,21 @@ SOURCE = ROOT / '.tools/sim2gse-research/gse-f225d4c'
 LUA = ROOT / '.tools/lua-5.1.5/src/lua.exe'
 
 
+def _memory_compile(payload, expected, mode, runtime, on_start=None):
+    expected_bytes = ('return ' + lua_literal(expected)).encode('utf-8')
+    try:
+        proc = run_command([str(LUA), str(Path(__file__).with_suffix('.lua')), str(SOURCE),
+                            '-', '-', mode], ROOT, timeout_seconds=20, runtime=runtime,
+                           on_start=on_start, input_data=(str(len(expected_bytes)).encode() + b'\n'
+                               + expected_bytes + cbor2.dumps(wire_value(payload)).hex().encode('ascii')))
+    except ProcessTimeout as error:
+        raise ValueError('上游编译校验超时，任务已停止') from error
+    log = (proc.stdout + proc.stderr).decode('utf-8', errors='replace')
+    if proc.returncode:
+        raise ValueError('上游编译校验失败: ' + log[-2000:])
+    return log
+
+
 def load_targeting(runtime=None):
     """Load the locked client targeting data used by both checks and export."""
     if runtime is not None:
@@ -224,10 +239,14 @@ def export(blocks, folder, *, identity, runtime=None, program=None, on_lua_start
         sequence['MetaData']['Help'] += '\n爆发按法：' + instructions
     expected = dict(name=name, help=sequence['MetaData']['Help'], steps=upstream_steps, identity=identity,
                     spells={c['spell_id']: c['name'] for b in blocks for c in b if c['kind'] == 'spell'})
-    folder.mkdir(parents=True, exist_ok=True)
+    memory_io = getattr(runtime, 'memory_execution', False)
+    if not memory_io:
+        folder.mkdir(parents=True, exist_ok=True)
 
     def compile(mode):
         runtime.check()
+        if memory_io:
+            return _memory_compile(payload, dict(expected, payload=payload), mode, runtime, on_lua_start)
         input_data = cbor2.dumps(wire_value(payload))
         expected_text = 'return ' + lua_literal(dict(expected, payload=payload))
         if getattr(runtime, 'diagnostic_logging', False):
@@ -299,6 +318,12 @@ def collection(candidates, folder, *, identity, runtime=None):
     text = '!GSE3!' + base64.b64encode(zlib.compress(encoded, wbits=-15)).decode('ascii')
     if decode_import(text)['sequences'] != sequences:
         raise ValueError('集合编码往返改变了成员')
+    if getattr(runtime, 'memory_execution', False):
+        log = _memory_compile(payload, dict(payload=payload, members=members, spells=spells,
+                              identity=identity), 'collection', runtime)
+        if 'PASS\tcollection_import_compile' not in log:
+            raise ValueError('上游集合导入编译校验失败: ' + log[-1000:])
+        return text
     staging_root = ROOT / '.local/sim2gse/codec'
     staging_root.mkdir(parents=True, exist_ok=True)
     folder.mkdir(parents=True, exist_ok=True)

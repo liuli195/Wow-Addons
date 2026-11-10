@@ -1108,6 +1108,17 @@ const {chromium}=require('playwright'),assert=require('node:assert/strict');
         from task import read_task
         destination, _ = next(iter(self.server.tasks.values()))
         children = [read_task(destination / scene) for scene in ('single_target','aoe')]
+        import sqlite3
+        from contextlib import closing
+        from search import TaskStore
+        for scene in ('single_target', 'aoe'):
+            with closing(sqlite3.connect((destination / scene / 'task.sqlite3').as_uri() + '?mode=ro&immutable=1',
+                                         uri=True)) as checkpoint:
+                frozen = TaskStore.load_state(checkpoint)
+            self.assertEqual(frozen['phase'], 'done')
+            self.assertEqual(frozen['status'], 'completed')
+            self.assertEqual(frozen['evidence_storage']['version'], 3)
+            self.assertTrue(frozen['formal_champion_publication_intent'])
         self.assertEqual([child['simulation_config']['target_count'] for child in children], [1,5])
         self.assertNotEqual(children[0]['reference_data_key'],children[1]['reference_data_key'])
         for child in children:

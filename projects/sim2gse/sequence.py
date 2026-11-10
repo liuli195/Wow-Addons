@@ -137,10 +137,12 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
              mode='controlled', input_times=None, gcd_states=None, failed_actions=None,
              failure_events=None, reset_events=None,
              runtime=None, simulation_config=None, on_native_start=None,
-             burst_candidate=None, input_sources=None, allow_zero=False, burst_plan=None):
+             burst_candidate=None, input_sources=None, allow_zero=False, burst_plan=None,
+             memory_io=False, report_kind='full'):
     runtime = runtime or TaskRuntime()
     simulation_config = config_for(simulation_config)
     runtime.check()
+    memory_io = memory_io or getattr(runtime, 'memory_execution', False)
     all_commands = candidate['blocks'] + (burst_candidate['blocks'] if burst_candidate is not None else [])
     for block in all_commands:
         for command in block:
@@ -214,7 +216,8 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     indices = '/'.join('0' if not block else '+'.join(str(pool.index(name) + 1) for name in block)
                        for block in runtime_blocks)
     folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=True)
+    if not memory_io:
+        folder.mkdir(parents=True, exist_ok=True)
     generated = folder / 'input.simc'
     feedback = ('' if gcd_states is None else
                 'sim2gse_gcd_states=' + '/'.join(f'{start},{duration}'
@@ -266,8 +269,17 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
             rows.append(f"{step}:" + ','.join(str(pool.index(member) + 1) for member in members)
                         + timeout_ms)
         castsequence_option = 'sim2gse_castsequences=' + '/'.join(rows) + '\n'
-    profile_text = Path(profile).read_text(encoding='utf-8')
-    generated.write_text(profile_text + '\n'
+    if memory_io:
+        profiles = getattr(runtime, 'profile_texts', None)
+        if profiles is None:
+            runtime.profile_texts = profiles = {}
+        profile_key = str(Path(profile).resolve())
+        if profile_key not in profiles:
+            profiles[profile_key] = Path(profile).read_text(encoding='utf-8')
+        profile_text = profiles[profile_key]
+    else:
+        profile_text = Path(profile).read_text(encoding='utf-8')
+    generated_text = (profile_text + '\n'
                          + 'actions.sim2gse=' + '/'.join(pool) + '\n'
                          + ('sim2gse_optional_spells=' + ','.join(value for value in sorted({
                              str(command['spell_id']) + ':' + command['simc_action']
@@ -283,7 +295,9 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                          + ('' if input_sources is None else
                             f'sim2gse_burst_offset={burst_offset}\n'
                             + 'sim2gse_sources=' + '/'.join(input_sources) + '\n')
-                         + feedback, encoding='utf-8')
+                         + feedback)
+    if not memory_io:
+        generated.write_text(generated_text, encoding='utf-8')
     pending_report = folder / 'native.pending.json'
     start_callback = {'on_start': on_native_start} if on_native_start is not None else {}
     log = run(generated, folder, mode,
@@ -291,7 +305,13 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                *(['potion=potion_of_recklessness', 'override.allow_potions=1']
                  if any(c['kind'] == 'potion' for b in all_commands for c in b) else []),
                'output=' + ('native.txt' if trace or getattr(runtime, 'diagnostic_logging', False) else os.devnull)], runtime=runtime,
-              simulation_config=simulation_config, **start_callback)
+              simulation_config=simulation_config, **start_callback,
+              **(dict(profile_text=generated_text, report_kind=report_kind) if memory_io else {}))
+    memory_report = None
+    memory_report_bytes = None
+    if memory_io:
+        memory_report_bytes = log['report_bytes']
+        memory_report, log = log['report'], log['log']
     native_blocks = []
     skipped_commands = []
     for line in log.splitlines():
@@ -330,7 +350,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     started = diagnostic_start() if logging else None
     try:
         try:
-            pending_report = json.loads(pending_report.read_text(encoding='utf-8'))
+            pending_report = memory_report if memory_io else json.loads(pending_report.read_text(encoding='utf-8'))
         except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError) as error:
             raise NativeEvaluationError('原生报告缺失或不是有效 JSON') from error
         # 只有完整解析成功的报告才进入正式名称；任务恢复时不会把半份文件当成成功批次。
@@ -359,7 +379,7 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
     if trace:
         started = diagnostic_start() if logging else None
         try:
-            for line in (folder / 'native.txt').read_text(encoding='utf-8').splitlines():
+            for line in (log if memory_io else (folder / 'native.txt').read_text(encoding='utf-8')).splitlines():
                 if 'S2GSE\t' not in line:
                     continue
                 fields = line.split('S2GSE\t', 1)[1].split('\t')
@@ -422,7 +442,8 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
         finally:
             if logging:
                 diagnostic_finish(runtime, 'evaluation.trace', started)
-    replace_file(folder / 'native.pending.json', folder / 'native.json')
+    if not memory_io:
+        replace_file(folder / 'native.pending.json', folder / 'native.json')
     return dict(blocks=blocks, native_blocks=native_blocks, input_times=input_times,
                 precombat_commands=native_precombat,
                 skipped_commands=skipped_commands, effective_blocks=effective_blocks,
@@ -431,5 +452,5 @@ def evaluate(profile, candidate, folder, *, character, iterations=100, seed=2026
                 failure_events=failure_events, consistent=True,
                 reset_events=reset_events,
                 castsequences=castsequences,
-                summary=summary, report=report, trace=events,
+                summary=summary, report=report, report_bytes=memory_report_bytes, trace=events,
                 game_validation='not_run', model='native_controlled')

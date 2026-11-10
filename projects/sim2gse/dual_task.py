@@ -15,6 +15,7 @@ from search import config_for, digest
 from simulation_config import config_for as simulation_config_for, SYNTAX_UNSET
 
 SCENES = (('single_target', 1), ('aoe', 5))
+_LIVE_PARENTS = {}
 PARENT_SCHEMA = dict(parent_id='VARCHAR', status='VARCHAR', phase='VARCHAR', error='VARCHAR',
     formal_search_version='UBIGINT',
     input_sha256='VARCHAR', definition_id='VARCHAR', spec_id='UBIGINT', config='JSON', syntax='JSON',
@@ -33,6 +34,9 @@ def _decode(value):
 
 
 def _save(row):
+    if row['parent_id'] in _LIVE_PARENTS and row['status'] == 'running':
+        _LIVE_PARENTS[row['parent_id']] = copy.deepcopy(row)
+        return
     try:
         result_store.write('dual_tasks', row['parent_id'], [row], schema=PARENT_SCHEMA)
     except Exception as error:
@@ -42,6 +46,8 @@ def _save(row):
 def _load(destination):
     try:
         pointer = json.loads((destination / 'dual.json').read_text(encoding='utf-8'))
+        if pointer['parent_id'] in _LIVE_PARENTS:
+            return copy.deepcopy(_LIVE_PARENTS[pointer['parent_id']])
         rows = result_store.read_records('dual_tasks', pointer['parent_id'])
     except result_store.DataReadError as error:
         raise task.TaskError('共享存储不可读取，请恢复存储后重新读取任务') from error
@@ -162,6 +168,8 @@ def _worker(handle):
         with foreground_search():
             _verify(row, destination, handle.identities)
             row.update(status='running', error=None)
+            if row['config'].get('memory_execution'):
+                _LIVE_PARENTS[row['parent_id']] = copy.deepcopy(row)
             _save(row)
             compiled_exports = {}
             native_identity = None
@@ -174,6 +182,8 @@ def _worker(handle):
                 row[purpose + '_status'] = 'running'
                 _save(row)
                 runtime = formal_runtime(row['config'], cancel_event=handle.cancel_event)
+                runtime.memory_execution = row['config'].get('memory_execution', False)
+                runtime.memory_limit_mb = row['config'].get('memory_limit_mb', 4096)
                 runtime.identities = copy.deepcopy(handle.identities)
                 if row['config']['search_timeline']:
                     runtime.timeline_origin = handle.timeline_origin
@@ -248,10 +258,13 @@ def _worker(handle):
             _save(row)
             from codec import collection
             started = time.monotonic()
+            package_runtime = TaskRuntime(600, cancel_event=handle.cancel_event,
+                diagnostic_logging=row['config']['diagnostic_logging'])
+            package_runtime.memory_execution = row['config'].get('memory_execution', False)
+            package_runtime.memory_limit_mb = row['config'].get('memory_limit_mb', 4096)
             row['collection_text'] = collection([compiled_exports[key] for key in ('single_target', 'aoe', 'burst')],
                 destination / 'collection', identity=native_identity,
-                runtime=TaskRuntime(600, cancel_event=handle.cancel_event,
-                                    diagnostic_logging=row['config']['diagnostic_logging']))
+                runtime=package_runtime)
             row['packaging_seconds'] += time.monotonic() - started
             row.update(status='completed', phase='done')
             _save(row)
@@ -269,6 +282,7 @@ def _worker(handle):
         except BaseException as storage_error:
             handle.error = storage_error
     finally:
+        _LIVE_PARENTS.pop(row['parent_id'], None)
         lease.__exit__(None, None, None)
 
 

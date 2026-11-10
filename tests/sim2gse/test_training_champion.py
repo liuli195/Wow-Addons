@@ -156,7 +156,7 @@ def test_training_selected_snapshot_uses_explicit_contract_not_source_labels(ver
     assert seed_training.selected_contract_version(rows) == expected
 
 
-@pytest.mark.parametrize('versions', [[2], [1, 2], [True], ['2'], [3]])
+@pytest.mark.parametrize('versions', [[2], [1, 2], [True], ['2'], [4]])
 def test_training_selected_snapshot_rejects_mixed_unknown_or_incomplete_contracts(versions):
     import seed_training
     with pytest.raises(ValueError, match='契约版本|完整四条'):

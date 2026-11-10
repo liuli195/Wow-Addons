@@ -12,8 +12,107 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'projects/sim2gse'))
 import engine
+import runtime
 from task import parse_character
 from test_character_export import sample_profile
+
+
+@pytest.mark.real
+def test_owned_memory_process_drains_both_streams_without_redirect_files(tmp_path):
+    before = set(tmp_path.iterdir())
+    payload = b'x' * 262144
+    script = ('import sys; data=sys.stdin.buffer.read(); '
+              'sys.stderr.buffer.write(data); sys.stderr.buffer.flush(); '
+              'sys.stdout.buffer.write(data[::-1])')
+    result = runtime.run_command([sys.executable, '-B', '-c', script], tmp_path,
+        timeout_seconds=10, input_data=payload, output_limit=1048576)
+    assert result.returncode == 0
+    assert result.stdout == payload[::-1]
+    assert result.stderr == payload
+    assert set(tmp_path.iterdir()) == before
+
+
+@pytest.mark.real
+@pytest.mark.parametrize('case', ['limit', 'timeout', 'cancel'])
+def test_owned_memory_process_limits_and_cancellation(tmp_path, case):
+    import threading
+    task_runtime = runtime.TaskRuntime(10)
+    script = ('import sys; sys.stderr.buffer.write(b"x" * 262144)' if case == 'limit'
+              else 'import time; time.sleep(30)')
+    timer = threading.Timer(0.1, task_runtime.cancel) if case == 'cancel' else None
+    if timer:
+        timer.start()
+    try:
+        with pytest.raises({'limit': ValueError, 'timeout': runtime.ProcessTimeout,
+                            'cancel': runtime.TaskCancelled}[case]):
+            runtime.run_command([sys.executable, '-B', '-c', script], tmp_path,
+                timeout_seconds=0.2 if case == 'timeout' else 5,
+                input_data=b'', output_limit=4096, runtime=task_runtime)
+    finally:
+        if timer:
+            timer.cancel()
+
+
+@pytest.mark.real
+def test_memory_reports_skip_unused_native_text_report(tmp_path):
+    before = set(tmp_path.iterdir())
+    result = engine.run(None, tmp_path, profile_text=sample_profile(), options=['iterations=2'])
+    assert 'text report took' not in result['log']
+    assert result['report']['sim']['players']
+    assert set(tmp_path.iterdir()) == before
+
+
+@pytest.mark.real
+@pytest.mark.parametrize('targets', [1, 5])
+def test_real_compiled_sequence_memory_scoring_matches_complete_report(tmp_path, targets):
+    import codec
+    import sequence
+    profile = tmp_path / 'role.simc'
+    profile.write_text(sample_profile(), encoding='utf-8')
+    character = parse_character(sample_profile())
+    config = dict(target_count=targets)
+    native = engine.reference(profile, tmp_path / 'reference', character, iterations=8, simulation_config=config)
+    task_runtime = runtime.TaskRuntime(30)
+    task_runtime.memory_execution = True
+    work = tmp_path / 'memory'
+    blocks = [[dict(kind='spell', spell_id=77575, name='Outbreak', simc_action='outbreak')]]
+    candidate = codec.export(blocks, work, identity=native['identity'], runtime=task_runtime)
+    full = sequence.evaluate(profile, candidate, work, character=character, iterations=8,
+        trace=True, runtime=task_runtime, memory_io=True, simulation_config=config)
+    rough = sequence.evaluate(profile, candidate, work, character=character, iterations=8,
+        trace=False, runtime=task_runtime, memory_io=True, report_kind='summary', simulation_config=config)
+    legacy = sequence.evaluate(profile, candidate, tmp_path / 'file-comparison',
+        character=character, iterations=8, trace=True, runtime=runtime.TaskRuntime(30), simulation_config=config)
+    assert full['consistent'] and full['trace']
+    assert full['summary'] == legacy['summary']
+    assert full['trace'] == legacy['trace']
+    assert battle_report(full['report']) == battle_report(legacy['report'])
+    assert rough['summary'] == full['summary']
+    assert engine.damage_statistics(rough['report'], character) == engine.damage_statistics(full['report'], character)
+    assert rough['summary']['samples'] == 7
+    assert 'stats' not in rough['report']['sim']['players'][0]
+    assert not work.exists(), '编译与模拟不得创建应用过程文件或目录'
+
+
+@pytest.mark.real
+def test_memory_process_budget_covers_descendant_holding_output(tmp_path):
+    script = ('import subprocess,sys; subprocess.Popen([sys.executable,"-B","-c",'
+              '"import time; time.sleep(0.6)"])')
+    with pytest.raises(runtime.ProcessTimeout):
+        runtime.run_command([sys.executable, '-B', '-c', script], tmp_path,
+                            timeout_seconds=0.2, input_data=b'', runtime=runtime.TaskRuntime(5))
+
+
+@pytest.mark.real
+def test_reference_accepts_frozen_text_without_process_files(tmp_path):
+    work = tmp_path / 'reference-memory'
+    report = {}
+    value = engine.reference(None, work, parse_character(sample_profile()), iterations=2,
+        profile_text=sample_profile(), report_sink=report, import_spell_ids=[77575])
+    assert value['samples'] == 1
+    assert value['import_action_candidates']
+    assert report['sim']['players']
+    assert not work.exists()
 
 
 class NativeIdentityTests(unittest.TestCase):

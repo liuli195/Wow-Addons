@@ -34,7 +34,7 @@
       "modes": [
         "controlled"
       ],
-      "sha256": "42aeb6da1449fbb8491b6c72abdeb906a0ba33f41ccb86d68041752435c56e7b"
+      "sha256": "d2bed1ed86f5148e36b04ed6f1840e610f684ef4844d0d99d9272fa7d34cbe8f"
     },
     {
       "path": "projects/sim2gse/native/src/action_summary.cpp",
@@ -80,6 +80,14 @@
     {
       "path": "projects/sim2gse/native/hooks/080-action-success-summary.patch",
       "sha256": "232029d83e9373a50042de0704f5ba8e953e89af38f2fa3881452d8bb7b0e84c"
+    },
+    {
+      "path": "projects/sim2gse/native/hooks/090-memory-report-stream.patch",
+      "sha256": "1d09fd54d74d0a4ad191921834c5818e8644dc37204c48186893f8c564dedf49"
+    },
+    {
+      "path": "projects/sim2gse/native/hooks/091-controlled-memory-report.patch",
+      "sha256": "2e9fcc8d6941124360eca5d0e018d1eb48348f2ce509d2fb79c274b9cf960d38"
     }
   ],
   "gse_commit": "f225d4c947d168c63451ef7c567d7063c38cc239",
@@ -121,9 +129,10 @@
     "engine/class_modules/sc_death_knight.cpp": "5ba19fa34ca055deff56ba1058df4d0de03c9b27b92f98b61dd593929bf6b686",
     "engine/player/player.cpp": "0ca8f7b4bc57ce4315eb1cf2bb2bd4480cefa6aa0818bb6051da8423b80a4054",
     "engine/player/player.hpp": "b5263251eb249d4ceb29800240d5834871c8e5e6451deca925d7ab210ab47fef",
-    "engine/report/json/report_json.cpp": "641a4f7aefc98766ccfb98b5688fccbff5d6ba9169223fb68f74ec875fe8d5c9",
+    "engine/report/json/report_json.cpp": "d48f3ff2788b75092926b89e6429203b209f2b6ab78a662b733340e05e4b0635",
     "engine/sim/sim.cpp": "8f6180519988e8c098b84f11e72b316c7ea1d24bba50432e01cf17c161900e59",
-    "engine/Makefile": "fd625df6d8cddac73f80d92bb049bda6cc07e2ae49ebcb5e05e4779caa1f398f"
+    "engine/Makefile": "fd625df6d8cddac73f80d92bb049bda6cc07e2ae49ebcb5e05e4779caa1f398f",
+    "engine/report/reports.cpp": "99a941f072a29fad77d49dff3260d2997f11902c95b9893842edfa17c0c6c7b8"
   },
   "baseline_patches": [
     {
@@ -145,6 +154,10 @@
     {
       "path": "projects/sim2gse/native/hooks/080-action-success-summary.patch",
       "sha256": "232029d83e9373a50042de0704f5ba8e953e89af38f2fa3881452d8bb7b0e84c"
+    },
+    {
+      "path": "projects/sim2gse/native/hooks/090-memory-report-stream.patch",
+      "sha256": "1d09fd54d74d0a4ad191921834c5818e8644dc37204c48186893f8c564dedf49"
     }
   ],
   "baseline_patched_files": {
@@ -155,9 +168,10 @@
     "engine/class_modules/sc_death_knight.cpp": "56b33d64995911b5ef8aa35518def0e1b335d9fcd9da0240db2d51d9195fdc95",
     "engine/player/player.cpp": "011e45661002d2cf8fabbb18d0a5e6e3deb8184875100e39594fb22f03f8ee84",
     "engine/player/player.hpp": "9ba155905ce6efd4833b47f5918492c718eba2c76cc9672631b37db356be1c96",
-    "engine/report/json/report_json.cpp": "039f6a70cb5ff9f3004ba976eeaae30f4b21ea400c62f2c7efe29ef217117a20",
+    "engine/report/json/report_json.cpp": "a1d6bd9aab7a0089caaf16ed83d16a59271d4889a77f211c399072185fcad034",
     "engine/sim/sim.cpp": "fe7c7d15c404782414801cc59d0bf9711061a2b9848785eec709320b5c0cf120",
-    "engine/Makefile": "ee446de58589e2fcf7e08b2b646055d3643efd44bee606aa5dc5e0d9b9de2f3f"
+    "engine/Makefile": "ee446de58589e2fcf7e08b2b646055d3643efd44bee606aa5dc5e0d9b9de2f3f",
+    "engine/report/reports.cpp": "99a941f072a29fad77d49dff3260d2997f11902c95b9893842edfa17c0c6c7b8"
   },
   "client_targeting": {
     "path": "projects/sim2gse/compatibility/spell-target-masks.json",

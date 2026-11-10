@@ -1,6 +1,10 @@
 """Manually launched seed preparation; all business records use the shared center."""
 from __future__ import annotations
 
+import sys
+if __name__ == '__main__':
+    sys.dont_write_bytecode = True
+
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import threading
@@ -13,7 +17,6 @@ import math
 from pathlib import Path
 from simulation_config import SYNTAX_UNSET
 import sqlite3
-import sys
 import uuid
 
 import result_store
@@ -23,7 +26,7 @@ from runtime import TaskRuntime, TaskCancelled, diagnostic_summary
 CANDIDATE_SCHEMA = dict(candidate_id='VARCHAR', label='VARCHAR', class_name='VARCHAR',
     spec='VARCHAR', source='VARCHAR', source_id='VARCHAR', source_revision='VARCHAR',
     active='BOOLEAN', unavailable_reason='VARCHAR', original='VARCHAR', instructions='VARCHAR',
-    semantic='VARCHAR', changes='VARCHAR[]', family='VARCHAR', core='JSON', program='JSON')
+    semantic='VARCHAR', changes='VARCHAR[]', family='VARCHAR', core='JSON', program='JSON', allowed_groups='JSON')
 PROCESSED_SCHEMA = dict(configuration_key='JSON', candidate_id='VARCHAR', condition='VARCHAR', status='VARCHAR',
     error='VARCHAR', initial_program='JSON', program='JSON', family='VARCHAR', core_retained='BOOLEAN',
     rounds='UBIGINT', stop_reason='VARCHAR', elapsed_seconds='DOUBLE', scores='DOUBLE[]',
@@ -35,7 +38,7 @@ SELECTED_SCHEMA = dict(configuration_key='JSON', candidate_id='VARCHAR', conditi
 SELECTED_V2_SCHEMA = dict(SELECTED_SCHEMA, contract_version='UBIGINT', evaluation='JSON')
 RETEST_SEEDS = (20261008, 20261009, 20261010)
 TRAINING_VERSION = 'seed-training-v2'
-PREPARATION_VERSION = 'seed-preparation-v1'
+PREPARATION_VERSION = 'seed-preparation-v2-scoped-sources'
 PREPARED_SCHEMA = dict(CANDIDATE_SCHEMA, kind='VARCHAR', config_key='VARCHAR',
     version='VARCHAR', program_revision='VARCHAR', status='VARCHAR', reason='VARCHAR',
     initial_program='JSON', behavior_id='VARCHAR', adaptation='JSON', context='JSON',
@@ -90,8 +93,8 @@ def writer_lock():
 
 def register(path):
     row = json.loads(Path(path).read_text(encoding='utf-8'))
-    optional = {'source_id', 'active'}
-    required = set(CANDIDATE_SCHEMA) - {'candidate_id', 'source_id', 'source_revision', 'active', 'unavailable_reason'}
+    optional = {'source_id', 'active', 'allowed_groups'}
+    required = set(CANDIDATE_SCHEMA) - {'candidate_id', 'source_id', 'source_revision', 'active', 'unavailable_reason', 'allowed_groups'}
     if not isinstance(row, dict) or not required <= set(row) or set(row) - required - optional:
         raise ValueError('清洗件必须包含来源、原件、使用说明、语义、清洗记录、家族、核心及程序')
     for key in ('label', 'class_name', 'spec', 'source', 'original', 'instructions', 'family'):
@@ -112,7 +115,9 @@ def register(path):
         raise ValueError('人工来源身份不能为空或使用历史保留前缀')
     if 'active' in row and type(row['active']) is not bool:
         raise ValueError('来源活动状态必须为布尔值')
-    row['candidate_id'] = digest({key: row[key] for key in required | ({'source_id'} if 'source_id' in row else set())})
+    source_groups(row)
+    row['candidate_id'] = digest({key: row[key] for key in required | ({'source_id'} if 'source_id' in row else set())
+                                 | ({'allowed_groups'} if 'allowed_groups' in row else set())})
     row.setdefault('source_id', row['candidate_id'])
     row.setdefault('active', True)
     row['unavailable_reason'] = '' if row['active'] else '来源已明确停用'
@@ -120,6 +125,8 @@ def register(path):
     with writer_lock():
         rows = registry_rows()
         previous = next((item for item in rows if item['source_id'] == row['source_id']), None)
+        if row.get('allowed_groups') is None and (previous is None or source_groups(previous) is not None):
+            raise ValueError('新增材料必须提供明确适用组；只有既有旧来源可保留共享政策')
         if previous and previous['program'] == row['program']:
             row['candidate_id'] = previous['candidate_id']
         if previous != row:
@@ -188,7 +195,34 @@ def registry_rows():
         row.setdefault('active', True)
         row.setdefault('unavailable_reason', '')
         row.setdefault('source_revision', digest(row))
+        row.setdefault('allowed_groups', None)
+        if 'allowed_groups' in row:
+            row['allowed_groups'] = decode(row['allowed_groups'])
     return rows
+
+
+def source_groups(row):
+    """Null only preserves historical shared sources; managed SimC is always explicit."""
+    groups = decode(row.get('allowed_groups'))
+    if groups is None:
+        if row.get('family') == 'simc-reference-weighted-v1':
+            raise ValueError('新增模拟来源缺少适用组')
+        return None
+    if not isinstance(groups, list) or not groups:
+        raise ValueError('来源适用组必须为非空列表')
+    for group in groups:
+        if (not isinstance(group, dict) or set(group) != {'specialization_id', 'hero_talent', 'target_type', 'target_count'}
+                or group['specialization_id'] != 252 or type(group['specialization_id']) is not int
+                or group['hero_talent'] not in ('rider_of_the_apocalypse', 'sanlayn')
+                or type(group['target_count']) is not int or group['target_count'] not in (1, 5)
+                or group['target_type'] != ('single_target' if group['target_count'] == 1 else 'aoe')):
+            raise ValueError('来源适用组身份无效')
+    return groups
+
+
+def source_in_group(row, group, targets):
+    groups = source_groups(row)
+    return groups is None or dict(group, target_count=targets) in groups
 
 
 def sync_history(character, *, sources=None):
@@ -258,7 +292,7 @@ def sync_history(character, *, sources=None):
                        source=source_id, original=json.dumps(shared, ensure_ascii=False),
                        instructions='历史最佳程序；原角色成绩仅作来源证据，当前训练独立评价',
                        semantic='unsupported' if reason else 'preserved', changes=[reason] if reason else [],
-                       family='history-search', core=[], program=program if not reason else [],
+                       family='history-search', core=[], program=program if not reason else [], allowed_groups=None,
                        active=not bool(reason), unavailable_reason=reason)
             row['source_revision'] = digest(dict(row, candidate_reference=run['candidate_data_key'],
                                                 status=run['status'], search_dps=run['search_dps']))
@@ -403,7 +437,8 @@ def training_condition_input(template_sha, engines, config, simulation_config, *
 def _identity_config(config):
     # 保留历史训练编号的固定日志字段；本次采集只读实际执行配置。
     legacy = dict(config, diagnostic_logging=True, diagnostics='summary', search_observability='off')
-    return {key: value for key, value in legacy.items() if key not in ('max_processes', 'search_timeline')}
+    return {key: value for key, value in legacy.items() if key not in (
+        'max_processes', 'search_timeline', 'memory_execution', 'checkpoint_interval_seconds', 'memory_limit_mb')}
 
 
 def semantic_condition(payload, versions):
@@ -615,7 +650,7 @@ def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, m
 
 def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burst=False,
                     materials=None, max_processes=None, inputs=None, sources=None, diagnostic_logging=None, search_config=None,
-                    burst_identity=None):
+                    burst_identity=None, runtime=None):
     """run/prepare共用入口：完整快照原子保存成功后才返回可派发队列。"""
     from engine import reference, prepare_loop, configuration_key
     from program import canonicalize_search_program, _search_expanded_nodes, compile_program
@@ -637,7 +672,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
         cached = result_store.read_records('seed_prepared', config_key)
     except result_store.InvalidRecordError:
         cached = []  # 明确损坏可重建；权限、存储及临时读失败仍直接报错。
-    json_fields = ('program', 'core', 'initial_program', 'adaptation', 'context', 'representative_program')
+    json_fields = ('program', 'core', 'initial_program', 'adaptation', 'context', 'representative_program', 'allowed_groups')
     try:
         for row in cached:
             for name in json_fields:
@@ -656,15 +691,21 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     active = [row for row in sources if row.get('active', True) and row['semantic'] != 'unsupported']
     context = header['context'] if header else None
     context_rebuilt = bool(active and context is None)
-    runtime = TaskRuntime(600, cancel_event=cancel_event, diagnostic_logging=config['diagnostic_logging'])
+    runtime = runtime or TaskRuntime(600, cancel_event=cancel_event, diagnostic_logging=config['diagnostic_logging'])
+    runtime.memory_execution = config.get('memory_execution', False)
+    runtime.memory_limit_mb = config.get('memory_limit_mb', 4096)
+    reference_pending = None
     if context_rebuilt:
         setup = Path(workspace).resolve() / 'preparation' / config_key[:12] / uuid.uuid4().hex
-        setup.mkdir(parents=True)
         profile = setup / 'standard.simc'
-        profile.write_text(text, encoding='utf-8')
+        memory_report = {} if runtime.memory_execution else None
+        if not runtime.memory_execution:
+            setup.mkdir(parents=True)
+            profile.write_text(text, encoding='utf-8')
         native = reference(profile, setup / 'reference', character, runtime=runtime,
                            iterations=100, simulation_config=simulation_config,
-                           summary_excluded_spell_ids=definition['excluded_spell_ids'] if definition else ())
+                           summary_excluded_spell_ids=definition['excluded_spell_ids'] if definition else (),
+                           **(dict(profile_text=text, report_sink=memory_report) if runtime.memory_execution else {}))
         actual_character = replace(character, spec_id=native['identity']['spec_id'], race=native['identity']['race'])
         all_capabilities, capabilities, burst_context = prepare_loop(native, actual_character, setup, runtime,
                                                      definition=definition, interval_ms=config['input_interval_ms'])
@@ -674,11 +715,14 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
                                                  burst_context=burst_context, rule_snapshot=inputs['rule_snapshot'])
         reference_key = digest(dict(condition=semantic_condition(current_input, semantic_versions()),
                                     purpose='seed_reference'))
-        result_store.write_batch(reference_key, dict(batch_key=reference_key, run_id=config_key,
+        reference_row = dict(batch_key=reference_key, run_id=config_key,
             purpose='seed_reference', dps=native['dps'], samples=native['samples'],
-            report=json.loads((setup / 'reference/native.json').read_text(encoding='utf-8'))),
-            diagnostic_logging=config['diagnostic_logging'], runtime=runtime)
-        (setup / 'reference/native.json').unlink()
+            report=memory_report if runtime.memory_execution else json.loads((setup / 'reference/native.json').read_text(encoding='utf-8')))
+        if runtime.memory_execution:
+            reference_pending = (reference_key, reference_row)
+        else:
+            result_store.write_batch(reference_key, reference_row, diagnostic_logging=config['diagnostic_logging'], runtime=runtime)
+            (setup / 'reference/native.json').unlink()
         context = dict(native=native, all_capabilities=all_capabilities, capabilities=capabilities,
                        burst=burst_context, configuration_key=scope_key, representations={})
     if context:
@@ -687,6 +731,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
         context = dict(context, preparation_input=preparation_input, rules=_rule_hashes(relative_to=ROOT),
                        configuration_key=configuration_key(context['native'], simulation_config.get('scene')))
         context['capabilities'] = dict(context['capabilities'], search_syntax=config['syntax'])
+        sources = [row for row in sources if source_in_group(row, context['configuration_key'], targets)]
     # 受检工具/目标资料加载失败是环境错误，不缓存为某条材料非法。
     target_masks = load_targeting(runtime=runtime)['target_masks'] if context else {}
     previous = {row['source_id']: row for row in cached if row.get('kind') == 'source'}
@@ -694,7 +739,8 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     for source in sources:
         runtime.check()
         source = dict(source, program=decode(source['program']), core=decode(source['core']))
-        program_revision = digest({key: source[key] for key in ('program', 'semantic', 'instructions', 'changes')})
+        program_revision = digest(dict({key: source[key] for key in ('program', 'semantic', 'instructions', 'changes')},
+                                       allowed_groups=source_groups(source)))
         old = previous.get(source.get('source_id', source['candidate_id']))
         entry = dict.fromkeys(PREPARED_SCHEMA)
         entry.update(source, source_id=source.get('source_id', source['candidate_id']), kind='source',
@@ -785,6 +831,8 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     snapshot_entries = entries
     if materials is not None:
         wanted = {row['candidate_id'] for row in materials}
+        if wanted - {row['candidate_id'] for row in entries}:
+            raise ValueError('显式训练材料不在当前实际组的适用范围')
         invalid = [row for row in entries if row['candidate_id'] in wanted and row['status'] != 'ready']
         if invalid:
             raise ValueError('显式训练材料不合法: ' + '; '.join(row['candidate_id'] + ': ' + row['reason'] for row in invalid))
@@ -811,6 +859,8 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     header['checksum'] = digest([{key: value for key, value in row.items() if key != 'checksum'}
                                 for row in snapshot])
     _check_cancelled(cancel_event)
+    if reference_pending is not None:
+        result_store.write_batch(*reference_pending, diagnostic_logging=config['diagnostic_logging'], runtime=runtime)
     if snapshot != cached:
         result_store.write('seed_prepared', config_key, snapshot, schema=PREPARED_SCHEMA)
     stats = dict(registry_sources=len(sources), active_sources=len(active),
@@ -867,8 +917,10 @@ def run_training(template, targets, workspace, *, use_burst=False, max_processes
     if options['search_timeline']:
         from time import monotonic
         timeline_origin = monotonic()
-    with writer_lock(), training_activity() as cancel_event:
-        sources = sync_history(template_character(Path(template).read_text(encoding='utf-8')))
+    with training_activity() as cancel_event:
+        # 材料登记只在读取/更新时持锁，训练中的独立成果不等待这把登记锁。
+        with writer_lock():
+            sources = sync_history(template_character(Path(template).read_text(encoding='utf-8')))
         return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
                              max_processes=max_processes, max_trainings=max_trainings, sources=sources,
                              search_config=search_config, new_search_config=options, training_config=parallelism,
@@ -910,12 +962,27 @@ def check_training(template=None, *, use_burst=True, training_config=None):
 def selected_contract_version(rows, syntax=None):
     """缺版本是旧成果，不从TRAINING_VERSION或程序来源猜新契约。"""
     versions = {row.get('contract_version') if row.get('contract_version') is not None else 1 for row in rows}
-    if any(type(version) is not int or version not in (1, 2) for version in versions) or len(versions) > 1:
+    if any(type(version) is not int or version not in (1, 2, 3) for version in versions) or len(versions) > 1:
         raise ValueError('不支持的训练成果契约版本')
     version = next(iter(versions), 1)
     from simulation_config import verify_syntax_receipt
     for row in rows:
         evaluation = decode(row.get('evaluation')) or {}
+        if version == 3:
+            storage = evaluation.get('evidence_storage') or {}
+            scenarios = evaluation.get('scenarios') or {}
+            if (storage.get('version') != 3 or not isinstance(storage.get('report_groups'), dict)
+                    or not storage.get('archive_group') or not storage.get('archive_digest')
+                    or not storage.get('seed_source_group') or not storage.get('seed_source_digest')
+                    or set(scenarios) != {'nominal', 'jitter', 'pause', 'slow', 'phase'}):
+                raise ValueError('新版训练成果缺少完整证据直接位置')
+            for scenario in scenarios.values():
+                batches = scenario.get('batches') or []
+                if not batches or any(batch.get('storage_version') != 3
+                        or not batch.get('storage_group_key')
+                        or storage['report_groups'].get(batch.get('batch_key')) != batch['storage_group_key']
+                        for batch in batches):
+                    raise ValueError('新版训练成果的复测位置凭据不符')
         if syntax is not None or 'syntax' in evaluation:
             policy = verify_syntax_receipt(evaluation.get('syntax'), syntax if syntax is not None else SYNTAX_UNSET)
             from program import check_search_syntax
@@ -923,8 +990,8 @@ def selected_contract_version(rows, syntax=None):
             check_search_syntax(program, policy)
             if evaluation.get('program_digest') != digest(program):
                 raise ValueError('训练成果程序与冻结凭据不符')
-    if version == 2 and len(rows) != 4:
-        raise ValueError('v2训练成果必须是完整四条')
+    if version in (2, 3) and len(rows) != 4:
+        raise ValueError('新版训练成果必须是完整四条')
     return version
 
 
@@ -1105,6 +1172,14 @@ def main(argv=None):
     listing.add_argument('--specialization-id', type=int)
     listing.add_argument('--hero-talent')
     listing.add_argument('--target-type', choices=('single_target', 'aoe'))
+    refresh = commands.add_parser('refresh-references', help='手动补齐模拟参考并刷新插件材料')
+    refresh.add_argument('--workspace', type=Path, required=True)
+    refresh.add_argument('--plugin-dir', type=Path)
+    refresh.add_argument('--simc-only', action='store_true', help='仅准备模拟来源阶段，不发布')
+    refresh.add_argument('--seed', type=int, default=20261109)
+    refresh_mode = refresh.add_mutually_exclusive_group()
+    refresh_mode.add_argument('--check-only', action='store_true')
+    refresh_mode.add_argument('--apply-plan', action='store_true')
     training = commands.add_parser('run', help='种群预训练至连续两代无改善、五场景复测与更新')
     preparing = commands.add_parser('prepare', help='统一增量整理并冻结唯一输入，不启动优化或复测')
     for command_parser in (training, preparing):
@@ -1132,7 +1207,10 @@ def main(argv=None):
     try:
         result_store.bind_project(args.project)
         result_store.ensure_available()
-        if args.command == 'register':
+        if args.command == 'refresh-references':
+            from reference_seeds import run
+            output = run(args)
+        elif args.command == 'register':
             output = register(args.input)
         elif args.command == 'check':
             output = check_training(args.template, use_burst=args.use_burst)
@@ -1152,57 +1230,57 @@ def main(argv=None):
             parallelism = load_training_config(_document=document, max_processes=args.max_processes, max_trainings=args.max_trainings)
             max_processes = parallelism['max_processes']
             from seed_activity import training_activity
-            with writer_lock():
-                sources = registry_rows()
-                if args.candidate_id:
-                    selected_materials(args.candidate_id, sources=sources)  # 明显非法编号不依赖模板或引擎。
-                ready = check_training(args.template, use_burst=args.use_burst, training_config=parallelism)
-                with training_activity() as cancel_event:
+            with training_activity() as cancel_event:
+                with writer_lock():
+                    sources = registry_rows()
+                    if args.candidate_id:
+                        selected_materials(args.candidate_id, sources=sources)  # 明显非法编号不依赖模板或引擎。
+                    ready = check_training(args.template, use_burst=args.use_burst, training_config=parallelism)
                     sources = sync_history(template_character(Path(ready['template']).read_text(encoding='utf-8')),
                                            sources=sources)
                     material_options = ({'materials': selected_materials(args.candidate_id, sources=sources)}
                                         if args.candidate_id else {})
-                    jobs = [(row, targets) for row in ready['templates'] for targets in dict.fromkeys(args.targets)]
-                    output, errors = [], []
-                    from population_training import group_configs, group_workers
-                    configs = group_configs(args.workspace, ready['templates'], parallelism, args.targets)
-                    workers = group_workers(args.workspace, ready['templates'], parallelism, args.targets,
-                                            effective_configs=configs)
-                    if args.command == 'run':
-                        for row, targets in jobs:
-                            config = configs[(str(Path(row['template']).resolve()), targets)]
-                            batches = config['top_k'] * 5 * config['retest_batches']
-                            print(f"{Path(row['template']).name}/{targets}：五场景复测最多"
-                                  f"{config['top_k']}候选、{batches}请求批、"
-                                  f"{batches * config['retest_iterations']}请求迭代（非实际有效样本）；"
-                                  f"本次分组并发上限{workers}", file=sys.stderr, flush=True)
-                    with ThreadPoolExecutor(max_workers=workers) as pool:
-                        futures = []
-                        for row, targets in jobs:
-                            expected = next((group['configuration_key'] for group in ready['groups']
-                                if group['template'] == row['template'] and group['configuration_key']['target_type'] ==
-                                ('single_target' if targets == 1 else 'aoe')), None)
-                            futures.append(pool.submit(_run_training, Path(row['template']), targets, args.workspace,
-                                cancel_event=cancel_event, use_burst=args.use_burst,
-                                prepare_only=args.command == 'prepare', sources=sources,
-                                training_config=parallelism, max_processes=args.max_processes, max_trainings=args.max_trainings,
-                                expected_key=expected, burst_identity=row['burst_identity'],
-                                search_config=search_config, new_search_config=options,
-                                _timeline_origin=timeline_origin, **material_options))
-                        # Deterministic result order; one group's failure never cancels another group.
-                        try:
-                            for (row, targets), future in zip(jobs, futures):
-                                try:
-                                    output.append(future.result())
-                                except (ValueError, OSError, RuntimeError) as error:
-                                    output.append(dict(status='paused', template=row['template'], targets=targets, error=str(error)))
-                                    errors.append(Path(row['template']).name + '/' + str(targets) + ': ' + str(error))
-                        except KeyboardInterrupt as error:
-                            cancel_event.set()
-                            raise TaskCancelled('任务已取消；等待所属评价刷尾并保存暂停') from error
-                    if errors:
-                        print(json.dumps(output, ensure_ascii=False))
-                        raise ValueError('; '.join(errors))
+                jobs = [(row, targets) for row in ready['templates'] for targets in dict.fromkeys(args.targets)]
+                output, errors = [], []
+                from population_training import group_configs, group_workers
+                configs = group_configs(args.workspace, ready['templates'], parallelism, args.targets)
+                workers = group_workers(args.workspace, ready['templates'], parallelism, args.targets,
+                                        effective_configs=configs)
+                if args.command == 'run':
+                    for row, targets in jobs:
+                        config = configs[(str(Path(row['template']).resolve()), targets)]
+                        batches = config['top_k'] * 5 * config['retest_batches']
+                        print(f"{Path(row['template']).name}/{targets}：五场景复测最多"
+                              f"{config['top_k']}候选、{batches}请求批、"
+                              f"{batches * config['retest_iterations']}请求迭代（非实际有效样本）；"
+                              f"本次分组并发上限{workers}", file=sys.stderr, flush=True)
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = []
+                    for row, targets in jobs:
+                        expected = next((group['configuration_key'] for group in ready['groups']
+                            if group['template'] == row['template'] and group['configuration_key']['target_type'] ==
+                            ('single_target' if targets == 1 else 'aoe')), None)
+                        futures.append(pool.submit(_run_training, Path(row['template']), targets, args.workspace,
+                            cancel_event=cancel_event, use_burst=args.use_burst,
+                            prepare_only=args.command == 'prepare', sources=sources,
+                            training_config=parallelism, max_processes=args.max_processes, max_trainings=args.max_trainings,
+                            expected_key=expected, burst_identity=row['burst_identity'],
+                            search_config=search_config, new_search_config=options,
+                            _timeline_origin=timeline_origin, **material_options))
+                    # Deterministic result order; one group's failure never cancels another group.
+                    try:
+                        for (row, targets), future in zip(jobs, futures):
+                            try:
+                                output.append(future.result())
+                            except (ValueError, OSError, RuntimeError) as error:
+                                output.append(dict(status='paused', template=row['template'], targets=targets, error=str(error)))
+                                errors.append(Path(row['template']).name + '/' + str(targets) + ': ' + str(error))
+                    except KeyboardInterrupt as error:
+                        cancel_event.set()
+                        raise TaskCancelled('任务已取消；等待所属评价刷尾并保存暂停') from error
+                if errors:
+                    print(json.dumps(output, ensure_ascii=False))
+                    raise ValueError('; '.join(errors))
         elif args.state == 'prepared':
             if not args.config_key:
                 raise ValueError('读取准备快照必须指定--config-key')
@@ -1227,6 +1305,9 @@ def main(argv=None):
                 elif scope:
                     output = result_store.read_records('seed_selected', shared_scope(scope))
                     selected_contract_version(output)
+                if selected_contract_version(output) == 3:
+                    from population_training import verify_selected_evidence
+                    verify_selected_evidence(output)
         print(json.dumps(output, ensure_ascii=False))
         return 0
     except (ValueError, OSError, RuntimeError) as error:

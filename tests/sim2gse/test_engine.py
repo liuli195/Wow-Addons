@@ -11,6 +11,17 @@ sys.path.insert(0, str(REPOSITORY / "projects" / "sim2gse"))
 from engine import _profile_with_import_queries, inspect, reference  # noqa: E402
 
 
+@pytest.mark.parametrize('output', [b'{}', b'\nS2GJSON_BEGIN\n[]\nS2GJSON_END\n',
+    b'\nS2GJSON_BEGIN\n{"name":"\xff"}\nS2GJSON_END\n'])
+def test_memory_engine_rejects_untrusted_report_envelopes(monkeypatch, output):
+    import engine
+    from runtime import ProcessResult
+    monkeypatch.setattr(engine, 'identity', lambda *args: (Path('simc-test'), {}))
+    monkeypatch.setattr(engine, 'run_command', lambda *args, **kwargs: ProcessResult(0, output, b'', 0))
+    with pytest.raises(engine.NativeEvaluationError):
+        engine.run(None, Path('/memory/unused'), profile_text='role=invalid')
+
+
 @pytest.mark.parametrize('enabled,outcome', [(False, 'success'), (True, 'success'), (True, 'timeout')])
 def test_native_execution_timing_preserves_process_outcome(monkeypatch, enabled, outcome):
     import os

@@ -24,6 +24,8 @@ SEARCH_ALGORITHM = "independent-search-modes-v2"
 PREVIOUS_SEARCH_ALGORITHM = "rule-single-step-coba-linucb-v1"
 STATS_VERSION = "paired-bootstrap-v1"
 _TASK_COUNTERS = ('batch_requests', 'batch_cache_hits', 'native_batch_starts', 'canonicalized_duplicates')
+_LIVE_TASKS = {}
+_MEMORY_REPORT_SLOTS = threading.BoundedSemaphore(2)
 DEFAULT_SCENARIOS = ("nominal", "jitter", "slow", "pause", "phase")
 TRAINING_SEARCH_DEFAULTS = {
     "iterations": 100,
@@ -39,12 +41,16 @@ TRAINING_SEARCH_DEFAULTS = {
 # Formal search owns its defaults; training and historical evidence keep the original runtime values.
 from simulation_config import (SEARCH_DEFAULTS, FORMAL_ALGORITHM_DEFAULTS,
                                FORMAL_V2_ALGORITHM_DEFAULTS, SEARCH_RUNTIME_DEFAULTS)
+from simulation_config import EXECUTION_DEFAULTS
+TRAINING_SEARCH_DEFAULTS.update(EXECUTION_DEFAULTS)
 DEFAULT_CONFIG = dict(SEARCH_DEFAULTS)
 # Only historical receipt readers may fill the original frozen defaults.
 LEGACY_DEFAULT_CONFIG = dict(TRAINING_SEARCH_DEFAULTS, total_budget_seconds=600.0, search_budget_seconds=600.0,
     candidate_limit=1000, round_candidate_limit=16, no_improvement_rounds=5,
     batch_targets=(32, 128, 256), validation_batches=4, final_batches=20,
     final_iterations=100, trace_search=False, scenarios=DEFAULT_SCENARIOS)
+for _execution_key in EXECUTION_DEFAULTS:
+    LEGACY_DEFAULT_CONFIG.pop(_execution_key, None)
 
 
 def verify_behavior_identity_state(state):
@@ -65,6 +71,13 @@ def config_for(values=None, *, training=False, legacy=False, _defer_interval_ali
         raise ValueError('训练配置开关必须为布尔值')
     config = dict(LEGACY_DEFAULT_CONFIG if legacy else TRAINING_SEARCH_DEFAULTS if training else
         dict(FORMAL_V2_ALGORITHM_DEFAULTS, **SEARCH_RUNTIME_DEFAULTS) if _historical_formal_v2 else DEFAULT_CONFIG)
+    from simulation_config import EXECUTION_DEFAULTS
+    if not legacy and not _historical_formal_v2:
+        config = dict(EXECUTION_DEFAULTS, **config)
+    elif _historical_formal_v2:
+        for key in EXECUTION_DEFAULTS:
+            config.pop(key, None)
+        values = {key: value for key, value in (values or {}).items() if key not in EXECUTION_DEFAULTS}
     if not legacy:
         config['syntax'] = syntax_for()
     if values:
@@ -77,6 +90,12 @@ def config_for(values=None, *, training=False, legacy=False, _defer_interval_ali
             config['search_budget_seconds'] = config['total_budget_seconds']
     if not legacy:
         config['syntax'] = syntax_for(config['syntax'])
+    if not legacy and not _historical_formal_v2:
+        if type(config['memory_execution']) is not bool:
+            raise ValueError('memory_execution 必须为布尔值')
+        for key, low, high in (('checkpoint_interval_seconds', 1, 86400), ('memory_limit_mb', 128, 16384)):
+            if type(config[key]) is not int or not low <= config[key] <= high:
+                raise ValueError('内存运行配置超出范围: ' + key)
     limits = [('max_processes', 16 if training else 2 if legacy else 5), ('iterations', 512), ('random_seed', 1000000000)]
     if legacy:
         for key in ('total_budget_seconds', 'search_budget_seconds'):
@@ -171,8 +190,10 @@ def formal_v1_config_for(values):
     """旧正式GA仅接受原9项运行配置，Reset按原正常场景验证。"""
     if set(values) - set(TRAINING_SEARCH_DEFAULTS):
         raise ValueError('未知历史正式GA运行配置')
+    keys = set(TRAINING_SEARCH_DEFAULTS) - set(EXECUTION_DEFAULTS)
+    values = {key: value for key, value in values.items() if key in keys}
     config = config_for(dict(values, scenarios=('nominal',)), legacy=True)
-    return {key: config[key] for key in TRAINING_SEARCH_DEFAULTS}
+    return {key: config[key] for key in keys}
 
 
 def _json(value):
@@ -839,6 +860,75 @@ def _checkpoint_copy(value):
     return value
 
 
+def _checkpoint_seal(fields, archive, batches):
+    """直接校验已序列化的行，不再把全部历史包进另一层JSON。"""
+    checksum = hashlib.sha256(b'sim2gse-memory-checkpoint-v2')
+    for kind, rows in ((b'fields', sorted(fields)), (b'archive', sorted(archive, key=lambda row: row[1])),
+                       (b'batches', sorted(batches))):
+        checksum.update(kind)
+        for row in rows:
+            for value in row:
+                encoded = (value if isinstance(value, str) else str(value)).encode('utf-8')
+                checksum.update(len(encoded).to_bytes(8, 'big'))
+                checksum.update(encoded)
+    return checksum.hexdigest()
+
+
+def _check_checkpoint_batch(key, row):
+    if row.get('status') != 'success':
+        return
+    if (digest(row.get('request')) != key or row.get('data_key') != key
+            or type(row.get('dps')) not in (int, float) or not math.isfinite(row['dps']) or row['dps'] < 0
+            or type(row.get('samples')) is not int or row['samples'] < 1
+            or type(row.get('variance')) not in (int, float)
+            or not math.isfinite(row['variance']) or row['variance'] < 0):
+        raise ValueError('恢复成绩的请求身份或数值无效')
+
+
+def _expand_checkpoint_request(row, templates):
+    if not isinstance(row, dict) or not isinstance(row.get('request') or {}, dict):
+        raise ValueError('恢复成绩凭据必须是对象')
+    request = row.get('request') or {}
+    if 'checkpoint_request_key' not in request:
+        return row
+    key = request['checkpoint_request_key']
+    if (not isinstance(key, str) or key not in templates
+            or set(request) - {'checkpoint_request_key', 'program', 'behavior_identity'}):
+        raise ValueError('恢复成绩的公共请求引用缺失或无效')
+    return dict(row, request=dict(templates[key], **{name: value for name, value in request.items()
+                                                   if name != 'checkpoint_request_key'}))
+
+
+def checkpoint_batch(database, key):
+    """只读一条恢复凭据，并展开本副本内共用的按键时刻等固定输入。"""
+    saved = database.execute('SELECT value FROM batches WHERE key=?', (key,)).fetchone()
+    if saved is None:
+        return None
+    row = json.loads(saved[0])
+    if isinstance(row, dict) and 'checkpoint_request_key' not in (row.get('request') or {}):
+        return row
+    templates = database.execute("SELECT value FROM state_fields WHERE key='checkpoint_requests'").fetchone()
+    return _expand_checkpoint_request(row, json.loads(templates[0]) if templates else {})
+
+
+def _restore_checkpoint_batches(archive, batches):
+    for record in archive:
+        restored = []
+        for row in record.get('batches', []):
+            if 'checkpoint_batch_key' not in row:
+                restored.append(row)
+                continue
+            if (set(row) != {'checkpoint_batch_key', 'overrides', 'omitted'}
+                    or row['checkpoint_batch_key'] not in batches
+                    or not isinstance(row['overrides'], dict) or not isinstance(row['omitted'], list)):
+                raise ValueError('恢复归档的成绩引用缺失或无效')
+            value = dict(batches[row['checkpoint_batch_key']], **row['overrides'])
+            for field in row['omitted']:
+                value.pop(field, None)
+            restored.append(value)
+        record['batches'] = restored
+
+
 def _restore_checkpoint_diagnostics(state):
     for record in [*state.get('archive', []), *state.get('pending', [])]:
         has_reference = 'rule_diagnostics_ref' in record
@@ -909,12 +999,34 @@ def _validate_saved_batch(saved, key, cached, character, index, scenario, simula
 class TaskStore:
     """任务检查点与成功批次；锁保护心跳与主线程共用的事务。"""
     def __init__(self, destination, *, lock=None, connection=None,
-                 reusable_database=None, report_locations=None):
+                 reusable_database=None, report_locations=None, memory_execution=False,
+                 checkpoint_interval_seconds=600):
         # TaskStore owns and closes supplied connections too. Callers sharing a
         # connection across threads must create it with check_same_thread=False.
         self.lock = lock or threading.RLock()
+        self.memory_execution = memory_execution
+        self.checkpoint_interval_seconds = checkpoint_interval_seconds
+        self.last_checkpoint_at = time.monotonic()
+        if type(memory_execution) is not bool:
+            raise ValueError('内存运行开关必须为布尔值')
+        if (type(checkpoint_interval_seconds) not in (int, float)
+                or not math.isfinite(checkpoint_interval_seconds) or checkpoint_interval_seconds < 1):
+            raise ValueError('恢复保存间隔必须为正数秒')
         with self.lock:
             try:
+                if memory_execution:
+                    import sys
+                    sys.dont_write_bytecode = True
+                    if connection is None:
+                        connection = sqlite3.connect(':memory:', check_same_thread=False)
+                        previous = Path(destination) / 'task.sqlite3'
+                        if previous.is_file():
+                            source = sqlite3.connect(previous.resolve().as_uri() + '?mode=ro&immutable=1', uri=True)
+                            try:
+                                source.backup(connection)
+                            finally:
+                                source.close()
+                    reusable_database = ':memory:'
                 self._initialize(destination, connection=connection,
                                  reusable_database=reusable_database,
                                  report_locations=report_locations)
@@ -949,6 +1061,8 @@ class TaskStore:
         self.db.execute('CREATE TABLE IF NOT EXISTS report_intents (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS runtime_progress (id INTEGER PRIMARY KEY, elapsed REAL NOT NULL, status TEXT NOT NULL, inflight TEXT NOT NULL)')
         self.state = self.load_state(self.db)
+        if self.memory_execution and self.state and not self.state.get('memory_checkpoint'):
+            raise ValueError('旧过程检查点不能按内存运行方式续接，请使用新任务；旧成果保留')
         row = self.db.execute('SELECT value FROM state WHERE id=1').fetchone()
         self.incremental_ready = bool(row and json.loads(row[0]) == {'storage_format': 2})
         self.saved_fields = {key: (json.loads(value), len(value.encode('utf-8')))
@@ -964,6 +1078,8 @@ class TaskStore:
         self.lua_compiler_starts = 0
         self.verified_batches = {}
         self.report_buffer = []
+        self.memory_reports = {}
+        self.published_report_receipts = {}
         self.unsaved_batches = {}
         if report_locations is None:
             from result_store import DATA_ROOT, ReportLocations
@@ -972,6 +1088,17 @@ class TaskStore:
         self.persisted_batches = self.db.execute(
             "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success' AND json_extract(value,'$.request.purpose')!='diagnostic'").fetchone()[0]
         self.db.commit()
+        if self.memory_execution:
+            self.db.execute('PRAGMA temp_store=MEMORY')
+            templates = self.db.execute("SELECT value FROM state_fields WHERE key='checkpoint_requests'").fetchone()
+            templates = json.loads(templates[0]) if templates else {}
+            restored = {key: _expand_checkpoint_request(json.loads(value), templates) for key, value in
+                        self.db.execute('SELECT key,value FROM batches')}
+            self.unsaved_batches.update(restored)
+            self.verified_batches.update({key: row for key, row in restored.items() if row.get('status') == 'success'})
+            self.persisted_batches = sum(row.get('status') == 'success'
+                and row.get('request', {}).get('purpose') != 'diagnostic' for row in restored.values())
+            _LIVE_TASKS[str(self.destination.resolve())] = self
 
     @property
     def diagnostic_logging(self):
@@ -986,9 +1113,29 @@ class TaskStore:
         value = json.loads(row[0])
         if value != {'storage_format': 2}:
             return _restore_checkpoint_diagnostics(value)
-        state = {key: json.loads(payload) for key, payload in database.execute('SELECT key,value FROM state_fields')}
-        state['archive'] = [json.loads(payload) for (payload,) in
-                            database.execute('SELECT value FROM state_archive ORDER BY ordinal')]
+        fields = list(database.execute('SELECT key,value FROM state_fields'))
+        archive = list(database.execute('SELECT key,ordinal,value FROM state_archive ORDER BY ordinal'))
+        state = {key: json.loads(payload) for key, payload in fields}
+        state['archive'] = [json.loads(payload) for _, _, payload in archive]
+        receipt = state.get('memory_checkpoint')
+        if receipt:
+            payload = dict(state)
+            payload.pop('memory_checkpoint')
+            rows = list(database.execute('SELECT key,value FROM batches ORDER BY key'))
+            checksum = (_checkpoint_seal([(key, value) for key, value in fields if key != 'memory_checkpoint'],
+                                        archive, rows) if receipt.get('version') == 2 else
+                        digest(dict(state=payload, batches=rows)))
+            if (receipt.get('version') not in (1, 2)
+                    or receipt != dict(version=receipt['version'], digest=checksum)):
+                raise ValueError('内存恢复点核验失败，拒绝使用不一致成绩')
+            decoded = {}
+            for key, value in rows:
+                row = _expand_checkpoint_request(json.loads(value), state.get('checkpoint_requests', {}))
+                _check_checkpoint_batch(key, row)
+                decoded[key] = row
+            if receipt['version'] == 2:
+                _restore_checkpoint_batches(state['archive'], decoded)
+                state.pop('checkpoint_requests', None)
         return _restore_checkpoint_diagnostics(state)
 
     @contextmanager
@@ -1079,6 +1226,8 @@ class TaskStore:
                                   archive_records=len(changed_archive))
 
     def save(self, *, fields=None, archive_keys=()):
+        if self.memory_execution:
+            return
         if getattr(self, 'defer_persistence', False):
             return
         with self.lock, self._transaction():
@@ -1089,8 +1238,16 @@ class TaskStore:
                     self._persist_changes(fields, archive_keys)
             self._save_progress()
 
-    def checkpoint(self):
+    def checkpoint(self, *, boundary=None):
         """Only the explicit business boundary publishes the live search segment."""
+        if self.memory_execution:
+            if boundary not in ('initial', 'retest', 'pause', 'final', 'generation'):
+                return
+            if (boundary == 'generation'
+                    and time.monotonic() - self.last_checkpoint_at < self.checkpoint_interval_seconds):
+                return
+            self._memory_checkpoint(boundary)
+            return
         with self.lock:
             deferred = getattr(self, 'defer_persistence', False)
             self.defer_persistence = False
@@ -1113,8 +1270,126 @@ class TaskStore:
             finally:
                 self.defer_persistence = deferred
 
-    def stage_report(self, key, row, stored, *, diagnostic_logging=False, replace_group=None, report_path=None):
+    def _memory_checkpoint(self, boundary):
+        """只在显式恢复边界生成静态副本；运行中的连接始终留在内存。"""
         with self.lock:
+            self.state['execution_storage_version'] = 3
+            if hasattr(self, 'runtime'):
+                from runtime import check_memory_limit
+                check_memory_limit(getattr(self.runtime, 'memory_limit_mb', 8192))
+            current_ga = self.state.get('ga', {})
+            keep = {row['key'] for row in current_ga.get('population', [])}
+            keep.update(current_ga.get('finalists', []))
+            keep.update(row['key'] for row in sorted(self.state.get('archive', []),
+                key=lambda row: (-row.get('score', 0), row['key']))[:8])
+            # 整个序列化窗口持有任务锁；只复制会改写的外层，不递归复制全部历史请求。
+            snapshot = {key: value for key, value in self.state.items()
+                        if key not in ('archive', 'memory_checkpoint')}
+            ga = dict(current_ga)
+            if 'ga' in snapshot:
+                snapshot['ga'] = ga
+            if ga.get('phase') in ('retest', 'qualified', 'complete') and boundary != 'final':
+                ga.update(phase='retest', finals={})
+            all_rows = {key: json.loads(value) for key, value in self.db.execute('SELECT key,value FROM batches')}
+            all_rows.update(self.verified_batches)
+            all_rows.update(self.unsaved_batches)
+            all_rows = {key: row for key, row in all_rows.items()
+                        if row.get('request', {}).get('purpose') in ('search', 'feedback', 'diagnostic')
+                        or row.get('storage_group_key')}
+            snapshot['archive'] = []
+            for record in self.state.get('archive', []):
+                saved = {key: value for key, value in record.items()
+                         if record['key'] in keep or key not in ('candidate', 'candidate_sha256')}
+                batches = []
+                for row in record.get('batches', []):
+                    key = row.get('data_key')
+                    if key not in all_rows:
+                        batches.append(row)
+                        continue
+                    original = all_rows[key]
+                    batches.append(dict(checkpoint_batch_key=key,
+                        overrides={name: value for name, value in row.items()
+                                   if name not in original or original[name] != value},
+                        omitted=[name for name in original if name not in row]))
+                saved['batches'] = batches
+                snapshot['archive'].append(saved)
+            for key, row in all_rows.items():
+                _check_checkpoint_batch(key, row)
+            templates, rows = {}, []
+            for key, row in all_rows.items():
+                request = row.get('request')
+                if not isinstance(request, dict):
+                    rows.append((key, _json(row)))
+                    continue
+                common = {name: value for name, value in request.items() if name not in ('program', 'behavior_identity')}
+                template_key = digest([request.get(name) for name in
+                    ('condition', 'purpose', 'seed', 'input_seed', 'iterations', 'trace')])
+                if template_key in templates and templates[template_key] != common:
+                    template_key = digest(common)
+                templates[template_key] = common
+                compact = dict(checkpoint_request_key=template_key, **{name: request[name] for name in
+                               ('program', 'behavior_identity') if name in request})
+                rows.append((key, _json(dict(row, request=compact))))
+            rows.sort()
+            snapshot['checkpoint_requests'] = templates
+            fields = [(key, _json(value)) for key, value in snapshot.items() if key != 'archive']
+            archive = [(row['key'], index, _json(row)) for index, row in enumerate(snapshot.get('archive', []))]
+            seal = _checkpoint_seal(fields, archive, rows)
+            fields.append(('memory_checkpoint', _json(dict(version=2, digest=seal))))
+            size = sum(len(value.encode('utf-8')) for _, value in fields)
+            size += sum(len(value.encode('utf-8')) for _, _, value in archive)
+            size += sum(len(value.encode('utf-8')) for _, value in rows)
+            if size > 256 * 1024 * 1024:
+                raise MemoryError('恢复点超过256 MiB上限，已保留上一份恢复点')
+            self.destination.mkdir(parents=True, exist_ok=True)
+            temporary = self.destination / ('checkpoint-' + uuid.uuid4().hex + '.sqlite3')
+            try:
+                target = sqlite3.connect(temporary)
+                try:
+                    with target:
+                        target.executescript('''
+                            CREATE TABLE state (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+                            CREATE TABLE state_fields (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                            CREATE TABLE state_archive (key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, value TEXT NOT NULL);
+                            CREATE TABLE batches (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                            CREATE TABLE report_intents (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                            CREATE TABLE runtime_progress (id INTEGER PRIMARY KEY, elapsed REAL NOT NULL, status TEXT NOT NULL, inflight TEXT NOT NULL);
+                        ''')
+                        target.execute('INSERT INTO state VALUES (1,?)', (_json({'storage_format': 2}),))
+                        target.executemany('INSERT INTO state_fields VALUES (?,?)', fields)
+                        target.executemany('INSERT INTO state_archive VALUES (?,?,?)', archive)
+                        target.executemany('INSERT INTO batches VALUES (?,?)', rows)
+                    checked = _checkpoint_seal(
+                        list(target.execute("SELECT key,value FROM state_fields WHERE key!='memory_checkpoint'")),
+                        list(target.execute('SELECT key,ordinal,value FROM state_archive')),
+                        list(target.execute('SELECT key,value FROM batches')))
+                    if checked != seal or target.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                        raise ValueError('恢复文件读回核验失败，已保留上一份恢复点')
+                    if target.execute('PRAGMA page_count').fetchone()[0] * target.execute(
+                            'PRAGMA page_size').fetchone()[0] > 256 * 1024 * 1024:
+                        raise MemoryError('恢复文件超过256 MiB上限，已保留上一份恢复点')
+                finally:
+                    target.close()
+                with temporary.open('r+b') as saved:
+                    os.fsync(saved.fileno())
+                replace_file(temporary, self.destination / 'task.sqlite3')
+                self.last_checkpoint_at = time.monotonic()
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    def stage_report(self, key, row, stored, *, diagnostic_logging=False, replace_group=None, report_path=None,
+                     report_bytes=None):
+        with self.lock:
+            if self.memory_execution:
+                row.update(batch_index=stored['batch_index'], scenario=stored['scenario'])
+                self.unsaved_batches[key] = row
+                self.verified_batches[key] = row
+                if row['request']['purpose'] not in ('search', 'feedback', 'diagnostic'):
+                    self.memory_reports[key] = dict(stored, _wire_bytes=report_bytes or
+                        len(_json(stored['report']).encode('utf-8')))
+                if row['request']['purpose'] != 'diagnostic':
+                    self.state['completed_batches'] += 1
+                return
             # Native output already exists on disk; do not retain complete reports in RAM.
             metadata = {name: value for name, value in stored.items() if name != 'report'}
             metadata['_diagnostic_logging'] = diagnostic_logging
@@ -1129,6 +1404,8 @@ class TaskStore:
                 self.flush_reports()
 
     def staged_report(self, key):
+        if self.memory_execution:
+            return self.memory_reports.get(key)
         for stored_key, _, metadata in self.report_buffer:
             if stored_key == key:
                 return dict({name: value for name, value in metadata.items()
@@ -1136,8 +1413,12 @@ class TaskStore:
                             report=json.loads(metadata['_report_path'].read_text(encoding='utf-8')))
         return None
 
-    def flush_reports(self, *, replace_group=None):
+    def flush_reports(self, *, replace_group=None, final=False):
         """Return whether this invocation committed the complete buffered state."""
+        if self.memory_execution:
+            if not final:
+                return False
+            return self._publish_memory_reports()
         if getattr(self, 'defer_persistence', False):
             return False
         from result_store import write, _api, DATA_ROOT, prepare_batch
@@ -1216,7 +1497,8 @@ class TaskStore:
                         for key, metadata_row in plan['replacements'].items():
                             stored = {name: value for name, value in metadata_row.items()
                                       if not name.startswith('_')}
-                            stored['report'] = json.loads(metadata_row['_report_path'].read_text(encoding='utf-8'))
+                            stored['report'] = (metadata_row['_report'] if '_report' in metadata_row else
+                                json.loads(metadata_row['_report_path'].read_text(encoding='utf-8')))
                             retained[key] = prepare_batch(stored, diagnostic_logging=metadata_row['_diagnostic_logging'],
                                                           runtime=getattr(self, 'runtime', None))
                         if len(retained) > 12:
@@ -1238,12 +1520,87 @@ class TaskStore:
                     self._commit_report_group(group, group_number, metadata, checkpoint=last,
                                               clear_intents=tuple(plans) if last else ())
                 for key, row, metadata_row in self.report_buffer:
-                    metadata_row['_report_path'].unlink(missing_ok=True)
+                    if '_report_path' in metadata_row:
+                        metadata_row['_report_path'].unlink(missing_ok=True)
                 self.report_buffer.clear()
                 return True
         finally:
             if self.diagnostic_logging:
                 diagnostic_finish(self, 'report.publish', publish_started)
+
+    def _publish_memory_reports(self):
+        """独立不可变分组并行保存；通过读回后才登记直接位置，不使用公共清单。"""
+        from concurrent.futures import ThreadPoolExecutor
+        from result_store import iter_group, write, prepare_batch, DataReadError, _api
+        with self.lock:
+            items = sorted(self.memory_reports.items())
+        # 复用活动任务登记：多组同时结束时共用转换内存预算，避免每组各占一整份。
+        active_tasks = max(1, len(_LIVE_TASKS))
+        memory_bytes = self.state.get('config', {}).get('memory_limit_mb', 8192) * 1024 * 1024
+        group_budget = max(1024 * 1024, min(64 * 1024 * 1024, memory_bytes // 64 // active_tasks))
+        plans, plan, byte_count = [], [], 0
+        for item in items:
+            size = item[1]['_wire_bytes']
+            if plan and (len(plan) == 64 or byte_count + size > group_budget):
+                plans.append(plan)
+                plan, byte_count = [], 0
+            plan.append(item)
+            byte_count += size
+        if plan:
+            plans.append(plan)
+        def publish_group(plan):
+            group = self.state['run_id'] + '_m' + digest([key for key, _ in plan])[:20]
+            expected = {key: stored for key, stored in plan}
+            def validate():
+                found = set()
+                for row in iter_group('batches', group):
+                    key = row.get('batch_key')
+                    if key not in expected or key in found:
+                        raise ValueError('最终报告组含错误或重复报告')
+                    source = expected[key]
+                    _validate_saved_batch(row, key, self.verified_batches[key], self.character,
+                        source['batch_index'], source['scenario'], self.simulation_config)
+                    found.add(key)
+                if found != set(expected):
+                    raise ValueError('最终报告组不完整')
+            try:
+                validate()
+            except DataReadError as error:
+                if not isinstance(error.__cause__, _api()['MissingKeyError']):
+                    raise
+                rows = [prepare_batch(dict({key: value for key, value in stored.items() if not key.startswith('_')},
+                    storage_group_key=group),
+                    diagnostic_logging=self.diagnostic_logging, runtime=getattr(self, 'runtime', None))
+                    for _, stored in plan]
+                from runtime import check_memory_limit
+                check_memory_limit(self.state.get('config', {}).get('memory_limit_mb', 8192))
+                write('batches', group, rows)
+                del rows
+                validate()
+            return group, [key for key, _ in plan]
+        def publish(plan):
+            # 所有活动任务共同最多两组转换，避免四组同时收尾产生八份大对象。
+            with _MEMORY_REPORT_SLOTS:
+                return publish_group(plan)
+        # 每个任务最多两路独立写入，不把整批写盘藏到后台。
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            completed = list(pool.map(publish, plans))
+        with self.lock:
+            evidence = self.state.setdefault('evidence_storage', dict(version=3, report_groups={}))
+            for group, keys in completed:
+                for key in keys:
+                    row = self.verified_batches[key]
+                    row.update(storage_group_key=group, storage_version=3)
+                    self.unsaved_batches[key] = row
+                    self.published_report_receipts[key] = digest(row)
+                    evidence['report_groups'][key] = group
+                    self.memory_reports.pop(key, None)
+        self._publish_memory_archive()
+        return bool(completed)
+
+    def _publish_memory_archive(self):
+        from result_store import publish_search_records
+        publish_search_records(self.state)
 
     def _commit_report_group(self, group, number, metadata, *, checkpoint=True, clear_intents=()):
         with self.lock, self._transaction():
@@ -1253,6 +1610,8 @@ class TaskStore:
                 if row['request']['purpose'] != 'final':
                     self.db.execute('INSERT OR REPLACE INTO shared.reusable VALUES (?,?)', (key, payload))
                 self.verified_batches[key] = row
+                if self.memory_execution:
+                    self.unsaved_batches[key] = row
             self.state['completed_batches'] = self.db.execute(
                 "SELECT count(*) FROM batches WHERE CASE WHEN json_valid(value) THEN json_extract(value,'$.status') END='success' AND json_extract(value,'$.request.purpose')!='diagnostic'").fetchone()[0]
             self.persisted_batches = self.state['completed_batches']
@@ -1311,6 +1670,16 @@ class TaskStore:
 
     def discard_unsaved_reports(self):
         with self.lock:
+            if self.memory_execution:
+                # 运行库不再回写恢复副本；只丢待保存的完整报告，保留可靠的计算状态和失败额度。
+                for key in self.memory_reports:
+                    self.unsaved_batches.pop(key, None)
+                    self.verified_batches.pop(key, None)
+                self.memory_reports.clear()
+                reliable = dict(self.verified_batches, **self.unsaved_batches)
+                self.state.update(inflight={}, completed_batches=sum(row.get('status') == 'success'
+                    and row.get('request', {}).get('purpose') != 'diagnostic' for row in reliable.values()))
+                return
             progress = {key: self.state[key] for key in ('elapsed_seconds', 'next_report_group', *_TASK_COUNTERS)
                         if key in self.state}
             for key, _, _ in self.report_buffer:
@@ -1328,6 +1697,8 @@ class TaskStore:
                          _json(self.state.get('inflight', {}))))
 
     def save_runtime(self):
+        if self.memory_execution:
+            return
         if getattr(self, 'defer_persistence', False):
             return
         logging = self.diagnostic_logging
@@ -1349,7 +1720,8 @@ class TaskStore:
                 brief['stop_policy'] = self.state['formal_search']['stop_policy']
                 brief['generation'] = self.state.get('ga', {}).get('generation', 0)
                 brief['phase'] = self.state.get('ga', {}).get('phase', brief['phase'])
-            brief['completed_batches'] = self.persisted_batches
+            brief['completed_batches'] = (self.state.get('completed_batches', 0)
+                                         if self.memory_execution else self.persisted_batches)
             if not self.diagnostic_logging:
                 for key in ('batch_requests', 'batch_cache_hits', 'native_batch_starts', 'canonicalized_duplicates'):
                     brief.pop(key, None)
@@ -1357,6 +1729,9 @@ class TaskStore:
             if observation and observation.get("mode") != "off":
                 brief["search_observability"] = _export_search_observability(
                     observation, include_details=False)
+            self.live_progress = brief
+            if self.memory_execution:
+                return brief
             temporary = self.destination / 'progress.pending.json'
             temporary.write_text(_json(brief), encoding='utf-8')
             replace_file(temporary, self.destination / 'progress.json')
@@ -1387,7 +1762,7 @@ class TaskStore:
             return None
 
     def put_batch(self, key, value, *, counter=None, verified=False):
-        if getattr(self, 'defer_persistence', False):
+        if self.memory_execution or getattr(self, 'defer_persistence', False):
             self.unsaved_batches[key] = value
             if verified and value.get('status') == 'success':
                 self.verified_batches[key] = value
@@ -1419,6 +1794,11 @@ class TaskStore:
     def active(self, runtime):
         """进程崩溃最多按尚未消耗的单批额度扣费，恢复扣除只发生一次。"""
         self.runtime = runtime
+        runtime.memory_execution = self.memory_execution
+        if self.memory_execution:
+            self.state['execution_storage_version'] = 3
+        runtime.memory_limit_mb = self.state.get('config', {}).get('memory_limit_mb',
+            getattr(runtime, 'memory_limit_mb', 8192))
         stop = threading.Event()
         def beat():
             with self.lock:
@@ -1440,11 +1820,11 @@ class TaskStore:
             yield
         except (TaskCancelled, BudgetExceeded):
             if self.defer_persistence:
-                self.checkpoint()
+                self.checkpoint(**(dict(boundary='pause') if self.memory_execution else {}))
             raise
         else:
             if self.defer_persistence:
-                self.checkpoint()
+                self.checkpoint(**(dict(boundary='final') if self.memory_execution else {}))
         finally:
             stop.set()
             thread.join()
@@ -1452,6 +1832,9 @@ class TaskStore:
             self.defer_persistence = False
 
     def close(self):
+        if self.memory_execution:
+            _LIVE_TASKS.pop(str(self.destination.resolve()), None)
+            self.memory_reports.clear()
         self.db.close()
         self.verified_batches.clear()
         if self.diagnostic_logging:
@@ -1553,7 +1936,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     state.setdefault('starts', starts)
     if initializing:
         # burst可提前写内存version；只有已落盘且完成准备的状态才可跳过首份检查点。
-        store.checkpoint()
+        store.checkpoint(**(dict(boundary='initial') if store.memory_execution else {}))
     candidates = {}
     burst_context = state.get('burst')
     def planned_inputs(times):
@@ -1614,7 +1997,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                                      if row.get('key') == key), len(state['archive']))
                 started = diagnostic_start() if config['diagnostic_logging'] else None
                 try:
-                    write_records('candidates', candidate_data_key, [dict(
+                    if not store.memory_execution:
+                        write_records('candidates', candidate_data_key, [dict(
                         run_id=state['run_id'], candidate_key=key,
                         candidate_data_key=candidate_data_key,
                         search_order=search_order,
@@ -1625,7 +2009,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         selected_version=compiled.get('selected_version'),
                         import_sha256=compiled.get('import_sha256'),
                         game_validation=compiled.get('game_validation'))],
-                        schema=CANDIDATE_SCHEMA)
+                            schema=CANDIDATE_SCHEMA)
                 finally:
                     if config['diagnostic_logging']:
                         diagnostic_finish(runtime, 'candidate.write', started)
@@ -1732,6 +2116,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         try:
             kwargs = {'reset_events': list(config['reset_events'])} if config['reset_events'] else {}
             kwargs['allow_zero'] = True
+            if store.memory_execution:
+                kwargs['report_kind'] = 'summary' if purpose == 'search' else 'full'
             def native_started():
                 with store.lock:
                     batch_counters['native_batch_starts'] = batch_counters.get('native_batch_starts', 0) + 1
@@ -1745,6 +2131,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                               input_times=times, trace=trace, runtime=runtime,
                               simulation_config=simulation_config, on_native_start=native_started,
                               **burst_options, **kwargs)
+            if store.memory_execution:
+                from runtime import check_memory_limit
+                check_memory_limit(getattr(runtime, 'memory_limit_mb', 8192))
             variance = score_variance(result['report'])
             if (type(result['summary']['dps']) not in (int, float)
                     or not math.isfinite(result['summary']['dps']) or result['summary']['dps'] < 0
@@ -1777,7 +2166,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             if request['reset_events']:
                 stored['reset_events'] = [dict(ms=ms, kind=kind)
                                           for ms, kind in request['reset_events']]
-            if trace and config['diagnostic_logging']:
+            if trace and config['diagnostic_logging'] and not store.memory_execution:
                 trace_key = digest(dict(run_id=state['run_id'], batch_key=key))
                 write_traces(trace_key, state['run_id'], result['trace'], batch_key=key)
                 row['trace_source'] = dict(run_id=state['run_id'], batch_key=key, storage_key=trace_key)
@@ -1785,6 +2174,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 state['inflight'].pop(key, None)
                 state['batch_estimate'] = max(0.1, 0.8 * state['batch_estimate'] + 0.2 * (time.monotonic()-started))
                 store.stage_report(key, row, stored, diagnostic_logging=config['diagnostic_logging'],
+                                   **(dict(report_bytes=result.get('report_bytes')) if store.memory_execution else {}),
                                    replace_group=(cached.get('storage_group_key') or key)
                                    if cached and cached['status'] == 'success' else None)
                 center_stored = not any(k == key for k, _, _ in store.report_buffer)
@@ -1795,12 +2185,13 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             store.put_batch(key, dict(status='failed', request=request, error=str(error)))
             raise
         finally:
-            if center_stored or not report_valid:
-                (folder / 'native.json').unlink(missing_ok=True)
-            (folder / 'native.pending.json').unlink(missing_ok=True)
-            if not config['diagnostic_logging']:
-                from engine import discard_diagnostic_files
-                discard_diagnostic_files(folder)
+            if not store.memory_execution:
+                if center_stored or not report_valid:
+                    (folder / 'native.json').unlink(missing_ok=True)
+                (folder / 'native.pending.json').unlink(missing_ok=True)
+                if not config['diagnostic_logging']:
+                    from engine import discard_diagnostic_files
+                    discard_diagnostic_files(folder)
             with store.lock:
                 if state.setdefault('inflight', {}).pop(key, None) is not None:
                     store.save()

@@ -99,7 +99,7 @@ def test_public_run_dispatches_reference_with_runtime_file_default_priority(monk
     monkeypatch.setattr(Path, 'mkdir', lambda *a, **kw: None)
     monkeypatch.setattr(os, 'replace', lambda src, dst: files.__setitem__(key(dst), files.pop(key(src))))
     store_type = search.TaskStore
-    monkeypatch.setattr(search, 'TaskStore', lambda destination: store_type(destination,
+    monkeypatch.setattr(search, 'TaskStore', lambda destination, **kwargs: store_type(destination,
         connection=sqlite3.connect(':memory:', check_same_thread=False), reusable_database=':memory:', report_locations={}))
     monkeypatch.setattr(result_store, 'ensure_available', lambda: None)
     monkeypatch.setattr(engine, 'identity', _fast_identity)
@@ -181,6 +181,7 @@ search_observability='full'
 search_timeline=true
 '''))
     assert values == dict(iterations=100, max_processes=2, random_seed=20260912,
+        memory_execution=True, checkpoint_interval_seconds=600, memory_limit_mb=8192,
         input_interval_ms=300, reset_events=(), diagnostic_logging=False,
         diagnostics='off', search_observability='off', search_timeline=True,
         syntax=dict(multi_command_blocks=True, loop=True, wait_clicks=True, castsequence=True))
