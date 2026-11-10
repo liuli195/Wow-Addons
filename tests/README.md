@@ -34,9 +34,7 @@ build-and-verify verify --project .
 
 Sim2GSE 普通层在云端直接运行纯计算与真实 SQLite :memory: 状态规则；原生引擎、Windows 进程/锁及浏览器代表由相应环境验收。普通层不能以 DuckDB :memory: 或物理 TaskStore 冒充受保护内存测试。
 
-初始种群探路新增5项物理命令检查，标记为真实层：预检、构造评分全流程、请求限额、截止时间及输出/预算拒绝。使用固定测试依赖的临时副本和临时验证数据根，不连接生产中心；构造评分结果不算伤害收益证据。共享繁殖等价和配置拒绝规则留在普通层。
-
-多条件探路增加6项真实层命令检查：角色/目标/独立评分计划、十二块预检、固定四条件三重复全链、整批累计额度、整批截止和冻结输入变化拒绝。仍由上述统一入口自动发现；完整批次使用构造评分，不作为真实伤害结论。手工真实探路使用 `.venv/Scripts/python.exe scripts/dev/sim2gse/initial_population_pilot.py --batch --output .local/sim2gse/population-expansion-pilot/runs/<全新名称>`；整批最多30分钟、3072次启动、72000次请求迭代，不逐块重置，不自动接入生产训练。
+两次扩大初始种群的独立实验已撤除，不再提供实验命令及专用测试。正式训练共用的繁殖一致性检查保留在 `test_population_training.py`；参考加权补齐30条由 `test_reference_seeds.py` 验证。
 
 Sim2GSE 正式GA搜索及GA预训练使用 `projects/sim2gse/requirements.txt` 中的锁定依赖；已移除自适应选择器专属依赖组和测试。`sim2gse/test_*.py` 仍由统一入口发现，当前真实层仅承诺上文4条核心，普通层保留现存规则检查，不再承诺已删除的公开CLI、恢复或存储故障交叉。PR的 `verify.sim2gse` 仍为 `pr: false`，远端PR通过不替代必要本机验证或真实模拟验收。
 

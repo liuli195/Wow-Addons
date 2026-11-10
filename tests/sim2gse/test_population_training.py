@@ -855,3 +855,47 @@ def test_single_resume_missing_simulation_keeps_saved_and_explicit_difference_re
     with pytest.raises(task.TaskError, match='恢复模拟配置发生变化'):
         task.resume_task('/memory/ga', simulation_config=dict(target_count=1, scene='single_target'))
     close_store()
+
+
+def test_shared_variation_keeps_frozen_baseline_random_stream_and_children():
+    """Oracle captured from 37a44b53's original gates, not from the new helper."""
+    from copy import deepcopy
+    import hashlib
+    import random
+    from deap import base
+    from population_training import vary_offspring, _cross
+    from program import canonicalize_search_program
+    from test_search import _fast_capabilities
+    capabilities = _fast_capabilities()
+    reference = dict(version=1, samples=31, duration_ms=5580000, successes={'spell:1001': 31},
+        pairs={}, outgoing={}, scope=dict(allowed={'spell:1001': True}, excluded={},
+                                          windows='', policy='@apl', controlled=False))
+
+    class Fitness(base.Fitness):
+        weights = (1.,)
+
+    class Member(list):
+        pass
+
+    outputs = []
+    for seed in range(30):
+        rng = random.Random(seed)
+        toolbox = base.Toolbox()
+        toolbox.register('clone', deepcopy)
+        toolbox.register('mate', lambda a, b: _cross(a, b, rng))
+        parents = []
+        for program in ([['outbreak'], ['death_coil']], [['scourge_strike'], ['outbreak']]):
+            member = Member(deepcopy(program))
+            member.fitness = Fitness((100.,))
+            member.action_summary = reference
+            parents.append(member)
+        counts = {route + suffix: 0 for route in ('target', 'random', 'crossover')
+                  for suffix in ('_triggered', '_changed')}
+        children = vary_offspring(parents, toolbox, rng=rng,
+            config=dict(target_mutation_probability=.8, random_mutation_probability=.3, crossover_probability=.3),
+            capabilities=capabilities, reference=reference,
+            legal=lambda p: canonicalize_search_program(p, capabilities)['identity'],
+            check=lambda: None, observe=lambda *a, **k: None, counts=counts)
+        outputs.append(dict(children=[list(child) for child in children], rng=rng.getstate(), counts=counts))
+    assert hashlib.sha256(json.dumps(outputs, sort_keys=True).encode()).hexdigest() == (
+        '18c2223cfab8f5e99e77627a365db8c4da7dd3bdf55d3f68e4e110f7a8100750')
