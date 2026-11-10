@@ -537,9 +537,15 @@ def read_many(table: str, keys, *, columns=None, filters=None):
 
 def iter_group(table, key):
     """只读取明确指定的一组，逐条交出完整报告，避免整组读回峰值。"""
+    yield from _iter_groups(table, [key])
+
+
+def _iter_groups(table, keys):
+    """已知分片共用一次公开批量读取，仍逐条交出，不扫描历史库。"""
     api = _api()
     try:
-        with api['read_key'](DATA_ROOT, table, key) as cursor:
+        operation, argument = ('read_key', keys[0]) if len(keys) == 1 else ('read_keys', keys)
+        with api[operation](DATA_ROOT, table, argument) as cursor:
             names = [column[0] for column in cursor.description]
             while values := cursor.fetchone():
                 row = dict(zip(names, values))
@@ -550,7 +556,7 @@ def iter_group(table, key):
         raise InvalidRecordError('指定报告组损坏') from error
 
 
-def _ordered_search_records(group):
+def _ordered_search_records(groups):
     """已知分组逐行取入紧凑内存排序区，不新增磁盘或改变对外保存格式。"""
     from contextlib import closing
     import pickle
@@ -558,7 +564,9 @@ def _ordered_search_records(group):
     with closing(sqlite3.connect(':memory:')) as ordered:
         ordered.execute('PRAGMA temp_store=MEMORY')
         ordered.execute('CREATE TABLE records (ordinal INTEGER PRIMARY KEY, payload BLOB NOT NULL)')
-        with closing(iter_group('search_records', group)) as source:
+        groups = [groups] if isinstance(groups, str) else groups
+        source = iter_group('search_records', groups[0]) if len(groups) == 1 else _iter_groups('search_records', groups)
+        with closing(source):
             def packed():
                 for row in source:
                     ordinal = row.get('search_order')
@@ -608,6 +616,15 @@ def read_search_records(storage, run_id, *, condition=None, columns=None):
             or not isinstance(storage.get('archive_digest'), str)
             or type(storage.get('archive_count')) is not int or storage['archive_count'] < 1):
         raise InvalidRecordError('搜索摘要位置或版本缺失')
+    archive_format = storage.get('archive_format', 1)
+    groups = storage.get('archive_groups', [storage['archive_group']])
+    if (type(archive_format) is not int or archive_format not in (1, 2)
+            or archive_format == 1 and 'archive_groups' in storage
+            or not isinstance(groups, list) or not groups
+            or any(not isinstance(group, str) or not group for group in groups)
+            or len(set(groups)) != len(groups) or groups[0] != storage['archive_group']
+            or archive_format == 2 and 'archive_groups' not in storage):
+        raise InvalidRecordError('搜索摘要分片位置或版本无效')
     rows, identities, count, ordinals_contiguous, first_error = [], set(), 0, True, None
     def checked(source):
         nonlocal count, ordinals_contiguous, first_error
@@ -631,7 +648,7 @@ def read_search_records(storage, run_id, *, condition=None, columns=None):
             yield row
             rows.append({name: row.get(name) for name in columns} if columns is not None else row)
             count += 1
-    with closing(_ordered_search_records(storage['archive_group'])) as source:
+    with closing(_ordered_search_records(groups)) as source:
         checksum = digest_rows(checked(source))
     if (count != storage['archive_count'] or checksum != storage['archive_digest']
             or not ordinals_contiguous or len(identities) != count):
@@ -673,6 +690,15 @@ def publish_search_records(state):
     group = state['run_id'] + '_a' + checksum[:20]
     storage = dict(state.get('evidence_storage') or dict(version=3, report_groups={}),
         archive_group=group, archive_digest=checksum, archive_count=len(rows))
+    plans = [(group, rows)]
+    if len(rows) > 512:
+        plans = [(group + '_p' + str(index // 512), rows[index:index + 512])
+                 for index in range(0, len(rows), 512)]
+        storage.update(archive_format=2, archive_group=plans[0][0],
+                       archive_groups=[key for key, _ in plans])
+    else:
+        storage.pop('archive_format', None)
+        storage.pop('archive_groups', None)
     schema = dict(run_id='VARCHAR', candidate_key='VARCHAR', search_order='UBIGINT', program='JSON',
         program_digest='VARCHAR', score='DOUBLE', batches='JSON', candidate='JSON')
     try:
@@ -680,7 +706,18 @@ def publish_search_records(state):
     except DataReadError as error:
         if error.__cause__ is None or not isinstance(error.__cause__, _api()['MissingKeyError']):
             raise
-        write('search_records', group, rows, schema=schema)
+        for key, part in plans:
+            if len(plans) == 1:
+                write('search_records', key, part, schema=schema)
+                continue
+            try:
+                with _api()['read_key'](DATA_ROOT, 'search_records', key, columns=['candidate_key']):
+                    pass
+            except _api()['MissingKeyError']:
+                write('search_records', key, part, schema=schema)
+            else:
+                receipt = dict(version=3, archive_group=key, archive_count=len(part), archive_digest=digest_rows(part))
+                read_search_records(receipt, state['run_id'], condition=state.get('condition'), columns=['candidate_key'])
         read_search_records(storage, state['run_id'], condition=state.get('condition'), columns=['candidate_key'])
     state['evidence_storage'] = storage
 

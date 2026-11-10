@@ -451,6 +451,70 @@ def test_final_publication_still_works_after_static_recovery_save(tmp_path, inst
 
 
 @pytest.mark.real
+@pytest.mark.parametrize('lost_response', [False, True])
+def test_final_history_is_bounded_retryable_and_fully_verified(
+        tmp_path, installed_result_center, monkeypatch, lost_response):
+    import result_store
+    result_store.DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    store = TaskStore(tmp_path / 'task', memory_execution=True)
+    records = []
+    for index in range(513):
+        identity = 'candidate-' + str(index)
+        request = dict(condition='frozen', purpose='search', behavior_identity=identity, program=[])
+        batch = dict(status='success', request=request, data_key=digest(request),
+                     dps=42., samples=31, variance=0.)
+        records.append(dict(key=identity, program=[['outbreak']], score=42., batches=[batch]))
+    store.state.update(run_id='bounded-history', condition='frozen', archive=records)
+    writer = result_store.write
+    published = []
+    fail = True
+    def bounded_write(table, key, rows, **kwargs):
+        nonlocal fail
+        if table == 'search_records':
+            assert len(rows) <= 512, '历史保存仍把全部记录交给一次转换'
+            if published and fail:
+                fail = False
+                if lost_response:
+                    writer(table, key, rows, **kwargs)
+                    published.append(key)
+                raise OSError('保存中断')
+            published.append(key)
+        return writer(table, key, rows, **kwargs)
+    monkeypatch.setattr(result_store, 'write', bounded_write)
+    try:
+        with pytest.raises(OSError, match='保存中断'):
+            store.flush_reports(final=True)
+        assert not store.state['evidence_storage'].get('archive_group')
+        first = published[:]
+        store.flush_reports(final=True)
+        assert published.count(first[0]) == 1, '重试不能覆盖已经验真的分片'
+        storage = store.state['evidence_storage']
+        assert result_store.read_search_records(storage, store.state['run_id'], columns=['candidate_key']) == [
+            dict(candidate_key=record['key']) for record in records]
+        complete = result_store.read_search_records(storage, store.state['run_id'])
+        assert [row['batches'] for row in complete] == [row['batches'] for row in records]
+        assert len(published) == 2
+        for invalid in (dict(storage, archive_format=99),
+                        dict(storage, archive_groups=[storage['archive_group']] * 2),
+                        {key: value for key, value in storage.items() if key != 'archive_groups'}):
+            with pytest.raises(result_store.InvalidRecordError, match='分片位置或版本'):
+                result_store.read_search_records(invalid, store.state['run_id'])
+        # 改掉未选择的字段，精简读取仍须核验完整历史。
+        part = storage['archive_groups'][-1]
+        saved = list(result_store.iter_group('search_records', part))
+        import json
+        saved[0]['batches'] = json.loads(saved[0]['batches'])
+        saved[0]['batches'][0]['variance'] = 999.
+        schema = dict(run_id='VARCHAR', candidate_key='VARCHAR', search_order='UBIGINT', program='JSON',
+                      program_digest='VARCHAR', score='DOUBLE', batches='JSON', candidate='JSON')
+        writer('search_records', part, saved, schema=schema)
+        with pytest.raises(result_store.InvalidRecordError, match='总摘要'):
+            result_store.read_search_records(storage, store.state['run_id'], columns=['candidate_key'])
+    finally:
+        store.close()
+
+
+@pytest.mark.real
 def test_seed_snapshot_rejects_stale_writer_and_retries_identical_result(tmp_path, installed_result_center):
     import result_store
     result_store.DATA_ROOT.mkdir(parents=True, exist_ok=True)
