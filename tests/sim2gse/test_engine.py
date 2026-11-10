@@ -22,6 +22,57 @@ def test_memory_engine_rejects_untrusted_report_envelopes(monkeypatch, output):
         engine.run(None, Path('/memory/unused'), profile_text='role=invalid')
 
 
+def test_memory_report_parses_without_retaining_whole_text_copies(monkeypatch):
+    import json
+    import tracemalloc
+    import engine
+    from runtime import ProcessResult
+    text = 'x' * (8 * 1024 * 1024)
+    body = json.dumps(dict(sim=dict(players=[dict(details=text)]))).encode()
+    output = b'log\n'
+    output += b'S2GJSON_BEGIN\n' + body + b'\nS2GJSON_END\nend\n'
+    monkeypatch.setattr(engine, 'identity', lambda *args: (Path('simc-test'), {}))
+    monkeypatch.setattr(engine, 'run_command', lambda *args, **kwargs: ProcessResult(0, output, b'', 0))
+    tracemalloc.start()
+    try:
+        value = engine.run(None, Path('/memory/unused'), profile_text='role=invalid')
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert value['report']['sim']['players'][0]['details'] == text
+    assert value['log'] == 'log\nend\n' and value['report_bytes'] == len(body)
+    assert peak < len(body) * 3, f'报告解析保留了重复全文：{peak}字节'
+
+
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+@pytest.mark.parametrize('split', [False, True])
+def test_memory_report_keeps_unicode_logs_boundaries_and_normalized_size(monkeypatch, newline, split):
+    import json
+    import engine
+    from runtime import ProcessResult
+    report = dict(sim=dict(players=[dict(name='角色😀')]))
+    body = json.dumps(report, ensure_ascii=False, indent=2)
+    output = ('开始😀' + newline + 'S2GJSON_BEGIN' + newline + body.replace('\n', newline)
+              + newline + 'S2GJSON_END' + newline + '结束' + newline).encode('utf-8')
+    cut = output.index('😀'.encode()) + 1 if split else len(output)
+    monkeypatch.setattr(engine, 'identity', lambda *args: (Path('simc-test'), {}))
+    monkeypatch.setattr(engine, 'run_command', lambda *args, **kwargs:
+        ProcessResult(0, output[:cut], output[cut:], 0))
+    value = engine.run(None, Path('/memory/unused'), profile_text='role=invalid')
+    assert value == dict(report=report, log='开始😀\n结束\n', report_bytes=len(body.encode('utf-8')))
+
+
+@pytest.mark.parametrize('suffix', [b'\xff', b'\nS2GJSON_BEGIN\n{}\nS2GJSON_END\n'])
+def test_memory_report_refuses_bad_encoding_or_duplicate_after_valid_report(monkeypatch, suffix):
+    import engine
+    from runtime import ProcessResult
+    output = b'\nS2GJSON_BEGIN\n{"sim":{}}\nS2GJSON_END\n' + suffix
+    monkeypatch.setattr(engine, 'identity', lambda *args: (Path('simc-test'), {}))
+    monkeypatch.setattr(engine, 'run_command', lambda *args, **kwargs: ProcessResult(0, output, b'', 0))
+    with pytest.raises(engine.NativeEvaluationError):
+        engine.run(None, Path('/memory/unused'), profile_text='role=invalid')
+
+
 @pytest.mark.parametrize('enabled,outcome', [(False, 'success'), (True, 'success'), (True, 'timeout')])
 def test_native_execution_timing_preserves_process_outcome(monkeypatch, enabled, outcome):
     import os

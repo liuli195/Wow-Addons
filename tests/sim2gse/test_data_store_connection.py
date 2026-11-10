@@ -11,6 +11,25 @@ from unittest.mock import Mock
 REPOSITORY = Path(__file__).resolve().parents[2]
 
 
+def test_report_preparation_converts_observations_without_two_full_collections():
+    import tracemalloc
+    import result_store
+    observations = [dict(value=dict(tag=index)) for index in range(5000)]
+    row = dict(report=dict(sim=dict(players=[dict(name='test',
+        sim2gse_rule_observations=dict(state_observations=observations))])))
+    tracemalloc.start()
+    try:
+        prepared = result_store.prepare_batch(row, diagnostic_logging=True)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    states = prepared['report']['sim']['players'][0]['sim2gse_rule_observations']['state_observations']
+    assert len(states) == 5000
+    assert states[123]['value_storage']['record'] == dict(tag=123)
+    assert observations[123] == dict(value=dict(tag=123))
+    assert peak < 4 * 1024 * 1024, f'报告转换保留了重复观察集合：{peak}字节'
+
+
 def test_binary_write_requires_capability_before_calling_storage(monkeypatch):
     import result_store
 

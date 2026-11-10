@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from runtime import replace_file, diagnostic_start, diagnostic_finish
 from runtime import BudgetExceeded, ProcessTimeout, TaskCancelled, TaskRuntime, run_command
 from simulation_config import config_for, engine_options
@@ -185,10 +186,9 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
         raise CandidateError('原生引擎运行超时，已停止本次进程') from error
     except (TaskCancelled, BudgetExceeded):
         raise
-    try:
-        log = (proc.stdout + proc.stderr).decode('utf-8', errors='strict' if memory_io else 'replace').replace('\r\n', '\n')
-    except UnicodeDecodeError as error:
-        raise NativeEvaluationError('原生内存输出不是有效UTF-8') from error
+    if memory_io:
+        return _memory_output(proc)
+    log = (proc.stdout + proc.stderr).decode('utf-8', errors='replace').replace('\r\n', '\n')
     if runtime.diagnostic_logging and not memory_io:
         (folder / 'process.log').write_text(log, encoding='utf-8')
         (folder / 'invocation.json').write_text(json.dumps(dict(command=command, identity=manifest,
@@ -196,19 +196,46 @@ def run(profile, folder, mode='baseline', options=(), *, runtime=None, timeout_s
                                                                elapsed_seconds=proc.elapsed_seconds), indent=2), encoding='utf-8')
     if proc.returncode:
         raise NativeEvaluationError('原生引擎失败: ' + log[-2000:])
-    if memory_io:
-        before, marker, body = log.partition('\nS2GJSON_BEGIN\n')
-        encoded, end, after = body.partition('\nS2GJSON_END\n')
-        if not marker or not end or '\nS2GJSON_BEGIN\n' in after:
-            raise NativeEvaluationError('原生内存报告缺失或边界无效')
-        try:
-            report = json.loads(encoded)
-        except (json.JSONDecodeError, UnicodeDecodeError) as error:
-            raise NativeEvaluationError('原生内存报告不是有效JSON') from error
-        if not isinstance(report, dict) or not isinstance(report.get('sim'), dict):
-            raise NativeEvaluationError('原生内存报告缺少模拟对象')
-        return dict(log=before + '\n' + after, report=report, report_bytes=len(encoded.encode('utf-8')))
     return log
+
+
+def _memory_output(proc):
+    """字节上定位报告，只解码报告正文与小日志；保留原输出协议。"""
+    import codecs
+    data = proc.stdout if not proc.stderr else proc.stdout + proc.stderr
+    view = memoryview(data)
+    decoder = codecs.getincrementaldecoder('utf-8')('strict')
+    try:
+        for offset in range(0, len(view), 65536):
+            decoder.decode(view[offset:offset + 65536])
+        decoder.decode(b'', final=True)
+    except UnicodeDecodeError as error:
+        raise NativeEvaluationError('原生内存输出不是有效UTF-8') from error
+    if proc.returncode:
+        tail = data[-8004:].decode('utf-8', errors='ignore').replace('\r\n', '\n')[-2000:]
+        raise NativeEvaluationError('原生引擎失败: ' + tail)
+    begin_marker = re.compile(rb'\nS2GJSON_BEGIN\r?\n')
+    begin = begin_marker.search(data)
+    end = re.compile(rb'\nS2GJSON_END\r?\n').search(data, begin.end()) if begin else None
+    if end is None:
+        raise NativeEvaluationError('原生内存报告缺失或边界无效')
+    start, finish = begin.end(), end.start()
+    if data[finish - 1:finish] == b'\r':
+        finish -= 1
+    after = end.end()
+    if begin_marker.search(data, after):
+        raise NativeEvaluationError('原生内存报告缺失或边界无效')
+    try:
+        report = json.loads(codecs.decode(view[start:finish], 'utf-8', 'strict'))
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise NativeEvaluationError('原生内存报告不是有效JSON') from error
+    if not isinstance(report, dict) or not isinstance(report.get('sim'), dict):
+        raise NativeEvaluationError('原生内存报告缺少模拟对象')
+    before_end = begin.start() - (data[begin.start() - 1:begin.start()] == b'\r')
+    before_log = data[:before_end].decode('utf-8').replace('\r\n', '\n')
+    after_log = data[after:].decode('utf-8').replace('\r\n', '\n')
+    return dict(log=before_log + '\n' + after_log, report=report,
+                report_bytes=finish - start - data.count(b'\r\n', start, finish))
 
 
 def native_button_definition(row):

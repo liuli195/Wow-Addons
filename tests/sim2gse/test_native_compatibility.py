@@ -33,6 +33,24 @@ def test_owned_memory_process_drains_both_streams_without_redirect_files(tmp_pat
 
 
 @pytest.mark.real
+def test_owned_output_finishes_without_a_second_full_buffer(tmp_path):
+    import tracemalloc
+    size = 8 * 1024 * 1024
+    script = 'import sys; sys.stdout.buffer.write(b"x" * (8 * 1024 * 1024))'
+    tracemalloc.start()
+    try:
+        result = runtime.run_command([sys.executable, '-B', '-c', script], tmp_path,
+            timeout_seconds=10, input_data=b'', output_limit=size)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert result.returncode == 0 and type(result.stdout) is bytes
+    assert len(result.stdout) == size and result.stdout.count(b'x') == size
+    assert result.stderr == b''
+    assert peak < size * 1.75, f'输出收尾仍有整份缓冲副本：{peak}字节'
+
+
+@pytest.mark.real
 @pytest.mark.parametrize('case', ['limit', 'timeout', 'cancel'])
 def test_owned_memory_process_limits_and_cancellation(tmp_path, case):
     import threading

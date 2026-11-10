@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import ctypes
+import io
 from ctypes import wintypes
 import os
 from pathlib import Path
@@ -436,7 +437,7 @@ class _PipeIO:
         import msvcrt
         self.fds = []
         self.child_handles = []
-        self.output = [bytearray(), bytearray()]
+        self.output = [io.BytesIO(), io.BytesIO()]
         self.error = None
         self.size = 0
         self.lock = threading.Lock()
@@ -481,7 +482,7 @@ class _PipeIO:
                             if self.size > self.limit:
                                 self.error = ValueError('原生进程输出超过内存上限')
                             elif self.error is None:
-                                self.output[0 if index == 2 else 1].extend(chunk)
+                                self.output[0 if index == 2 else 1].write(chunk)
             except BrokenPipeError:
                 # 子进程可以在读完输入前失败；退出码和错误输出仍由调用方核验。
                 pass
@@ -500,11 +501,13 @@ class _PipeIO:
             thread.join()
         if self.error is not None:
             raise self.error
-        return bytes(self.output[0]), bytes(self.output[1])
+        return self.output[0].getvalue(), self.output[1].getvalue()
 
     def close(self):
         for index in range(len(self.fds)):
             self._close_fd(index)
+        for output in self.output:
+            output.close()
 
 
 def _create_windows_process(command, cwd: Path, folder: Path, *, pipes=None):

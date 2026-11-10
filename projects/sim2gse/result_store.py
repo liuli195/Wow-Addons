@@ -330,14 +330,15 @@ def _report_columns(value):
     return value
 
 
-def _state_value_report(report, *, restore=False):
+def _state_value_report(report, *, restore=False, normalize=False):
     """仅适配规则观察的异构值与费用映射；统计空对象仍沿原约定。"""
     players = []
     fields = {'boolean': bool, 'integer': int, 'number': float, 'record': dict}
+    columns = _report_columns if normalize else lambda value: value
     for player in report['sim']['players']:
         payload = player.get('sim2gse_rule_observations')
         if not isinstance(payload, dict):
-            players.append(player)
+            players.append(columns(player))
             continue
         states = []
         original_states = payload.get('state_observations')
@@ -375,14 +376,26 @@ def _state_value_report(report, *, restore=False):
                               kind='missing' if missing else kind or 'unknown', **dict.fromkeys(fields))
                 if kind in fields: stored[kind] = value
                 row['value_storage'] = stored
-            states.append(row)
-        observed = dict(payload)
+            states.append(columns(row))
+        # 按行转换后即形成最终列，避免先攒全量中间集合再递归复制一遍。
+        collections = {'state_observations', 'action_observations', 'action_events'}
+        observed = {name: columns(value) for name, value in payload.items()
+                    if name not in collections or not isinstance(value, list)}
         if isinstance(original_states, list):
             observed['state_observations'] = states
         for collection in ('action_observations', 'action_events'):
             if isinstance(payload.get(collection), list):
-                observed[collection] = [_resource_cost_row(row, restore=restore) for row in payload[collection]]
-        players.append(dict(player, sim2gse_rule_observations=observed))
+                observed[collection] = [columns(_resource_cost_row(row, restore=restore))
+                                        for row in payload[collection]]
+        if normalize and not observed:
+            observed = None
+        players.append({name: observed if name == 'sim2gse_rule_observations' else columns(value)
+                        for name, value in player.items()})
+    if normalize:
+        simulation = {name: players if name == 'players' else columns(value)
+                      for name, value in report['sim'].items()}
+        return {name: simulation if name == 'sim' else columns(value)
+                for name, value in report.items()}
     return dict(report, sim=dict(report['sim'], players=players))
 
 
@@ -487,7 +500,7 @@ def prepare_batch(row: dict, *, diagnostic_logging=False, runtime=None) -> dict:
                         if name not in {'action_sequence', 'action_sequence_precombat'}})
                        for player in report['sim']['players']]
             row = dict(row, report=dict(report, sim=dict(report['sim'], players=players)))
-        return dict(row, report=_report_columns(_state_value_report(_action_summary_report(row['report']))))
+        return dict(row, report=_state_value_report(_action_summary_report(row['report']), normalize=True))
     finally:
         if logging:
             diagnostic_finish(runtime, 'report.prepare', started, rows=1)
