@@ -30,7 +30,7 @@ def memory_ga(monkeypatch):
     from test_character_export import sample_profile
     stores = []
     def make(*, programs=None, settings=None, native=None, score_for=None, formal=False, search_settings=None,
-             manifest_fields=None):
+             manifest_fields=None, memory_destination=None):
         capabilities = _fast_capabilities()
         starts = (deepcopy(programs) if programs is not None else
                   [[[name] for name in order] for order in permutations(
@@ -45,8 +45,10 @@ def memory_ga(monkeypatch):
         search_values.update(search_settings or {})
         search_config = config_for(search_values, training=not formal)
         character = template_character(sample_profile())
-        store = TaskStore(Path('/memory/ga'), connection=sqlite3.connect(':memory:', check_same_thread=False),
-                          reusable_database=':memory:', report_locations={})
+        store = (TaskStore(memory_destination, memory_execution=True,
+                           reusable_database=':memory:', report_locations={}) if memory_destination is not None else
+                 TaskStore(Path('/memory/ga'), connection=sqlite3.connect(':memory:', check_same_thread=False),
+                           reusable_database=':memory:', report_locations={}))
         stores.append(store)
         plan = training._stage_plan(config, 20260912)
         if formal:
@@ -62,7 +64,7 @@ def memory_ga(monkeypatch):
             archive=[], errors=[], ga=dict(algorithm=training.ALGORITHM, phase='initial', generation=0,
             stagnant=0, population=[], pending=None, rng=random.Random(20260912).getstate(), finals={}, baseline=[]))
         if formal: store.state['formal_search'] = frozen
-        calls, reports = [], {}
+        calls, reports, records = [], {}, {}
         def compile_input(mapped, folder, **kwargs):
             # A native-compiler response fixture, using the existing Program mapping.
             blocks = program._search_blocks(mapped)
@@ -86,17 +88,29 @@ def memory_ga(monkeypatch):
         def stage_report(key, row, stored, **kwargs):
             reports[key] = deepcopy(stored)
             store.put_batch(key, row, verified=True)
+            if store.memory_execution and row['request']['purpose'] != 'diagnostic':
+                store.state['completed_batches'] += 1
         monkeypatch.setattr(codec, 'load_targeting', lambda **kwargs: dict(target_masks={}))
         monkeypatch.setattr(program, 'compile_program', compile_input)
         monkeypatch.setattr(sequence, 'evaluate', evaluate)
         monkeypatch.setattr(result_store, 'DATA_ROOT', Path('/memory/ga-result-center'))
         monkeypatch.setattr(result_store, 'report_locations', lambda keys:
                             {key: key if key in reports else None for key in keys})
-        monkeypatch.setattr(result_store, 'write', lambda *args, **kwargs: None)
+        monkeypatch.setattr(result_store, 'write', lambda table, key, rows, **kwargs:
+                            records.__setitem__((table, key), deepcopy(rows)))
         monkeypatch.setattr(result_store, 'write_traces', lambda *args, **kwargs: None)
         monkeypatch.setattr(result_store, 'one', lambda table, field, key, **kwargs: deepcopy(reports.get(key)))
-        monkeypatch.setattr(result_store, 'read_many', lambda table, keys, **kwargs:
-                            [deepcopy(reports[key]) for key in keys if key in reports])
+        class MissingStoredKey(KeyError):
+            pass
+        def read_many(table, keys, **kwargs):
+            if table == 'batches':
+                return [deepcopy(reports[key]) for key in keys if key in reports]
+            if any((table, key) not in records for key in keys):
+                raise result_store.DataReadError('指定记录组缺失') from MissingStoredKey(keys)
+            return [deepcopy(row) for key in keys for row in records[table, key]]
+        monkeypatch.setattr(result_store, 'read_many', read_many)
+        if memory_destination is not None:
+            monkeypatch.setattr(result_store, '_api', lambda: dict(MissingKeyError=MissingStoredKey))
         monkeypatch.setattr(store, 'stage_report', stage_report)
         monkeypatch.setattr(Path, 'unlink', lambda self, **kwargs: None)
         monkeypatch.setattr(engine, 'discard_diagnostic_files', lambda *args: None)
@@ -128,6 +142,121 @@ def memory_ga(monkeypatch):
     for store in stores:
         store.diagnostic_logging_override = False
         store.close()
+
+@pytest.mark.real
+@pytest.mark.parametrize('formal', [False, True], ids=['training', 'formal'])
+def test_memory_coarse_scoring_fills_free_slots_before_slow_first_request_finishes(memory_ga, tmp_path, formal):
+    from itertools import permutations
+    from threading import Event, Lock
+    programs = [[[name] for name in order] for order in list(permutations(
+        ('outbreak', 'death_coil', 'scourge_strike', 'dark_transformation')))[:13]]
+    thirteenth = Event()
+    lock = Lock()
+    active = peak = started = 0
+    def score(candidate, options):
+        nonlocal active, peak, started
+        if options['iterations'] != 32:
+            return 100.
+        with lock:
+            started += 1
+            position = started
+            active += 1
+            peak = max(peak, active)
+        try:
+            if position == 13:
+                thirteenth.set()
+            if position == 1:
+                assert thirteenth.wait(2), '第十三个粗评必须在首个慢请求结束前补位'
+            return 100.
+        finally:
+            with lock:
+                active -= 1
+    settings = dict(max_processes=5, top_k=4, stagnation_generations=2,
+                    target_mutation_probability=0., random_mutation_probability=0., crossover_probability=0.)
+    case = memory_ga(programs=[*programs, programs[0]], formal=formal, score_for=score,
+        settings=None if formal else settings, search_settings=settings if formal else dict(max_processes=5),
+        memory_destination=tmp_path)
+    case.run()
+    ga = case.store.state['ga']
+    assert thirteenth.is_set() and started == 13 and 1 < peak <= 5 and active == 0
+    assert ga['generation'] == 2 and len(ga['population']) == 14
+    assert len(case.store.state['archive']) == 13
+    assert {row['score'] for row in ga['population']} == {100.}
+
+
+@pytest.mark.real
+@pytest.mark.parametrize('formal', [False, True], ids=['training', 'formal'])
+def test_memory_rolling_coarse_keeps_requests_random_state_and_final_selection(memory_ga, tmp_path, formal):
+    from copy import deepcopy
+    from itertools import permutations
+    from search import digest
+    programs = [[[name] for name in order] for order in list(permutations(
+        ('outbreak', 'death_coil', 'scourge_strike', 'dark_transformation')))[:13]]
+    settings = dict(max_processes=3, top_k=4, stagnation_generations=2,
+                    target_mutation_probability=0., random_mutation_probability=0., crossover_probability=0.)
+    def score(candidate, options):
+        return 100. + int(digest(candidate['blocks'])[:4], 16) / 1000
+    observations = []
+    for destination in (None, tmp_path):
+        case = memory_ga(programs=[*programs, programs[0]], formal=formal, score_for=score,
+            settings=None if formal else settings,
+            search_settings=settings if formal else dict(max_processes=3), memory_destination=destination)
+        result = case.run()
+        if formal:
+            result = deepcopy(result)
+            result.pop('elapsed_seconds')
+            result['search']['records'].sort(key=lambda row: row['key'])
+        observations.append(dict(result=deepcopy(result), ga=deepcopy(case.store.state['ga']),
+            requests=sorted(digest(row['request']) for row in case.store.verified_batches.values()),
+            evaluations=len(case.calls),
+            archive=sorted((row['key'], row['score']) for row in case.store.state['archive'])))
+    assert observations[0] == observations[1]
+
+
+@pytest.mark.real
+@pytest.mark.parametrize('failure', ['fatal', 'cancel'])
+def test_memory_rolling_coarse_stops_refilling_and_drains_owned_work(memory_ga, tmp_path, failure):
+    from itertools import permutations
+    from threading import Event, Lock
+    from runtime import TaskCancelled, TaskRuntime
+    programs = [[[name] for name in order] for order in permutations(
+        ('outbreak', 'death_coil', 'scourge_strike', 'dark_transformation'))]
+    runtime = TaskRuntime(float('inf'))
+    lock, failed = Lock(), Event()
+    active = started = 0
+    def score(candidate, options):
+        nonlocal active, started
+        with lock:
+            started += 1
+            first = started == 1
+            active += 1
+        try:
+            if first:
+                failed.set()
+                if failure == 'cancel':
+                    runtime.cancel()
+                    runtime.check()
+                raise RuntimeError('评分连接失败')
+            assert failed.wait(2)
+            runtime.check()
+            return 100.
+        finally:
+            with lock:
+                active -= 1
+    case = memory_ga(programs=programs, settings=dict(max_processes=3),
+        search_settings=dict(max_processes=3), score_for=score, memory_destination=tmp_path)
+    with pytest.raises(TaskCancelled if failure == 'cancel' else RuntimeError,
+                       match='任务已取消' if failure == 'cancel' else '评分连接失败'):
+        case.run(runtime=runtime)
+    assert failed.is_set() and active == 0 and started < len(programs)
+    assert case.store.state['ga']['phase'] == 'initial'
+    assert case.store.state['ga']['generation'] == 0
+    case.store.checkpoint(boundary='pause')
+    runtime = TaskRuntime(float('inf'))
+    case.run(runtime=runtime)
+    assert case.store.state['ga']['generation'] == 2
+    assert len(case.store.state['archive']) == len(programs)
+
 
 def test_v3_selected_independently_reads_full_source_cohort(monkeypatch, memory_ga):
     from copy import deepcopy

@@ -51,7 +51,9 @@ GSE_PROTECTED_MACRO_VECTOR = (
 )
 
 
-def test_formal_search_rejects_missing_variance_without_failing_task(memory_ga):
+@pytest.mark.parametrize('memory_execution', [False, pytest.param(True, marks=pytest.mark.real)],
+                         ids=['disk', 'memory'])
+def test_formal_search_rejects_missing_variance_without_failing_task(memory_ga, request, memory_execution):
     import engine
     from interface import _public_state
     from sequence import compiled_program
@@ -78,7 +80,8 @@ def test_formal_search_rejects_missing_variance_without_failing_task(memory_ga):
     # physical report groups and native execution retain separate real witnesses.
     with patch.dict(FORMAL_DEFAULTS, crossover_probability=0., target_mutation_probability=0., random_mutation_probability=0.):
         case = memory_ga(formal=True, programs=[[[name] for name in actions]
-            for actions in (initial, better, worse)], native=evaluate)
+            for actions in (initial, better, worse)], native=evaluate,
+            memory_destination=request.getfixturevalue('tmp_path') if memory_execution else None)
         result = case.run()
     state = _public_state(result, case.store.destination)
     assert state['status'] == 'completed'
