@@ -608,15 +608,15 @@ def read_search_records(storage, run_id, *, condition=None, columns=None):
             or not isinstance(storage.get('archive_digest'), str)
             or type(storage.get('archive_count')) is not int or storage['archive_count'] < 1):
         raise InvalidRecordError('搜索摘要位置或版本缺失')
-    rows, identities, count, ordered_rows, first_error = [], set(), 0, True, None
+    rows, identities, count, ordinals_contiguous, first_error = [], set(), 0, True, None
     def checked(source):
-        nonlocal count, ordered_rows, first_error
+        nonlocal count, ordinals_contiguous, first_error
         for row in source:
             try:
                 for key in ('program', 'batches', 'candidate'):
                     if isinstance(row.get(key), str):
                         row[key] = json.loads(row[key])
-                ordered_rows = ordered_rows and row['search_order'] == count
+                ordinals_contiguous = ordinals_contiguous and row['search_order'] == count
                 identities.add(row['candidate_key'])
             except (KeyError, TypeError, json.JSONDecodeError) as error:
                 raise InvalidRecordError('搜索摘要字段缺失或损坏') from error
@@ -634,7 +634,7 @@ def read_search_records(storage, run_id, *, condition=None, columns=None):
     with closing(_ordered_search_records(storage['archive_group'])) as source:
         checksum = digest_rows(checked(source))
     if (count != storage['archive_count'] or checksum != storage['archive_digest']
-            or not ordered_rows or len(identities) != count):
+            or not ordinals_contiguous or len(identities) != count):
         raise InvalidRecordError('搜索摘要数量、顺序或总摘要不符')
     if first_error is not None:
         raise InvalidRecordError(first_error)
