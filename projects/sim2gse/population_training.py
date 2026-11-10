@@ -1,5 +1,5 @@
 """A代际预训练。复用现有评价/报告/TaskStore，不创建第二套模拟后端。"""
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from copy import deepcopy
 from dataclasses import replace
 import hashlib
@@ -265,6 +265,54 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                 counters['canonicalized_duplicates'] = counters.get('canonicalized_duplicates', 0) + len(programs) - len(unique)
             results = {}
             items = list(unique.items())
+            error = None
+            rejected = False
+            def collect(identity, future):
+                nonlocal error, rejected
+                try:
+                    results[identity] = future.result()
+                    if guided and stage == 'search':
+                        coarse_summaries[identity] = results[identity].get('action_summary')
+                    if timeline is not None and record_timeline:
+                        row = results[identity]
+                        timeline.score(dict(key=identity, score=row['dps'], batches=[row]),
+                                       stage, 'training')
+                except CandidateScoreError as failure:
+                    proof = (_coarse_score_failure(store.state, identity)
+                             if policy and allow_rejections and stage == 'search' else None)
+                    if proof is None:
+                        error = error or failure
+                    else:
+                        results[identity] = None
+                        rejected = True
+                        rejections = ga.setdefault('coarse_rejections', {})
+                        if identity not in rejections:
+                            rejections[identity] = dict(proof, generation=ga['generation'], phase=ga['phase'])
+                            store.state.setdefault('errors', []).append(dict(kind='coarse_invalid_score',
+                                candidate_key=identity, **rejections[identity]))
+                except BaseException as failure:
+                    error = error or failure
+            if store.memory_execution and stage == 'search':
+                at = 0
+                pending = {}
+                with ThreadPoolExecutor(max_workers=config['max_processes']) as pool:
+                    while pending or (error is None and at < len(items)):
+                        runtime.check()
+                        # Each slot owns the complete compile -> simulate -> validate call.
+                        while error is None and at < len(items) and len(pending) < config['max_processes']:
+                            runtime.check()
+                            identity, program = items[at]
+                            pending[pool.submit(evaluate, program, stage, index)] = (at, identity)
+                            at += 1
+                        done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                        for future in sorted(done, key=lambda item: pending[item][0]):
+                            _, identity = pending.pop(future)
+                            collect(identity, future)
+                if rejected:
+                    store.checkpoint()
+                if error is not None:
+                    raise error
+                return [results[key(program)] for program in programs]
             # Bounded scheduling windows also bound nondurable report memory to 12.
             at = 0
             while at < len(items):
@@ -278,29 +326,7 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                     error = None
                     rejected = False
                     for identity, future in futures:
-                        try:
-                            results[identity] = future.result()
-                            if guided and stage == 'search':
-                                coarse_summaries[identity] = results[identity].get('action_summary')
-                            if timeline is not None and record_timeline:
-                                row = results[identity]
-                                timeline.score(dict(key=identity, score=row['dps'], batches=[row]),
-                                               stage, 'training')
-                        except CandidateScoreError as failure:
-                            proof = (_coarse_score_failure(store.state, identity)
-                                     if policy and allow_rejections and stage == 'search' else None)
-                            if proof is None:
-                                error = error or failure
-                            else:
-                                results[identity] = None
-                                rejected = True
-                                rejections = ga.setdefault('coarse_rejections', {})
-                                if identity not in rejections:
-                                    rejections[identity] = dict(proof, generation=ga['generation'], phase=ga['phase'])
-                                    store.state.setdefault('errors', []).append(dict(kind='coarse_invalid_score',
-                                        candidate_key=identity, **rejections[identity]))
-                        except BaseException as failure:
-                            error = error or failure
+                        collect(identity, future)
                     if rejected or len(store.report_buffer) >= 12:
                         store.checkpoint()
                     if error is not None:
