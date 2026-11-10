@@ -1573,7 +1573,9 @@ class TaskStore:
         # 复用活动任务登记：多组同时结束时共用转换内存预算，避免每组各占一整份。
         active_tasks = max(1, len(_LIVE_TASKS))
         memory_bytes = self.state.get('config', {}).get('memory_limit_mb', 8192) * 1024 * 1024
-        group_budget = max(1024 * 1024, min(64 * 1024 * 1024, memory_bytes // 64 // active_tasks))
+        # 紧急停止线不能放大日常转换工作量；两路转换仍共用整批目标预算。
+        conversion_bytes = min(memory_bytes, 2048 * 1024 * 1024)
+        group_budget = max(1024 * 1024, min(64 * 1024 * 1024, conversion_bytes // 64 // active_tasks))
         plans, plan, byte_count = [], [], 0
         for key, size in items:
             if plan and (len(plan) == 64 or byte_count + size > group_budget):

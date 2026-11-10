@@ -543,6 +543,8 @@ def test_final_groups_obey_wire_budget_write_in_parallel_and_join_on_failure(
     character = parse_character(sample_profile())
     store.character, store.simulation_config = character, dict(target_count=1)
     store.state.update(run_id='parallel-finals', archive=[], completed_batches=0)
+    # 提高紧急停止线，不应同时放大日常报告转换工作量。
+    store.state['config'] = dict(memory_limit_mb=16384)
     gate = threading.Barrier(2)
     lock, calls = threading.Lock(), []
     write = result_store.write
