@@ -1,8 +1,8 @@
 {
   "version": 1,
   "status": "proposed_exact_adoption_not_applied",
-  "evidence": ".local/sim2gse/population-expansion-pilot/runs/20261109-multicondition-01/inputs.json",
-  "evidence_sha256": "9504cef1f79d8693b19614d3cf3421ce9ad58636f686c464bc635ad114270386",
+  "evidence": "myspec/changes/sim2gse-population-expansion-pilot/results.md",
+  "evidence_sha256": "0c7a9e2613d0d23ce9e00e894e911df155b0d60b8e78f509e44b86439c60c551",
   "policy": "replace_only_explicit_legacy_sources_after_validation_keep_evidence",
   "legacy_sources": [
     {
@@ -233,5 +233,7 @@
   "protected_manual_source_ids": [
     "manual:gearinsight-sanlayn-b1-20261012",
     "manual:gearinsight-sanlayn-b2-20261012"
-  ]
+  ],
+  "original_inputs_sha256": "9504cef1f79d8693b19614d3cf3421ce9ad58636f686c464bc635ad114270386",
+  "raw_experiment_evidence_retained": false
 }
