@@ -122,17 +122,16 @@ def register(path):
     row.setdefault('active', True)
     row['unavailable_reason'] = '' if row['active'] else '来源已明确停用'
     row['source_revision'] = digest(row)
-    with writer_lock():
-        rows = registry_rows()
-        previous = next((item for item in rows if item['source_id'] == row['source_id']), None)
-        if row.get('allowed_groups') is None and (previous is None or source_groups(previous) is not None):
-            raise ValueError('新增材料必须提供明确适用组；只有既有旧来源可保留共享政策')
-        if previous and previous['program'] == row['program']:
-            row['candidate_id'] = previous['candidate_id']
-        if previous != row:
-            result_store.write('seed_candidates', 'registry',
-                               [item for item in rows if item['source_id'] != row['source_id']] + [row],
-                               schema=CANDIDATE_SCHEMA)
+    from source_catalog import publish, same_source
+    rows = registry_rows()
+    previous = next((item for item in rows if item['source_id'] == row['source_id']), None)
+    if row.get('allowed_groups') is None and (previous is None or source_groups(previous) is not None):
+        raise ValueError('新增材料必须提供明确适用组；只有既有旧来源可保留共享政策')
+    if previous and previous['program'] == row['program']:
+        row['candidate_id'] = previous['candidate_id']
+    updated = rows if previous and same_source(previous, row) else (
+        [item for item in rows if item['source_id'] != row['source_id']] + [row])
+    publish(updated, expected_revision=rows.revision)
     return {'status': 'registered', 'candidate_id': row['candidate_id']}
 
 
@@ -188,13 +187,18 @@ def search_program(shared):
 
 
 def registry_rows():
-    rows = result_store.read_records('seed_candidates', 'registry')
+    from source_catalog import read_sources
+    rows = read_sources()
     for row in rows:
         row['program'], row['core'] = decode(row['program']), decode(row['core'])
         row.setdefault('source_id', row['candidate_id'])
         row.setdefault('active', True)
         row.setdefault('unavailable_reason', '')
-        row.setdefault('source_revision', digest(row))
+        if 'source_revision' not in row:
+            from source_catalog import original
+            previous = dict(row, original=original(row))
+            previous.pop('original_ref', None)
+            row['source_revision'] = digest(previous)
         row.setdefault('allowed_groups', None)
         if 'allowed_groups' in row:
             row['allowed_groups'] = decode(row['allowed_groups'])
@@ -1286,8 +1290,9 @@ def main(argv=None):
                 raise ValueError('读取准备快照必须指定--config-key')
             output = result_store.read_records('seed_prepared', args.config_key)
         elif args.state in ('pending', 'unsupported'):
-            output = [row for row in result_store.read_records('seed_candidates', 'registry')
-                      if (row['semantic'] == 'unsupported' or row.get('active') is False) == (args.state == 'unsupported')]
+            from source_catalog import print_sources
+            print_sources(unsupported=args.state == 'unsupported')
+            return 0
         else:
             from simulation_config import load_syntax_config
             scope = (dict(specialization_id=args.specialization_id, hero_talent=args.hero_talent,

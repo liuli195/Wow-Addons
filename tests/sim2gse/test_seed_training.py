@@ -178,9 +178,13 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
         program=[['outbreak'],['putrefy'],['death_coil']])
     monkeypatch.setattr(Path,'read_text',lambda *args,**kwargs:json.dumps(source))
     monkeypatch.setattr(seed_training,'writer_lock',nullcontext)
-    writes=Mock()
+    stored = {}
+    def save(table, key, rows, **kwargs):
+        stored[table, key] = deepcopy(rows)
+    writes=Mock(side_effect=save)
     monkeypatch.setattr(result_store,'write',writes)
-    monkeypatch.setattr(seed_training,'registry_rows',Mock(return_value=[]))
+    monkeypatch.setattr(result_store,'read_records',lambda table,key,**kwargs:deepcopy(stored.get((table,key),[])))
+    monkeypatch.setattr(result_store,'iter_group',lambda table,key,**kwargs:iter(deepcopy(stored.get((table,key),[]))))
     with pytest.raises(ValueError, match='新增材料必须提供明确适用组'):
         seed_training.register('/memory/cleaned.json')
     source['allowed_groups'] = [dict(specialization_id=252,hero_talent='rider_of_the_apocalypse',
@@ -188,7 +192,6 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
     first=seed_training.register('/memory/cleaned.json')
     table,key,rows=writes.call_args.args
     assert (table,key)==('seed_candidates','registry') and len(rows)==1 and rows[0]['label']=='ABC-C'
-    monkeypatch.setattr(seed_training,'registry_rows',Mock(return_value=deepcopy(rows)))
     writes.reset_mock()
     assert seed_training.register('/memory/cleaned.json')==first
     writes.assert_not_called()
