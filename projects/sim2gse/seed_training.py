@@ -682,12 +682,12 @@ def _legacy_preparation(preparation_input):
             rows.append(dict(row, original=None) if row['kind'] == 'source' else row)
     try:
         checksum = digest_rows(checked_rows())
+    except (result_store.InvalidRecordError, ValueError, TypeError):
+        return [], None
     except result_store.DataReadError as error:
         if isinstance(error.__cause__, result_store._api()['MissingKeyError']):
             return [], None
         raise
-    except (result_store.InvalidRecordError, ValueError, TypeError):
-        return [], None
     if header is None or header.get('checksum') != checksum:
         return [], None
     return rows, header

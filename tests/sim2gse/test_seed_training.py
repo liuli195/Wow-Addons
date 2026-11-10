@@ -103,7 +103,7 @@ def test_prepare_freezes_original_reference_without_copying_archive(prepared_inp
     assert case.writes[-1][2][1] == frozen
 
 
-@pytest.mark.parametrize('damaged', [False, True])
+@pytest.mark.parametrize('damaged', [False, True, 'storage', 'unreadable'])
 def test_prepare_reuses_verified_old_snapshot_without_full_registry_or_resimulation(
         prepared_input, monkeypatch, damaged):
     from copy import deepcopy
@@ -124,11 +124,17 @@ def test_prepare_reuses_verified_old_snapshot_without_full_registry_or_resimulat
     untouched = deepcopy(old)
     monkeypatch.setattr(result_store, 'read_records', lambda table, key, **kw:
         [] if table == 'seed_prepared' else case.read(table, key, **kw))
-    monkeypatch.setattr(result_store, 'iter_group', lambda table, key:
-        iter(deepcopy(old)) if (table, key) == ('seed_prepared', old_key) else iter(()))
+    def legacy_rows(table, key):
+        if damaged == 'storage': raise result_store.InvalidRecordError('旧快照文件损坏')
+        if damaged == 'unreadable': raise result_store.DataReadError('暂时无法读取旧快照')
+        return iter(deepcopy(old)) if (table, key) == ('seed_prepared', old_key) else iter(())
+    monkeypatch.setattr(result_store, 'iter_group', legacy_rows)
     def reference(*args, **kwargs): raise RuntimeError('需要重建参考')
     monkeypatch.setattr(engine, 'reference', reference)
-    if damaged:
+    if damaged == 'unreadable':
+        with pytest.raises(result_store.DataReadError, match='暂时无法读取'):
+            seeds.ensure_prepared('/profile', 1, '/memory', sources=[source], inputs=case.inputs)
+    elif damaged:
         with pytest.raises(RuntimeError, match='需要重建参考'):
             seeds.ensure_prepared('/profile', 1, '/memory', sources=[source], inputs=case.inputs)
     else:
