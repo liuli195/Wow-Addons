@@ -308,8 +308,6 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
                         for future in sorted(done, key=lambda item: pending[item][0]):
                             _, identity = pending.pop(future)
                             collect(identity, future)
-                if rejected:
-                    store.checkpoint()
                 if error is not None:
                     raise error
                 return [results[key(program)] for program in programs]
