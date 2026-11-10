@@ -1563,24 +1563,24 @@ class TaskStore:
         from concurrent.futures import ThreadPoolExecutor
         from result_store import iter_group, write, prepare_batch, DataReadError, _api
         with self.lock:
-            items = sorted(self.memory_reports.items())
+            items = sorted((key, stored['_wire_bytes']) for key, stored in self.memory_reports.items())
         # 复用活动任务登记：多组同时结束时共用转换内存预算，避免每组各占一整份。
         active_tasks = max(1, len(_LIVE_TASKS))
         memory_bytes = self.state.get('config', {}).get('memory_limit_mb', 8192) * 1024 * 1024
         group_budget = max(1024 * 1024, min(64 * 1024 * 1024, memory_bytes // 64 // active_tasks))
         plans, plan, byte_count = [], [], 0
-        for item in items:
-            size = item[1]['_wire_bytes']
+        for key, size in items:
             if plan and (len(plan) == 64 or byte_count + size > group_budget):
                 plans.append(plan)
                 plan, byte_count = [], 0
-            plan.append(item)
+            plan.append(key)
             byte_count += size
         if plan:
             plans.append(plan)
         def publish_group(plan):
-            group = self.state['run_id'] + '_m' + digest([key for key, _ in plan])[:20]
-            expected = {key: stored for key, stored in plan}
+            group = self.state['run_id'] + '_m' + digest(plan)[:20]
+            with self.lock:
+                expected = {key: self.memory_reports[key] for key in plan}
             def validate():
                 found = set()
                 for row in iter_group('batches', group):
@@ -1601,13 +1601,28 @@ class TaskStore:
                 rows = [prepare_batch(dict({key: value for key, value in stored.items() if not key.startswith('_')},
                     storage_group_key=group),
                     diagnostic_logging=self.diagnostic_logging, runtime=getattr(self, 'runtime', None))
-                    for _, stored in plan]
+                    for stored in expected.values()]
                 from runtime import check_memory_limit
                 check_memory_limit(self.state.get('config', {}).get('memory_limit_mb', 8192))
-                write('batches', group, rows)
-                del rows
-                validate()
-            return group, [key for key, _ in plan]
+                try:
+                    write('batches', group, rows)
+                except Exception as error:
+                    del rows
+                    try:
+                        validate()
+                    except Exception:
+                        raise error
+                else:
+                    del rows
+                    validate()
+            with self.lock:
+                for key in plan:
+                    row = self.verified_batches[key]
+                    row.update(storage_group_key=group, storage_version=3)
+                    self.unsaved_batches[key] = row
+                    self.published_report_receipts[key] = digest(row)
+                    self.memory_reports.pop(key, None)
+            return group, plan
         def publish(plan):
             # 所有活动任务共同最多两组转换，避免四组同时收尾产生八份大对象。
             with _MEMORY_REPORT_SLOTS:
@@ -1617,14 +1632,9 @@ class TaskStore:
             completed = list(pool.map(publish, plans))
         with self.lock:
             evidence = self.state.setdefault('evidence_storage', dict(version=3, report_groups={}))
-            for group, keys in completed:
-                for key in keys:
-                    row = self.verified_batches[key]
-                    row.update(storage_group_key=group, storage_version=3)
-                    self.unsaved_batches[key] = row
-                    self.published_report_receipts[key] = digest(row)
-                    evidence['report_groups'][key] = group
-                    self.memory_reports.pop(key, None)
+            evidence['report_groups'].update({key: row['storage_group_key']
+                for key, row in self.verified_batches.items()
+                if row.get('storage_version') == 3 and row.get('storage_group_key')})
         self._publish_memory_archive()
         return bool(completed)
 

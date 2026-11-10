@@ -109,6 +109,7 @@ def memory_ga(monkeypatch):
                 raise result_store.DataReadError('指定记录组缺失') from MissingStoredKey(keys)
             return [deepcopy(row) for key in keys for row in records[table, key]]
         monkeypatch.setattr(result_store, 'read_many', read_many)
+        monkeypatch.setattr(result_store, 'iter_group', lambda table, key: (row for row in result_store.read_many(table, [key])))
         if memory_destination is not None:
             monkeypatch.setattr(result_store, '_api', lambda: dict(MissingKeyError=MissingStoredKey))
         monkeypatch.setattr(store, 'stage_report', stage_report)
@@ -426,6 +427,18 @@ def test_v3_selected_independently_reads_full_source_cohort(monkeypatch, memory_
     state['configuration_key'] = key
     training._publish_seed_evidence(ga, store, manifest, case.character, ready)
     selected = training._selected(ga, store, manifest, case.character, ready, key)
+    stored_read = result_store.read_many
+    monkeypatch.setattr(result_store, 'iter_group', lambda table, group: (row for row in stored_read(table, [group])))
+    def no_bulk_reports(table, keys, **kwargs):
+        assert table != 'batches', '独立验真不应一次装入整组报告'
+        return stored_read(table, keys, **kwargs)
+    monkeypatch.setattr(result_store, 'read_many', no_bulk_reports)
+    archive_reader = result_store.read_search_records
+    def compact_archive(*args, **kwargs):
+        values = archive_reader(*args, **kwargs)
+        assert all(set(row) == {'candidate_key', 'program'} for row in values), '来源验证只应保留必要历史字段'
+        return values
+    monkeypatch.setattr(result_store, 'read_search_records', compact_archive)
     training.verify_selected_evidence(selected)
     wrong_group = deepcopy(selected)
     for row in wrong_group:

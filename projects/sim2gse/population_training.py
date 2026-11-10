@@ -699,7 +699,7 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
 
 def _retest_scores(ga, store, *, condition, stage_plan, config, character, simulation_config,
                    scenarios=SCENARIOS):
-    from result_store import DATA_ROOT, read_many, report_locations
+    from result_store import DATA_ROOT, iter_group, report_locations
     receipts = {}
     qualified = []
     for identity in ga['finalists']:
@@ -748,12 +748,11 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
         group = receipt[0].get('storage_group_key') or locations.get(key) or key
         groups.setdefault(group, {})[key] = receipt
     for group, targets in groups.items():
-        saved_rows = read_many('batches', [group])
         maximum = 64 if all(row[0].get('storage_version') == 3 for row in targets.values()) else 12
-        if len(saved_rows) > maximum:
-            raise ValueError('发布报告组超过对应版本上限；旧四条保持不变')
         found = set()
-        for saved in saved_rows:
+        for count, saved in enumerate(iter_group('batches', group), 1):
+            if count > maximum:
+                raise ValueError('发布报告组超过对应版本上限；旧四条保持不变')
             key = saved.get('batch_key')
             if key not in targets:
                 continue
@@ -766,7 +765,8 @@ def _retest_scores(ga, store, *, condition, stage_plan, config, character, simul
         if found != targets.keys():
             raise ValueError('发布缺少完整复测报告；旧四条保持不变')
         # Only small receipts survive the group; do not retain the last full report.
-        del saved_rows, saved
+        if found:
+            del saved
     return qualified
 
 
@@ -775,6 +775,7 @@ _SEED_EVIDENCE_JSON = ('manifest', 'capabilities', 'ga', 'receipts', 'storage', 
 
 def _read_seed_evidence(group, checksum):
     import result_store
+    from source_catalog import bounded_digest
     rows = result_store.read_records('seed_evidence', group)
     if len(rows) != 1:
         raise ValueError('新版训练完整来源证据缺失')
@@ -782,7 +783,7 @@ def _read_seed_evidence(group, checksum):
     for key in _SEED_EVIDENCE_JSON:
         if isinstance(record.get(key), str):
             record[key] = json.loads(record[key])
-    if digest(record) != checksum:
+    if bounded_digest(record) != checksum:
         raise ValueError('新版训练完整来源证据摘要不符')
     return record
 
@@ -790,10 +791,13 @@ def _read_seed_evidence(group, checksum):
 def _publish_seed_evidence(ga, store, manifest, character, ready):
     """只保存一次冻结输入与完整复测目录；原生报告仍保留原有结构。"""
     import result_store
+    from source_catalog import bounded_digest
     final_keys = {row['batch_key'] for identity in ga['finalists']
                   for batches in ga['finals'][identity].values() for row in batches.values()}
     receipts = {key: store.batch(key) for key in sorted(final_keys)}
-    finals = deepcopy(ga['finals'])
+    finals = {identity: {scenario: {index: dict(row) for index, row in batches.items()}
+                        for scenario, batches in scenarios.items()}
+              for identity, scenarios in ga['finals'].items()}
     for identity in ga['finalists']:
         for batches in finals[identity].values():
             for row in batches.values():
@@ -810,7 +814,7 @@ def _publish_seed_evidence(ga, store, manifest, character, ready):
         ga=dict(finalists=ga['finalists'], finals=finals,
                 **(dict(breeding=ga['breeding']) if ga.get('breeding') else {})),
         receipts=receipts, storage=storage)
-    checksum = digest(record)
+    checksum = bounded_digest(record)
     group = store.state['run_id'] + '_s' + checksum[:20]
     if not result_store.read_records('seed_evidence', group):
         schema = dict(run_id='VARCHAR', condition='VARCHAR', profile_text='VARCHAR',
@@ -842,7 +846,8 @@ def verify_selected_evidence(rows):
                != manifest['environment']['template']
             or manifest['stage_plan'] != _stage_plan(manifest['training_config'], manifest['seed'])):
         raise ValueError('新版训练冻结输入与完整来源证据不符')
-    archive = result_store.read_search_records(storage, record['run_id'], condition=condition)
+    archive = result_store.read_search_records(storage, record['run_id'], condition=condition,
+                                               columns=['candidate_key', 'program'])
     store = SimpleNamespace(memory_execution=True, published_report_receipts={},
         state=dict(archive=[dict(key=row['candidate_key'], program=row['program']) for row in archive],
                    evidence_storage=storage), batch=lambda key: record['receipts'].get(key))

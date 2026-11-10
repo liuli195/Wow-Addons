@@ -2,6 +2,15 @@
 import pytest
 
 
+def test_public_formal_evidence_validates_reports_without_bulk_loading(monkeypatch):
+    import formal_search, result_store
+    from champion_evidence_fixture import formal_cohort
+    record, state, character, _, _, reports = formal_cohort()
+    monkeypatch.setattr(result_store, 'read_many', lambda *a, **k: pytest.fail('正式验真不能整组装入报告'))
+    monkeypatch.setattr(result_store, 'iter_group', lambda table, group: iter(reports))
+    formal_search.validate_evidence(record, state, character, verify_reports=True)
+
+
 def test_public_formal_champion_rejects_a_truncated_finalist_cohort_before_scoring():
     from copy import deepcopy
     import result_store

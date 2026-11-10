@@ -550,44 +550,94 @@ def iter_group(table, key):
         raise InvalidRecordError('指定报告组损坏') from error
 
 
-def read_search_records(storage, run_id, *, condition=None):
-    """新版只读成绩凭据；不把未保存的粗评摘要冒称为完整模拟报告。"""
-    from search import digest
+def _ordered_search_records(group):
+    """已知分组逐行取入紧凑内存排序区，不新增磁盘或改变对外保存格式。"""
+    from contextlib import closing
+    import pickle
+    import sqlite3
+    with closing(sqlite3.connect(':memory:')) as ordered:
+        ordered.execute('PRAGMA temp_store=MEMORY')
+        ordered.execute('CREATE TABLE records (ordinal INTEGER PRIMARY KEY, payload BLOB NOT NULL)')
+        with closing(iter_group('search_records', group)) as source:
+            def packed():
+                for row in source:
+                    ordinal = row.get('search_order')
+                    if not isinstance(ordinal, int) or ordinal < 0:
+                        raise InvalidRecordError('搜索摘要数量、顺序或总摘要不符')
+                    # 仅本进程把自己刚编码的记录放入内存排序区，绝不读外部pickle文件。
+                    yield ordinal, pickle.dumps(row, protocol=5)
+            try:
+                ordered.executemany('INSERT INTO records VALUES (?,?)', packed())
+            except (sqlite3.Error, OverflowError) as error:
+                raise InvalidRecordError('搜索摘要数量、顺序或总摘要不符') from error
+        for (payload,) in ordered.execute('SELECT payload FROM records ORDER BY ordinal'):
+            yield pickle.loads(payload)
+
+
+def _validate_search_record(row, run_id, condition):
     import math
+    from search import digest
+    if (row['run_id'] != run_id or digest(row['program']) != row['program_digest']
+            or not isinstance(row['batches'], list) or not row['batches']):
+        raise InvalidRecordError('搜索摘要的任务或程序身份不符')
+    for batch in row['batches']:
+        request = batch.get('request') or {}
+        if (request.get('purpose') != 'search' or request.get('behavior_identity') != row['candidate_key']
+                or condition is not None and request.get('condition') != condition
+                or digest(request) != batch.get('data_key') or batch.get('status') != 'success'
+                or type(batch.get('samples')) is not int or batch['samples'] < 1
+                or type(batch.get('dps')) not in (int, float)
+                or not math.isfinite(batch['dps']) or batch['dps'] < 0):
+            raise InvalidRecordError('搜索轻量成绩凭据身份或数值不符')
+    samples = sum(batch['samples'] for batch in row['batches'])
+    if sum(batch['dps'] * batch['samples'] for batch in row['batches']) / samples != row['score']:
+        raise InvalidRecordError('搜索摘要成绩不符')
+
+
+def read_search_records(storage, run_id, *, condition=None, columns=None):
+    """完整验真全部历史后才交出结果；可只保留消费者需要的字段。"""
+    from contextlib import closing
+    from source_catalog import digest_rows
+    fields = {'run_id', 'candidate_key', 'search_order', 'program', 'program_digest', 'score', 'batches', 'candidate'}
+    if columns is not None and (not isinstance(columns, (list, tuple)) or not columns
+            or any(not isinstance(name, str) or name not in fields for name in columns)
+            or len(set(columns)) != len(columns)):
+        raise ValueError('搜索摘要选择字段无效')
     if (not isinstance(storage, dict) or storage.get('version') != 3
             or not isinstance(storage.get('archive_group'), str)
             or not isinstance(storage.get('archive_digest'), str)
             or type(storage.get('archive_count')) is not int or storage['archive_count'] < 1):
         raise InvalidRecordError('搜索摘要位置或版本缺失')
-    rows = read_many('search_records', [storage['archive_group']])
-    try:
-        for row in rows:
-            for key in ('program', 'batches', 'candidate'):
-                if isinstance(row.get(key), str):
-                    row[key] = json.loads(row[key])
-        rows.sort(key=lambda row: row['search_order'])
-    except (KeyError, TypeError, json.JSONDecodeError) as error:
-        raise InvalidRecordError('搜索摘要字段缺失或损坏') from error
-    if (len(rows) != storage.get('archive_count') or digest(rows) != storage['archive_digest']
-            or [row['search_order'] for row in rows] != list(range(len(rows)))
-            or len({row['candidate_key'] for row in rows}) != len(rows)):
+    rows, identities, count, ordered_rows, first_error = [], set(), 0, True, None
+    def checked(source):
+        nonlocal count, ordered_rows, first_error
+        for row in source:
+            try:
+                for key in ('program', 'batches', 'candidate'):
+                    if isinstance(row.get(key), str):
+                        row[key] = json.loads(row[key])
+                ordered_rows = ordered_rows and row['search_order'] == count
+                identities.add(row['candidate_key'])
+            except (KeyError, TypeError, json.JSONDecodeError) as error:
+                raise InvalidRecordError('搜索摘要字段缺失或损坏') from error
+            try:
+                _validate_search_record(row, run_id, condition)
+            except InvalidRecordError as error:
+                if first_error is None:
+                    first_error = str(error)
+            except (KeyError, TypeError, ValueError, AttributeError):
+                if first_error is None:
+                    first_error = '搜索摘要字段缺失或损坏'
+            yield row
+            rows.append({name: row.get(name) for name in columns} if columns is not None else row)
+            count += 1
+    with closing(_ordered_search_records(storage['archive_group'])) as source:
+        checksum = digest_rows(checked(source))
+    if (count != storage['archive_count'] or checksum != storage['archive_digest']
+            or not ordered_rows or len(identities) != count):
         raise InvalidRecordError('搜索摘要数量、顺序或总摘要不符')
-    for row in rows:
-        if (row['run_id'] != run_id or digest(row['program']) != row['program_digest']
-                or not isinstance(row['batches'], list) or not row['batches']):
-            raise InvalidRecordError('搜索摘要的任务或程序身份不符')
-        for batch in row['batches']:
-            request = batch.get('request') or {}
-            if (request.get('purpose') != 'search' or request.get('behavior_identity') != row['candidate_key']
-                    or condition is not None and request.get('condition') != condition
-                    or digest(request) != batch.get('data_key') or batch.get('status') != 'success'
-                    or type(batch.get('samples')) is not int or batch['samples'] < 1
-                    or type(batch.get('dps')) not in (int, float)
-                    or not math.isfinite(batch['dps']) or batch['dps'] < 0):
-                raise InvalidRecordError('搜索轻量成绩凭据身份或数值不符')
-        samples = sum(batch['samples'] for batch in row['batches'])
-        if sum(batch['dps'] * batch['samples'] for batch in row['batches']) / samples != row['score']:
-            raise InvalidRecordError('搜索摘要成绩不符')
+    if first_error is not None:
+        raise InvalidRecordError(first_error)
     return rows
 
 
@@ -607,7 +657,8 @@ def publish_search_records(state):
         return
     previous = state.get('evidence_storage') or {}
     if previous.get('archive_group'):
-        saved = read_search_records(previous, state['run_id'], condition=state.get('condition'))
+        saved = read_search_records(previous, state['run_id'], condition=state.get('condition'),
+                                    columns=['candidate_key', 'program_digest', 'score', 'batches'])
         def core(record):
             return (record['candidate_key'], record['program_digest'], record['score'],
                     [{key: batch.get(key) for key in ('data_key', 'request', 'dps', 'samples', 'variance')}
@@ -616,19 +667,21 @@ def publish_search_records(state):
             raise InvalidRecordError('已保存搜索摘要与当前冻结成绩冲突')
         if len(saved) == len(rows):
             return  # 恢复时少了历史编译对象，不改变已验证的来源身份。
-    checksum = digest(rows)
+        del saved
+    from source_catalog import digest_rows
+    checksum = digest_rows(iter(rows))
     group = state['run_id'] + '_a' + checksum[:20]
     storage = dict(state.get('evidence_storage') or dict(version=3, report_groups={}),
         archive_group=group, archive_digest=checksum, archive_count=len(rows))
     schema = dict(run_id='VARCHAR', candidate_key='VARCHAR', search_order='UBIGINT', program='JSON',
         program_digest='VARCHAR', score='DOUBLE', batches='JSON', candidate='JSON')
     try:
-        read_search_records(storage, state['run_id'], condition=state.get('condition'))
+        read_search_records(storage, state['run_id'], condition=state.get('condition'), columns=['candidate_key'])
     except DataReadError as error:
         if error.__cause__ is None or not isinstance(error.__cause__, _api()['MissingKeyError']):
             raise
         write('search_records', group, rows, schema=schema)
-        read_search_records(storage, state['run_id'], condition=state.get('condition'))
+        read_search_records(storage, state['run_id'], condition=state.get('condition'), columns=['candidate_key'])
     state['evidence_storage'] = storage
 
 

@@ -141,6 +141,63 @@ def test_recovery_replace_failure_keeps_previous_verified_file(tmp_path, monkeyp
 
 
 @pytest.mark.real
+@pytest.mark.parametrize('lost_reply', [False, True])
+def test_final_publication_releases_verified_groups_before_starting_later_groups(
+        tmp_path, monkeypatch, installed_result_center, lost_reply):
+    import gc
+    import json
+    import threading
+    import weakref
+    import result_store
+    from task import parse_character
+    from test_character_export import sample_profile
+    from test_search import _fast_report
+    class Report(dict):
+        pass
+    result_store.DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    store = TaskStore(tmp_path / 'publication', memory_execution=True)
+    character = parse_character(sample_profile())
+    store.character, store.simulation_config = character, dict(target_count=1)
+    store.state.update(run_id='release-published', archive=[], completed_batches=0)
+    references = []
+    for index in range(129):
+        request = dict(condition='frozen', program=[], behavior_identity='candidate', purpose='nominal',
+            seed=index, input_seed=index+500000, iterations=32, times=[0], stats='paired-bootstrap-v1',
+            trace=False, reset_events=[])
+        key = digest(request)
+        row = dict(status='success', request=request, data_key=key, dps=42., samples=31, variance=0.)
+        report = Report(_fast_report(character, 42., 31))
+        references.append(weakref.ref(report))
+        stored = dict(batch_key=key, run_id=store.state['run_id'], condition_key='frozen', candidate_key='candidate',
+            program_identity=json.dumps([]), purpose='nominal', seed=index, input_seed=index+500000,
+            iterations=32, times=[0], stats_version='paired-bootstrap-v1', trace=False,
+            batch_index=0, scenario='nominal', report=report, dps=42., samples=31, variance=0.)
+        store.stage_report(key, row, stored, report_bytes=1)
+    del report, stored
+    write = result_store.write
+    writes, guard = [], threading.Lock()
+    def observed_write(table, group, rows, **kwargs):
+        with guard:
+            writes.append(group)
+            ordinal = len(writes)
+            if len(writes) == 3:
+                gc.collect()
+                assert sum(ref() is None for ref in references) >= 64, '已验真的整组报告仍被计划或完成结果持有'
+        result = write(table, group, rows, **kwargs)
+        if lost_reply and ordinal == 1:
+            raise RuntimeError('完整保存后响应丢失')
+        return result
+    monkeypatch.setattr(result_store, 'write', observed_write)
+    try:
+        assert store.flush_reports(final=True)
+        assert len(writes) == 3 and not store.memory_reports
+        assert len(store.state['evidence_storage']['report_groups']) == 129
+        assert all(ref() is None for ref in references)
+    finally:
+        store.close()
+
+
+@pytest.mark.real
 def test_recovery_archive_reuses_one_copy_of_each_scoring_receipt(tmp_path):
     import json
     store = TaskStore(tmp_path, memory_execution=True)
@@ -326,9 +383,14 @@ def test_seed_snapshot_rejects_stale_writer_and_retries_identical_result(tmp_pat
 
 
 @pytest.mark.real
-def test_search_summary_rejects_corruption_without_rewriting_evidence(tmp_path, installed_result_center):
+def test_search_summary_rejects_corruption_without_rewriting_evidence(tmp_path, installed_result_center, monkeypatch):
     import result_store
     result_store.DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    many = result_store.read_many
+    def no_bulk_history(table, keys, **kwargs):
+        assert table != 'search_records', '完整历史核验不能整组装入'
+        return many(table, keys, **kwargs)
+    monkeypatch.setattr(result_store, 'read_many', no_bulk_history)
     state = dict(run_id='summary-proof', condition='frozen')
     request = dict(condition='frozen', purpose='search', behavior_identity='candidate', program=[])
     row = dict(status='success', request=request, data_key=digest(request), dps=42., samples=31, variance=0.)
@@ -341,6 +403,8 @@ def test_search_summary_rejects_corruption_without_rewriting_evidence(tmp_path, 
     assert state['evidence_storage'] == storage
     records = result_store.read_search_records(storage, state['run_id'], condition='frozen')
     assert len(records) == 1
+    assert result_store.read_search_records(storage, state['run_id'], columns=['candidate_key', 'program']) == [
+        dict(candidate_key='candidate', program=[['outbreak']])]
     records[0]['score'] = 999.
     schema = dict(run_id='VARCHAR', candidate_key='VARCHAR', search_order='UBIGINT', program='JSON',
         program_digest='VARCHAR', score='DOUBLE', batches='JSON', candidate='JSON')
@@ -348,7 +412,35 @@ def test_search_summary_rejects_corruption_without_rewriting_evidence(tmp_path, 
     with pytest.raises(result_store.InvalidRecordError, match='总摘要'):
         result_store.read_search_records(storage, state['run_id'])
     with pytest.raises(result_store.InvalidRecordError, match='总摘要'):
+        result_store.read_search_records(storage, state['run_id'], columns=['candidate_key', 'program'])
+    with pytest.raises(result_store.InvalidRecordError, match='总摘要'):
         result_store.publish_search_records(state)
+
+
+@pytest.mark.real
+def test_compact_history_read_sorts_rows_and_checks_omitted_score_fields(tmp_path, installed_result_center):
+    import result_store
+    result_store.DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    records = []
+    for index in range(2):
+        identity = 'candidate-' + str(index)
+        program = [['outbreak']]
+        request = dict(condition='frozen', purpose='search', behavior_identity=identity, program=[])
+        batch = dict(status='success', data_key=digest(request), request=request, dps=42., samples=31)
+        records.append(dict(run_id='ordered-history', candidate_key=identity, search_order=index,
+            program=program, program_digest=digest(program), score=42., batches=[batch], candidate=None))
+    storage = dict(version=3, archive_group='reversed', archive_count=2, archive_digest=digest(records))
+    schema = dict(run_id='VARCHAR', candidate_key='VARCHAR', search_order='UBIGINT', program='JSON',
+        program_digest='VARCHAR', score='DOUBLE', batches='JSON', candidate='JSON')
+    result_store.write('search_records', 'reversed', records[::-1], schema=schema)
+    read = result_store.read_search_records(storage, 'ordered-history', condition='frozen',
+                                             columns=['candidate_key', 'program'])
+    assert read == [dict(candidate_key='candidate-0', program=[['outbreak']]),
+                    dict(candidate_key='candidate-1', program=[['outbreak']])]
+    records[0]['batches'][0]['dps'] = 999.
+    result_store.write('search_records', 'reversed', records[::-1], schema=schema)
+    with pytest.raises(result_store.InvalidRecordError, match='总摘要'):
+        result_store.read_search_records(storage, 'ordered-history', columns=['candidate_key', 'program'])
 
 
 @pytest.mark.real
@@ -400,11 +492,16 @@ def test_final_groups_obey_wire_budget_write_in_parallel_and_join_on_failure(
             with pytest.raises(OSError, match='injected'):
                 store.flush_reports(final=True)
             assert 'evidence_storage' not in store.state
-            assert len(store.memory_reports) == 3
+            assert len(store.memory_reports) == 1
+            assert len(store.published_report_receipts) == 2
+            assert len(calls) == 3
+            store.flush_reports(final=True)
+            assert not store.memory_reports
+            assert len(set(store.state['evidence_storage']['report_groups'].values())) == 3
         else:
             store.flush_reports(final=True)
             assert len(set(store.state['evidence_storage']['report_groups'].values())) == 3
-        assert len(calls) == 3
+        assert len(calls) == (4 if fail else 3)
         assert len({thread for _, thread in calls[:2]}) == 2
     finally:
         store.close()

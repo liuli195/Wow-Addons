@@ -28,7 +28,14 @@ def _json_chunks(value):
             yield ':'
             yield from _json_chunks(value[key])
         yield '}'
-    elif isinstance(value, (list, tuple, Iterator)):
+    elif isinstance(value, (list, tuple)):
+        yield '['
+        for index in range(0, len(value), 128):
+            if index: yield ','
+            yield json.dumps(value[index:index + 128], ensure_ascii=False,
+                             sort_keys=True, separators=(',', ':'))[1:-1]
+        yield ']'
+    elif isinstance(value, Iterator):
         yield '['
         for index, item in enumerate(value):
             if index: yield ','
@@ -50,7 +57,11 @@ def digest_rows(rows):
     checksum = hashlib.sha256(b'[')
     for index, row in enumerate(rows):
         if index: checksum.update(b',')
-        for chunk in _json_chunks(row):
+        # 普通有限记录交给标准库一次编码；只有直接携带大原文的行拆字符串。
+        chunks = ((json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(',', ':')),)
+                  if isinstance(row, dict) and not any(isinstance(value, str) and len(value) > CHUNK_CHARS
+                                                       for value in row.values()) else _json_chunks(row))
+        for chunk in chunks:
             checksum.update(chunk.encode('utf-8'))
     checksum.update(b']')
     return checksum.hexdigest()
