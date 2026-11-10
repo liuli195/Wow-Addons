@@ -1967,7 +1967,7 @@ def _read_resume_checkpoint(output_root):
         state = json.loads(row[0])
         if state == {'storage_format': 2}:
             names = ('formal_search_version', 'formal_search', 'config', 'syntax', 'capabilities', 'burst', 'rule_snapshot',
-                     'rule_context', 'formal_champion_publication_intent', 'memory_checkpoint')
+                     'rule_context', 'formal_champion_publication_intent', 'memory_checkpoint', 'execution_storage_version')
             rows = connection.execute('SELECT key,value FROM state_fields WHERE key IN (' +
                 ','.join('?' for _ in names) + ')', names)
             state = {key: json.loads(value) for key, value in rows}
@@ -2039,7 +2039,8 @@ def _resume_task(output_root, **kwargs):
         policy = checkpoint.get('config', {})
         store = TaskStore(destination, **(dict(memory_execution=True,
             checkpoint_interval_seconds=policy.get('checkpoint_interval_seconds', 600))
-            if checkpoint.get('memory_checkpoint') else {}))
+            if (policy.get('memory_execution') or checkpoint.get('execution_storage_version') == 3
+                or checkpoint.get('memory_checkpoint')) else {}))
         resumed_runtime = None
         try:
             state = store.state

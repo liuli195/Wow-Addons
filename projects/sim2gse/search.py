@@ -1015,6 +1015,8 @@ def _load_checkpoint(database):
                         database.execute('SELECT value FROM state_archive ORDER BY ordinal')]
     receipt = state.get('memory_checkpoint')
     decoded = {}
+    if not receipt and state.get('execution_storage_version') == 3:
+        raise ValueError('内存恢复点缺少校验标识，拒绝继续')
     if receipt:
         payload = dict(state)
         payload.pop('memory_checkpoint')

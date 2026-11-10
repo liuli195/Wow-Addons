@@ -1091,7 +1091,7 @@ def test_single_resume_missing_simulation_keeps_saved_and_explicit_difference_re
     case.store.checkpoint()
     connection = SimpleNamespace(execute=case.store.db.execute, close=lambda: None)
     monkeypatch.setattr(sqlite3, 'connect', lambda *a, **kw: connection)
-    monkeypatch.setattr(search, 'TaskStore', lambda *a: case.store)
+    monkeypatch.setattr(search, 'TaskStore', lambda *a, **kw: case.store)
     close_store = case.store.close
     monkeypatch.setattr(case.store, 'close', lambda: None)
     monkeypatch.setattr(result_store, 'ensure_available', lambda: None)

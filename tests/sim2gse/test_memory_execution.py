@@ -46,7 +46,8 @@ def test_recovery_save_streams_history_without_accumulating_all_serialized_rows(
 
 @pytest.mark.real
 @pytest.mark.parametrize('targets', [1, 5])
-def test_public_formal_resume_uses_one_verified_memory_store(tmp_path, monkeypatch, installed_result_center, targets):
+@pytest.mark.parametrize('missing_seal', [False, True])
+def test_public_formal_resume_uses_one_verified_memory_store(tmp_path, monkeypatch, installed_result_center, targets, missing_seal):
     import engine, search, task
     from runtime import TaskCancelled
     from test_character_export import sample_profile
@@ -70,6 +71,15 @@ def test_public_formal_resume_uses_one_verified_memory_store(tmp_path, monkeypat
         search_config=dict(memory_execution=True, diagnostic_logging=False, search_timeline=False))
     assert first['status'] == 'cancelled'
     opened.clear()
+    if missing_seal:
+        path = folder / 'task.sqlite3'
+        with sqlite3.connect(path) as database:
+            database.execute("DELETE FROM state_fields WHERE key='memory_checkpoint'")
+        previous = path.read_bytes()
+        with pytest.raises(ValueError, match='校验|恢复点|检查点'):
+            task.resume_task(folder)
+        assert path.read_bytes() == previous
+        return
     resumed = task.resume_task(folder)
     assert resumed['status'] == 'cancelled'
     assert len(opened) == 1 and opened[0].memory_execution
