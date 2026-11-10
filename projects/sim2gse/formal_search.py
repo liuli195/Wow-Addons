@@ -177,7 +177,7 @@ def validate_evidence(record, state, character, *, verify_reports):
     from program import canonicalize_search_program
     from search import _validate_saved_batch, _score, input_times, STATS_VERSION
     from sequence import compiled_identity
-    from result_store import InvalidRecordError, read_many, report_locations
+    from result_store import InvalidRecordError, iter_group, report_locations
     evaluation = record.get('evaluation') or {}
     if 'syntax' in record.get('binding', {}):
         from simulation_config import verify_syntax_receipt
@@ -257,7 +257,7 @@ def validate_evidence(record, state, character, *, verify_reports):
         groups.setdefault(group, {})[key] = (cached, index)
     for group, wanted in groups.items():
         found = set()
-        for saved in read_many('batches', [group]):
+        for saved in iter_group('batches', group):
             key = saved.get('batch_key')
             if key not in wanted:
                 continue

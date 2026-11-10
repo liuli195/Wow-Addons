@@ -11,6 +11,56 @@ from unittest.mock import Mock
 REPOSITORY = Path(__file__).resolve().parents[2]
 
 
+def test_report_preparation_converts_observations_without_two_full_collections():
+    import tracemalloc
+    import result_store
+    observations = [dict(value=dict(tag=index)) for index in range(5000)]
+    row = dict(report=dict(sim=dict(players=[dict(name='test',
+        sim2gse_rule_observations=dict(state_observations=observations))])))
+    tracemalloc.start()
+    try:
+        prepared = result_store.prepare_batch(row, diagnostic_logging=True)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    states = prepared['report']['sim']['players'][0]['sim2gse_rule_observations']['state_observations']
+    assert len(states) == 5000
+    assert states[123]['value_storage']['record'] == dict(tag=123)
+    assert observations[123] == dict(value=dict(tag=123))
+    assert peak < 4 * 1024 * 1024, f'报告转换保留了重复观察集合：{peak}字节'
+
+
+@pytest.mark.parametrize('logging', [False, True])
+def test_report_preparation_preserves_all_value_kinds_and_input_independence(logging):
+    from copy import deepcopy
+    import result_store
+    states = [{}, dict(value=None), dict(value={}), dict(value=True), dict(value=2),
+              dict(value=1.25), dict(value=dict(tag=7))]
+    actions = [{}, dict(resource_costs=None), dict(resource_costs={}), dict(resource_costs=dict(rune=1))]
+    row = dict(report=dict(sim=dict(players=[dict(name='角色', collected_data=dict(
+        action_sequence=[dict(name='outbreak')], resource_overflowed={}),
+        sim2gse_rule_observations=dict(state_observations=states, action_observations=actions))])))
+    retained = deepcopy(row)
+    prepared = result_store.prepare_batch(row, diagnostic_logging=logging)
+    player = prepared['report']['sim']['players'][0]
+    empty = dict(boolean=None, integer=None, number=None, record=None)
+    expected = [dict(empty, version=1, kind='missing'), dict(empty, version=1, kind='unknown'),
+        dict(empty, version=2, kind='empty_record'), dict(empty, version=1, kind='boolean', boolean=True),
+        dict(empty, version=1, kind='integer', integer=2), dict(empty, version=1, kind='number', number=1.25),
+        dict(empty, version=1, kind='record', record=dict(tag=7))]
+    assert player['sim2gse_rule_observations']['state_observations'] == [dict(value_storage=v) for v in expected]
+    assert player['sim2gse_rule_observations']['action_observations'] == [
+        dict(resource_costs_storage=dict(version=1, kind='missing', keys=[])),
+        dict(resource_costs=None, resource_costs_storage=dict(version=1, kind='unknown', keys=[])),
+        dict(resource_costs=None, resource_costs_storage=dict(version=1, kind='record', keys=[])),
+        dict(resource_costs=dict(rune=1), resource_costs_storage=dict(version=1, kind='record', keys=['rune']))]
+    collected = dict(resource_overflowed=None)
+    if logging: collected['action_sequence'] = [dict(name='outbreak')]
+    assert player['collected_data'] == collected
+    player['sim2gse_rule_observations']['state_observations'][-1]['value_storage']['record']['tag'] = 99
+    assert row == retained
+
+
 def test_binary_write_requires_capability_before_calling_storage(monkeypatch):
     import result_store
 

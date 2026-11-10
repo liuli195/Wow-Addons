@@ -38,11 +38,11 @@ SELECTED_SCHEMA = dict(configuration_key='JSON', candidate_id='VARCHAR', conditi
 SELECTED_V2_SCHEMA = dict(SELECTED_SCHEMA, contract_version='UBIGINT', evaluation='JSON')
 RETEST_SEEDS = (20261008, 20261009, 20261010)
 TRAINING_VERSION = 'seed-training-v2'
-PREPARATION_VERSION = 'seed-preparation-v2-scoped-sources'
+PREPARATION_VERSION = 'seed-preparation-v3-original-references'
 PREPARED_SCHEMA = dict(CANDIDATE_SCHEMA, kind='VARCHAR', config_key='VARCHAR',
     version='VARCHAR', program_revision='VARCHAR', status='VARCHAR', reason='VARCHAR',
     initial_program='JSON', behavior_id='VARCHAR', adaptation='JSON', context='JSON',
-    checksum='VARCHAR', representative_id='VARCHAR', representative_program='JSON')
+    checksum='VARCHAR', representative_id='VARCHAR', representative_program='JSON', original_ref='JSON')
 LEGACY_SOURCE_COMMIT = 'be350c90af3ff90af3ba59e05ad011b4bd61ab44'
 # 仅本票已审阅的三个执行/身份模块；摘要来自固定 Git blob 的 LF / CRLF 字节。
 LEGACY_EXECUTION_RULES = {
@@ -122,17 +122,16 @@ def register(path):
     row.setdefault('active', True)
     row['unavailable_reason'] = '' if row['active'] else '来源已明确停用'
     row['source_revision'] = digest(row)
-    with writer_lock():
-        rows = registry_rows()
-        previous = next((item for item in rows if item['source_id'] == row['source_id']), None)
-        if row.get('allowed_groups') is None and (previous is None or source_groups(previous) is not None):
-            raise ValueError('新增材料必须提供明确适用组；只有既有旧来源可保留共享政策')
-        if previous and previous['program'] == row['program']:
-            row['candidate_id'] = previous['candidate_id']
-        if previous != row:
-            result_store.write('seed_candidates', 'registry',
-                               [item for item in rows if item['source_id'] != row['source_id']] + [row],
-                               schema=CANDIDATE_SCHEMA)
+    from source_catalog import publish, same_source
+    rows = registry_rows(originals=False)
+    previous = next((item for item in rows if item['source_id'] == row['source_id']), None)
+    if row.get('allowed_groups') is None and (previous is None or source_groups(previous) is not None):
+        raise ValueError('新增材料必须提供明确适用组；只有既有旧来源可保留共享政策')
+    if previous and previous['program'] == row['program']:
+        row['candidate_id'] = previous['candidate_id']
+    updated = rows if previous and same_source(previous, row) else (
+        [item for item in rows if item['source_id'] != row['source_id']] + [row])
+    publish(updated, expected_revision=rows.revision)
     return {'status': 'registered', 'candidate_id': row['candidate_id']}
 
 
@@ -187,14 +186,19 @@ def search_program(shared):
     return output
 
 
-def registry_rows():
-    rows = result_store.read_records('seed_candidates', 'registry')
+def registry_rows(*, originals=True):
+    from source_catalog import read_sources
+    rows = read_sources(originals=originals)
     for row in rows:
         row['program'], row['core'] = decode(row['program']), decode(row['core'])
         row.setdefault('source_id', row['candidate_id'])
         row.setdefault('active', True)
         row.setdefault('unavailable_reason', '')
-        row.setdefault('source_revision', digest(row))
+        if 'source_revision' not in row:
+            from source_catalog import original
+            previous = dict(row, original=original(row))
+            previous.pop('original_ref', None)
+            row['source_revision'] = digest(previous)
         row.setdefault('allowed_groups', None)
         if 'allowed_groups' in row:
             row['allowed_groups'] = decode(row['allowed_groups'])
@@ -227,7 +231,7 @@ def source_in_group(row, group, targets):
 
 def sync_history(character, *, sources=None):
     """适配来源后一次原子登记；读取失败不会伪装成来源删除。"""
-    rows = registry_rows() if sources is None else sources
+    rows = registry_rows(originals=False) if sources is None else sources
     with result_store.query("SELECT table_name FROM information_schema.tables WHERE table_name='runs'",
                             tables=['runs']) as cursor:
         available = bool(cursor.fetchone())
@@ -309,9 +313,15 @@ def sync_history(character, *, sources=None):
         else:
             output.append(row)
     output.extend(updates.values())
-    if output != rows:
-        result_store.write('seed_candidates', 'registry', output, schema=CANDIDATE_SCHEMA)
-    return output
+    from source_catalog import read_sources, publish, same_source
+    if len(output) != len(rows) or any(not same_source(a, b) for a, b in zip(output, rows)):
+        snapshot = rows if hasattr(rows, 'revision') else read_sources()
+        if not hasattr(rows, 'revision') and (len(snapshot) != len(rows) or
+                any(not same_source(a, b) for a, b in zip(snapshot, rows))):
+            raise ValueError('来源在历史整理前已变化，拒绝覆盖')
+        publish(output, expected_revision=snapshot.revision)
+        return registry_rows(originals=False)
+    return rows
 
 
 
@@ -564,7 +574,7 @@ def _read_identity(path):
 
 def selected_materials(candidate_ids, *, sources=None):
     """只读取明确登记的材料，错误编号在启动计算前拒绝。"""
-    sources = registry_rows() if sources is None else sources
+    sources = registry_rows(originals=False) if sources is None else sources
     rows = []
     for candidate_id in dict.fromkeys(candidate_ids):
         matches = [row for row in sources if row['candidate_id'] == candidate_id]
@@ -648,6 +658,41 @@ def _training_inputs(template, targets, *, cancel_event=None, use_burst=False, m
 
 
 
+def _legacy_preparation(preparation_input):
+    """完整校验旧快照，内存中仅留下小行；旧快照原地保留。"""
+    from source_catalog import digest_rows
+    old_input = dict(preparation_input, version='seed-preparation-v2-scoped-sources')
+    key = digest(old_input)
+    rows, header = [], None
+    schema = set(PREPARED_SCHEMA) - {'original_ref'}
+    def checked_rows():
+        nonlocal header
+        for row in result_store.iter_group('seed_prepared', key):
+            if set(row) != schema:
+                raise ValueError('旧准备快照字段不符')
+            for name, kind in PREPARED_SCHEMA.items():
+                if kind == 'JSON' and name in row:
+                    row[name] = decode(row[name])
+            if row['kind'] == 'context':
+                if header is not None or row['version'] != old_input['version'] or row['config_key'] != key:
+                    raise ValueError('旧准备快照身份不符')
+                header = row
+            yield {name: value for name, value in row.items() if name != 'checksum'}
+            # 摘要已消耗这一行，随后才释放大原文；不得先投影再校验。
+            rows.append(dict(row, original=None) if row['kind'] == 'source' else row)
+    try:
+        checksum = digest_rows(checked_rows())
+    except (result_store.InvalidRecordError, ValueError, TypeError):
+        return [], None
+    except result_store.DataReadError as error:
+        if isinstance(error.__cause__, result_store._api()['MissingKeyError']):
+            return [], None
+        raise
+    if header is None or header.get('checksum') != checksum:
+        return [], None
+    return rows, header
+
+
 def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burst=False,
                     materials=None, max_processes=None, inputs=None, sources=None, diagnostic_logging=None, search_config=None,
                     burst_identity=None, runtime=None):
@@ -672,7 +717,7 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
         cached = result_store.read_records('seed_prepared', config_key)
     except result_store.InvalidRecordError:
         cached = []  # 明确损坏可重建；权限、存储及临时读失败仍直接报错。
-    json_fields = ('program', 'core', 'initial_program', 'adaptation', 'context', 'representative_program', 'allowed_groups')
+    json_fields = ('program', 'core', 'initial_program', 'adaptation', 'context', 'representative_program', 'allowed_groups', 'original_ref')
     try:
         for row in cached:
             for name in json_fields:
@@ -686,7 +731,9 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
             or header.get('checksum') != digest([{key: value for key, value in row.items()
                                                 if key != 'checksum'} for row in cached])):
         cached, header = [], None
-    sources = registry_rows() if sources is None else sources
+    if header is None:
+        cached, header = _legacy_preparation(preparation_input)
+    sources = registry_rows(originals=False) if sources is None else sources
     sources = [row for row in sources if row['class_name'] == character.class_name and row['spec'] == character.spec]
     active = [row for row in sources if row.get('active', True) and row['semantic'] != 'unsupported']
     context = header['context'] if header else None
@@ -738,6 +785,8 @@ def ensure_prepared(template, targets, workspace, *, cancel_event=None, use_burs
     entries, rebuilt = [], 0
     for source in sources:
         runtime.check()
+        from source_catalog import freeze
+        source = freeze(source)
         source = dict(source, program=decode(source['program']), core=decode(source['core']))
         program_revision = digest(dict({key: source[key] for key in ('program', 'semantic', 'instructions', 'changes')},
                                        allowed_groups=source_groups(source)))
@@ -891,7 +940,7 @@ def _run_training(template, targets, workspace, *, cancel_event=None, use_burst=
     config = (load_training_config(_document={'training': training_config}) if training_config is not None
               else load_training_config(max_processes=max_processes, max_trainings=max_trainings))
     return run_group(template, targets, workspace, cancel_event=cancel_event or threading.Event(),
-        use_burst=use_burst, sources=sources if sources is not None else registry_rows(), config=config,
+        use_burst=use_burst, sources=sources if sources is not None else registry_rows(originals=False), config=config,
         prepare_only=prepare_only, materials=materials, diagnostic_logging=diagnostic_logging,
         search_config=search_config, new_search_config=new_search_config,
         expected_key=expected_key, timeline_origin=_timeline_origin,
@@ -919,8 +968,7 @@ def run_training(template, targets, workspace, *, use_burst=False, max_processes
         timeline_origin = monotonic()
     with training_activity() as cancel_event:
         # 材料登记只在读取/更新时持锁，训练中的独立成果不等待这把登记锁。
-        with writer_lock():
-            sources = sync_history(template_character(Path(template).read_text(encoding='utf-8')))
+        sources = sync_history(template_character(Path(template).read_text(encoding='utf-8')))
         return _run_training(template, targets, workspace, cancel_event=cancel_event, use_burst=use_burst,
                              max_processes=max_processes, max_trainings=max_trainings, sources=sources,
                              search_config=search_config, new_search_config=options, training_config=parallelism,
@@ -1231,15 +1279,14 @@ def main(argv=None):
             max_processes = parallelism['max_processes']
             from seed_activity import training_activity
             with training_activity() as cancel_event:
-                with writer_lock():
-                    sources = registry_rows()
-                    if args.candidate_id:
-                        selected_materials(args.candidate_id, sources=sources)  # 明显非法编号不依赖模板或引擎。
-                    ready = check_training(args.template, use_burst=args.use_burst, training_config=parallelism)
-                    sources = sync_history(template_character(Path(ready['template']).read_text(encoding='utf-8')),
-                                           sources=sources)
-                    material_options = ({'materials': selected_materials(args.candidate_id, sources=sources)}
-                                        if args.candidate_id else {})
+                sources = registry_rows(originals=False)
+                if args.candidate_id:
+                    selected_materials(args.candidate_id, sources=sources)  # 明显非法编号不依赖模板或引擎。
+                ready = check_training(args.template, use_burst=args.use_burst, training_config=parallelism)
+                sources = sync_history(template_character(Path(ready['template']).read_text(encoding='utf-8')),
+                                       sources=sources)
+                material_options = ({'materials': selected_materials(args.candidate_id, sources=sources)}
+                                    if args.candidate_id else {})
                 jobs = [(row, targets) for row in ready['templates'] for targets in dict.fromkeys(args.targets)]
                 output, errors = [], []
                 from population_training import group_configs, group_workers
@@ -1286,8 +1333,9 @@ def main(argv=None):
                 raise ValueError('读取准备快照必须指定--config-key')
             output = result_store.read_records('seed_prepared', args.config_key)
         elif args.state in ('pending', 'unsupported'):
-            output = [row for row in result_store.read_records('seed_candidates', 'registry')
-                      if (row['semantic'] == 'unsupported' or row.get('active') is False) == (args.state == 'unsupported')]
+            from source_catalog import print_sources
+            print_sources(unsupported=args.state == 'unsupported')
+            return 0
         else:
             from simulation_config import load_syntax_config
             scope = (dict(specialization_id=args.specialization_id, hero_talent=args.hero_talent,

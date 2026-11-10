@@ -29,9 +29,10 @@ def training_cli(monkeypatch):
     from test_character_export import sample_profile
     monkeypatch.setattr(result_store,'bind_project',lambda project:None)
     monkeypatch.setattr(result_store,'ensure_available',lambda:None)
+    monkeypatch.setattr(result_store,'iter_group',lambda table,key:iter(()))
     monkeypatch.setattr(seed_training,'writer_lock',nullcontext)
     monkeypatch.setattr(seed_activity,'training_activity',lambda:nullcontext(threading.Event()))
-    monkeypatch.setattr(seed_training,'registry_rows',lambda:[])
+    monkeypatch.setattr(seed_training,'registry_rows',lambda **kwargs:[])
     monkeypatch.setattr(seed_training,'sync_history',lambda character,**kwargs:kwargs.get('sources',[]))
     template=Path('/.tools/sim2gse/build/baseline/Rider.simc').resolve()
     monkeypatch.setattr(engine,'training_templates',lambda:(template,))
@@ -69,16 +70,84 @@ def prepared_input(monkeypatch):
                      representations={}))
     header['checksum']=digest([{name:value for name,value in header.items() if name!='checksum'}])
     writes=[]
-    monkeypatch.setattr(result_store,'read_records',lambda table,key:deepcopy([header]))
-    monkeypatch.setattr(result_store,'write',lambda *args,**kwargs:writes.append(deepcopy(args)))
+    records = {}
+    def read(table, key, **kwargs):
+        return deepcopy([header] if table == 'seed_prepared' else records.get((table, key), []))
+    def write(*args, **kwargs):
+        records[args[0], args[1]] = deepcopy(args[2])
+        writes.append(deepcopy(args))
+    monkeypatch.setattr(result_store,'read_records',read)
+    monkeypatch.setattr(result_store,'iter_group',lambda table,key:iter(read(table,key)))
+    monkeypatch.setattr(result_store,'write',write)
+    # Only the external missing-key exception is needed; all storage IO is supplied above.
+    monkeypatch.setattr(result_store,'_SKILL_API',{'MissingKeyError':KeyError})
     monkeypatch.setattr(codec,'load_targeting',lambda **kwargs:dict(target_masks={}))
     monkeypatch.setattr(program,'compile_program',lambda *args,**kwargs:{})
     monkeypatch.setattr(task,'_rule_hashes',lambda **kwargs:{})
     def source(label,program):
+        import hashlib
+        records['seed_originals', hashlib.sha256(b'fixture').hexdigest() + '_0'] = [
+            dict(version=1, index=0, text='fixture')]
         return dict(dict.fromkeys(seeds.CANDIDATE_SCHEMA),candidate_id=label,source_id=label,label=label,
             class_name='deathknight',spec='unholy',source='fixture',original='fixture',instructions='repeat',
             semantic='preserved',changes=[],family='plain',core=[],program=program,active=True)
-    return SimpleNamespace(inputs=inputs,header=header,writes=writes,source=source)
+    return SimpleNamespace(inputs=inputs,header=header,writes=writes,source=source,records=records,read=read)
+
+
+def test_prepare_freezes_original_reference_without_copying_archive(prepared_input):
+    import seed_training as seeds
+    case = prepared_input
+    row = case.source('archive', [['outbreak']])
+    row.update(active=False, original='保留的完整原文😀' * 10000)
+    ready = seeds.ensure_prepared('/profile', 1, '/memory', sources=[row], inputs=case.inputs)
+    frozen = ready['entries'][0]
+    assert frozen.get('original') is None
+    assert frozen['original_ref']['characters'] == len(row['original'])
+    assert row['original'].startswith('保留的完整原文')
+    assert case.writes[-1][2][1] == frozen
+
+
+@pytest.mark.parametrize('damaged', [False, True, 'storage', 'unreadable'])
+def test_prepare_reuses_verified_old_snapshot_without_full_registry_or_resimulation(
+        prepared_input, monkeypatch, damaged):
+    from copy import deepcopy
+    import engine, result_store, seed_training as seeds
+    from search import digest
+    case = prepared_input
+    source = case.source('retained', [['outbreak']])
+    ready = seeds.ensure_prepared('/profile', 1, '/memory', sources=[source], inputs=case.inputs)
+    old = deepcopy(case.writes[-1][2])
+    old_input = dict(ready['context']['preparation_input'], version='seed-preparation-v2-scoped-sources')
+    old_key = digest(old_input)
+    for row in old:
+        row.pop('original_ref')
+        row.update(version=old_input['version'], config_key=old_key)
+        if row['kind'] == 'source': row['original'] = 'fixture'
+    old[0]['checksum'] = digest([{k: v for k, v in row.items() if k != 'checksum'} for row in old])
+    if damaged: old[1]['original'] = 'tampered'
+    untouched = deepcopy(old)
+    monkeypatch.setattr(result_store, 'read_records', lambda table, key, **kw:
+        [] if table == 'seed_prepared' else case.read(table, key, **kw))
+    def legacy_rows(table, key):
+        if damaged == 'storage': raise result_store.InvalidRecordError('旧快照文件损坏')
+        if damaged == 'unreadable': raise result_store.DataReadError('暂时无法读取旧快照')
+        return iter(deepcopy(old)) if (table, key) == ('seed_prepared', old_key) else iter(())
+    monkeypatch.setattr(result_store, 'iter_group', legacy_rows)
+    def reference(*args, **kwargs): raise RuntimeError('需要重建参考')
+    monkeypatch.setattr(engine, 'reference', reference)
+    if damaged == 'unreadable':
+        with pytest.raises(result_store.DataReadError, match='暂时无法读取'):
+            seeds.ensure_prepared('/profile', 1, '/memory', sources=[source], inputs=case.inputs)
+    elif damaged:
+        with pytest.raises(RuntimeError, match='需要重建参考'):
+            seeds.ensure_prepared('/profile', 1, '/memory', sources=[source], inputs=case.inputs)
+    else:
+        restored = seeds.ensure_prepared('/profile', 1, '/memory', sources=[source], inputs=case.inputs)
+        assert restored['config_key'] != old_key
+        assert restored['preparation']['context_rebuilt'] is False
+        assert restored['preparation']['sources_rebuilt'] == 0
+        assert restored['queue'][0]['program'] == ready['queue'][0]['program']
+    assert old == untouched
 
 def test_training_check_locates_current_template_without_starting_compute(monkeypatch,capsys,training_cli):
     from seed_training import main
@@ -178,9 +247,13 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
         program=[['outbreak'],['putrefy'],['death_coil']])
     monkeypatch.setattr(Path,'read_text',lambda *args,**kwargs:json.dumps(source))
     monkeypatch.setattr(seed_training,'writer_lock',nullcontext)
-    writes=Mock()
+    stored = {}
+    def save(table, key, rows, **kwargs):
+        stored[table, key] = deepcopy(rows)
+    writes=Mock(side_effect=save)
     monkeypatch.setattr(result_store,'write',writes)
-    monkeypatch.setattr(seed_training,'registry_rows',Mock(return_value=[]))
+    monkeypatch.setattr(result_store,'read_records',lambda table,key,**kwargs:deepcopy(stored.get((table,key),[])))
+    monkeypatch.setattr(result_store,'iter_group',lambda table,key,**kwargs:iter(deepcopy(stored.get((table,key),[]))))
     with pytest.raises(ValueError, match='新增材料必须提供明确适用组'):
         seed_training.register('/memory/cleaned.json')
     source['allowed_groups'] = [dict(specialization_id=252,hero_talent='rider_of_the_apocalypse',
@@ -188,7 +261,6 @@ def test_cleaned_candidate_registration_is_reusable_and_rejects_missing_provenan
     first=seed_training.register('/memory/cleaned.json')
     table,key,rows=writes.call_args.args
     assert (table,key)==('seed_candidates','registry') and len(rows)==1 and rows[0]['label']=='ABC-C'
-    monkeypatch.setattr(seed_training,'registry_rows',Mock(return_value=deepcopy(rows)))
     writes.reset_mock()
     assert seed_training.register('/memory/cleaned.json')==first
     writes.assert_not_called()
@@ -418,14 +490,13 @@ def test_training_prepare_freezes_burst_across_scenes_and_checks_current_definit
 
 
 @pytest.mark.parametrize('failure',['missing','unreadable'])
-def test_training_prepare_keeps_history_missing_and_read_failure_semantics(monkeypatch,failure):
+def test_training_prepare_keeps_history_missing_and_read_failure_semantics(monkeypatch,prepared_input,failure):
     from copy import deepcopy
     from unittest.mock import MagicMock,Mock
     from seed_training import sync_history,template_character
     from test_character_export import sample_profile
     import result_store
-    registered=dict(candidate_id='registered',source_id='registered',class_name='deathknight',spec='unholy',
-        semantic='preserved',program=[['outbreak']],core=[])
+    registered=prepared_input.source('registered', [['outbreak']])
     registry=[registered]
     before=deepcopy(registry)
     histories=[dict(run_id=name,profile=dict(identity=dict(**{'class':'deathknight'},spec='unholy')),
@@ -441,7 +512,15 @@ def test_training_prepare_keeps_history_missing_and_read_failure_semantics(monke
     monkeypatch.setattr(result_store,'read_many',many)
     fallback=Mock(side_effect=[valid,None])
     monkeypatch.setattr(result_store,'one',fallback)
-    writer=Mock()
+    stored=deepcopy(registry)
+    monkeypatch.setattr(result_store,'iter_group',lambda table,key:iter(deepcopy(stored)))
+    monkeypatch.setattr(result_store,'read_records',lambda table,key,**kw:
+        [] if table == 'seed_catalog' else [r for r in deepcopy(stored)
+        if all(r.get(k)==v for k,v in kw.get('filters',{}).items())])
+    from contextlib import nullcontext
+    import seed_training
+    monkeypatch.setattr(seed_training, 'writer_lock', nullcontext)
+    writer=Mock(side_effect=lambda table,key,rows,**kw:stored.__setitem__(slice(None),deepcopy(rows)))
     monkeypatch.setattr(result_store,'write',writer)
     if failure=='unreadable':
         with pytest.raises(PermissionError,match='临时历史读取失败'):
@@ -547,13 +626,29 @@ def public_training_memory(monkeypatch, training_cli, prepared_input, memory_ga)
         reset_events=[(500, 'target')]))
     sources = [prepared_input.source(str(index), program) for index, program in enumerate(case.starts)]
     monkeypatch.setattr(seed_training, 'sync_history', lambda *args, **kwargs: deepcopy(sources))
-    monkeypatch.setattr(seed_training, 'registry_rows', lambda: deepcopy(sources))
+    monkeypatch.setattr(seed_training, 'registry_rows', lambda **kwargs: deepcopy(sources))
     monkeypatch.setattr(simulation_config, '_load_document', lambda path=None: dict(training=dict(
         max_processes=1, max_trainings=1, top_k=4, crossover_probability=0., target_mutation_probability=0., random_mutation_probability=0.)))
     files = {}
     monkeypatch.setattr(Path, 'mkdir', lambda *args, **kwargs: None)
     monkeypatch.setattr(Path, 'write_text', lambda path, text, **kwargs: files.__setitem__(path, text))
     monkeypatch.setattr(Path, 'read_text', lambda path, **kwargs: files.get(path, sample_profile()))
+    # 公开恢复入口也能流式读取同一个文件边界，不把文件检查替换为内部状态检查。
+    import io
+    binary_view = {}
+    real_open, real_is_file = Path.open, Path.is_file
+    def open_input(path, *args, **kwargs):
+        if path.name == 'task.sqlite3':
+            revision = case.store.db.total_changes
+            if binary_view.get('revision') != revision:
+                binary_view.update(revision=revision, data=case.store.db.serialize())
+            return io.BytesIO(binary_view['data'])
+        if path in files:
+            return io.BytesIO(files[path].encode('utf-8'))
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'open', open_input)
+    monkeypatch.setattr(Path, 'is_file', lambda path:
+                        False if path.name.endswith(('-wal', '-journal')) else real_is_file(path))
     for module in (task, search):
         monkeypatch.setattr(module, 'replace_file', lambda source, target: files.__setitem__(target, files.pop(source)))
     monkeypatch.setattr(Path, 'exists', lambda path: path in files)
@@ -565,18 +660,24 @@ def public_training_memory(monkeypatch, training_cli, prepared_input, memory_ga)
     monkeypatch.setattr(population_training, 'TaskStore', open_store)
     import sqlite3
     connect = sqlite3.connect
+    class Reader:
+        # 输入数据库由夹具持有；每次点读得到独立、可关闭的读取租借。
+        def execute(self, *args, **kwargs):
+            return case.store.db.execute(*args, **kwargs)
+        def close(self):
+            pass
     monkeypatch.setattr(sqlite3, 'connect', lambda database, **kwargs:
-        case.store.db if database in {
+        Reader() if database in {
             'file:' + path.with_name('task.sqlite3').as_posix() + '?mode=ro'
             for path in files if path.name == 'identity.json'} else connect(database, **kwargs))
     close = case.store.close
-    monkeypatch.setattr(case.store, 'close', lambda: None)
+    monkeypatch.setattr(case.store, 'close', lambda **kwargs: None)
     case.store.state.clear()
     header = deepcopy(prepared_input.header)
     native = header['context']['native']
     native.update(dps=100., samples=99)
     def read_records(table, key):
-        if table != 'seed_prepared': return []
+        if table != 'seed_prepared': return prepared_input.read(table, key)
         row = deepcopy(header)
         row['config_key'] = key
         row['checksum'] = digest([{name: value for name, value in row.items() if name != 'checksum'}])
@@ -787,7 +888,178 @@ def test_training_memory_io_recognizes_windows_paths(public_training_memory):
     assert Path.read_text(manifest) == '{}' and Path.exists(manifest)
     assert manifest in Path.glob(manifest.parents[2], '*/*/identity.json')
     uri = 'file:' + manifest.with_name('task.sqlite3').as_posix() + '?mode=ro'
-    assert sqlite3.connect(uri, uri=True) is public_training_memory.store.db
+    assert sqlite3.connect(uri, uri=True).execute('SELECT 1').fetchone() == (1,)
+
+
+def test_public_training_resume_does_not_retain_another_complete_precheck_history(
+        monkeypatch, public_training_memory):
+    import io
+    import tracemalloc
+    import search, seed_training, sequence
+    from runtime import TaskCancelled
+    case = public_training_memory
+    def pause(*args, **kwargs):
+        raise TaskCancelled('pause before native scoring')
+    monkeypatch.setattr(sequence, 'evaluate', pause)
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work')
+    history = [dict(kind='native', reason=str(index) + ':' + 'x' * 1800) for index in range(10000)]
+    case.store.state['errors'] = history
+    case.store.checkpoint()
+    checkpoint = case.store.db.serialize()
+    real_open = Path.open
+    def open_input(path, *args, **kwargs):
+        if path.name == 'task.sqlite3':
+            return io.BytesIO(checkpoint)
+        if path in case.files:
+            return io.BytesIO(case.files[path].encode('utf-8'))
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'open', open_input)
+    # The filesystem boundary has no WAL or rollback journal in this fixture.
+    real_is_file = Path.is_file
+    monkeypatch.setattr(Path, 'is_file', lambda path:
+                        False if path.name.endswith(('-wal', '-journal')) else real_is_file(path))
+    observed = []
+    def inspect_scoring(*args, **kwargs):
+        current, _ = tracemalloc.get_traced_memory()
+        observed.append(current)
+        assert current < 8 * 1024 * 1024, f'评分时仍留着完整预检历史副本：{current}字节'
+        raise TaskCancelled('resume reached native scoring')
+    monkeypatch.setattr(sequence, 'evaluate', inspect_scoring)
+    tracemalloc.start()
+    try:
+        with pytest.raises(TaskCancelled, match='resume reached native scoring'):
+            seed_training.run_training(case.template, 1, '/memory/work')
+    finally:
+        tracemalloc.stop()
+    assert observed
+    assert search.TaskStore.load_state(case.store.db)['errors'] == history
+
+
+@pytest.mark.parametrize('change', ['manifest', 'checkpoint', 'wal', 'delete-manifest', 'delete-checkpoint'])
+def test_public_training_resume_rejects_changed_preparation_files_and_closes_snapshot(
+        monkeypatch, public_training_memory, change):
+    import io
+    import sqlite3
+    import result_store, search, seed_training, sequence
+    from runtime import TaskCancelled
+    case = public_training_memory
+    def pause(*args, **kwargs):
+        raise TaskCancelled('pause before native scoring')
+    monkeypatch.setattr(sequence, 'evaluate', pause)
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work')
+    manifest = next(path for path in case.files if path.name == 'identity.json')
+    diagnostic = manifest.with_name('diagnostics.json')
+    case.files[diagnostic] = 'previous diagnostic evidence'
+    case.store.state['config']['diagnostic_logging'] = True
+    case.store.checkpoint()
+    changed = [False]
+    read, open_file, is_file = result_store.read_records, Path.open, Path.is_file
+    def preparation(table, key, **kwargs):
+        rows = read(table, key, **kwargs)
+        if table == 'seed_prepared':
+            changed[0] = True
+            if change == 'manifest':
+                value = json.loads(case.files[manifest])
+                value['changed_during_preparation'] = True
+                case.files[manifest] = json.dumps(value)
+            elif change == 'delete-manifest':
+                case.files.pop(manifest)
+        return rows
+    def open_input(path, *args, **kwargs):
+        if changed[0] and change == 'wal' and path.name == 'task.sqlite3-wal':
+            return io.BytesIO(b'new WAL appeared')
+        source = open_file(path, *args, **kwargs)
+        if changed[0] and change == 'checkpoint' and path.name == 'task.sqlite3':
+            with source:
+                return io.BytesIO(source.read() + b'changed tail')
+        return source
+    monkeypatch.setattr(result_store, 'read_records', preparation)
+    monkeypatch.setattr(Path, 'open', open_input)
+    def file_exists(path):
+        if changed[0]:
+            if change == 'delete-manifest' and path == manifest:
+                return False
+            if change == 'delete-checkpoint' and path.name == 'task.sqlite3':
+                return False
+            if change == 'wal' and path.name == 'task.sqlite3-wal':
+                return True
+        return is_file(path)
+    monkeypatch.setattr(Path, 'is_file', file_exists)
+    monkeypatch.setattr(case.store, 'close', lambda **kwargs: search.TaskStore.close(case.store, **kwargs))
+    monkeypatch.setattr(sequence, 'evaluate', lambda *args, **kwargs: pytest.fail('changed recovery must not score'))
+    with pytest.raises(ValueError, match='准备期间已变化'):
+        seed_training.run_training(case.template, 1, '/memory/work')
+    assert case.files[diagnostic] == 'previous diagnostic evidence'
+    with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+        case.store.db.execute('SELECT 1')
+
+
+@pytest.mark.parametrize('entry', ['prepare', 'unreadable'])
+def test_public_training_preparation_closes_recovery_without_replacing_diagnostics(
+        monkeypatch, public_training_memory, capsys, entry):
+    import sqlite3
+    import result_store, search, seed_training, sequence
+    from runtime import TaskCancelled
+    case = public_training_memory
+    def pause(*args, **kwargs):
+        raise TaskCancelled('pause before native scoring')
+    monkeypatch.setattr(sequence, 'evaluate', pause)
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work')
+    manifest = next(path for path in case.files if path.name == 'identity.json')
+    diagnostic = manifest.with_name('diagnostics.json')
+    case.files[diagnostic] = 'previous diagnostic evidence'
+    case.store.state['config']['diagnostic_logging'] = True
+    case.store.checkpoint()
+    monkeypatch.setattr(case.store, 'close', lambda **kwargs: search.TaskStore.close(case.store, **kwargs))
+    monkeypatch.setattr(sequence, 'evaluate', lambda *args, **kwargs: pytest.fail('preparation must not score'))
+    if entry == 'unreadable':
+        read = result_store.read_records
+        def unavailable(table, key, **kwargs):
+            if table == 'seed_prepared':
+                raise PermissionError('constructed preparation read failure')
+            return read(table, key, **kwargs)
+        monkeypatch.setattr(result_store, 'read_records', unavailable)
+    rc = seed_training.main(['--project', '/memory', 'run' if entry == 'unreadable' else 'prepare', '--template', str(case.template),
+                            '--targets', '1', '--workspace', '/memory/work', '--legacy'])
+    assert rc == (2 if entry == 'unreadable' else 0)
+    assert case.files[diagnostic] == 'previous diagnostic evidence'
+    if entry == 'unreadable':
+        with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+            case.store.db.execute('SELECT 1')
+    else:
+        assert case.store.db.execute('SELECT 1').fetchone() == (1,)
+    capsys.readouterr()
+
+
+def test_public_training_resume_rejects_another_hero_scope_without_changing_old_checkpoint(
+        monkeypatch, public_training_memory):
+    import result_store, search, seed_training, sequence
+    from runtime import TaskCancelled
+    case = public_training_memory
+    def pause(*args, **kwargs):
+        raise TaskCancelled('pause before native scoring')
+    monkeypatch.setattr(sequence, 'evaluate', pause)
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work')
+    previous = case.store.db.serialize()
+    previous_files = dict(case.files)
+    read = result_store.read_records
+    def another_hero(table, key, **kwargs):
+        rows = read(table, key, **kwargs)
+        if table == 'seed_prepared':
+            rows[0]['context']['native']['static_snapshot']['hero_subtree_ids'] = [31]
+            rows[0]['checksum'] = search.digest([
+                {name:value for name,value in row.items() if name!='checksum'} for row in rows])
+        return rows
+    monkeypatch.setattr(result_store, 'read_records', another_hero)
+    monkeypatch.setattr(sequence, 'evaluate', lambda *args, **kwargs: pytest.fail('changed hero must not score'))
+    with pytest.raises(ValueError, match='分组.*恢复'):
+        seed_training.run_training(case.template, 1, '/memory/work')
+    assert case.store.db.serialize() == previous
+    assert case.files == previous_files
 
 
 

@@ -399,6 +399,7 @@ def test_formal_champion_requires_complete_request_reports_and_matching_source(m
     else: candidate['program'] = {}
     monkeypatch.setattr(result_store, 'report_locations', lambda keys: {})
     monkeypatch.setattr(result_store, 'read_many', lambda *args, **kwargs: reports)
+    monkeypatch.setattr(result_store, 'iter_group', lambda *args, **kwargs: (row for row in reports))
     with pytest.raises((result_store.InvalidRecordError, ValueError)):
         task._validate_formal_source(record, state, character, run=run, candidate=candidate)
 
@@ -415,6 +416,7 @@ def test_formal_champion_validates_all_six_original_reports_without_a_center(mon
         config=historical if search_version == 1 else None, search_version=search_version)
     monkeypatch.setattr(result_store, 'report_locations', lambda keys: {})
     monkeypatch.setattr(result_store, 'read_many', lambda *args, **kwargs: reports)
+    monkeypatch.setattr(result_store, 'iter_group', lambda *args, **kwargs: (row for row in reports))
     assert task._validate_formal_source(record, state, character, run=run,
         candidate=candidate)['status'] == 'completed'
     assert record['score'] == 200. and record['samples'] == 381

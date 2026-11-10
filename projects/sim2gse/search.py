@@ -860,24 +860,78 @@ def _checkpoint_copy(value):
     return value
 
 
-def _checkpoint_seal(fields, archive, batches):
+def _checkpoint_seal(fields, archive, batches, *, ordered=False):
     """直接校验已序列化的行，不再把全部历史包进另一层JSON。"""
     checksum = hashlib.sha256(b'sim2gse-memory-checkpoint-v2')
-    for kind, rows in ((b'fields', sorted(fields)), (b'archive', sorted(archive, key=lambda row: row[1])),
-                       (b'batches', sorted(batches))):
-        checksum.update(kind)
-        for row in rows:
-            for value in row:
-                encoded = (value if isinstance(value, str) else str(value)).encode('utf-8')
-                checksum.update(len(encoded).to_bytes(8, 'big'))
-                checksum.update(encoded)
+    if not ordered:
+        fields, archive, batches = sorted(fields), sorted(archive, key=lambda row: row[1]), sorted(batches)
+    for kind, rows in ((b'fields', fields), (b'archive', archive), (b'batches', batches)):
+        for _ in _checkpoint_rows(checksum, kind, rows):
+            pass
     return checksum.hexdigest()
 
 
-def _check_checkpoint_batch(key, row):
+def _checkpoint_rows(checksum, kind, rows):
+    checksum.update(kind)
+    for row in rows:
+        for value in row:
+            encoded = (value if isinstance(value, str) else str(value)).encode('utf-8')
+            checksum.update(len(encoded).to_bytes(8, 'big'))
+            checksum.update(encoded)
+        yield row
+
+
+def _same_checkpoint_input(left, right, flat_kinds):
+    """只复用编码相同的JSON输入；Python的True==1不能作为编码依据。"""
+    if left is right:
+        return True
+    kind = type(left)
+    if kind is not type(right):
+        return False
+    if kind is dict:
+        return left.keys() == right.keys() and all(
+            type(key) is str and _same_checkpoint_input(left[key], right[key], flat_kinds) for key in left)
+    if kind in (list, tuple):
+        if left == right:
+            kinds = flat_kinds.get(id(left))
+            if kinds is None:
+                kinds = flat_kinds[id(left)] = set(map(type, left))
+            if len(kinds) == 1 and kinds <= {str, int, bool, type(None)} and kinds == set(map(type, right)):
+                return True
+        return len(left) == len(right) and all(_same_checkpoint_input(a, b, flat_kinds) for a, b in zip(left, right))
+    if kind is float:
+        return left == right and (left != 0 or math.copysign(1, left) == math.copysign(1, right))
+    return kind in (str, int, bool, type(None)) and left == right
+
+
+def _checkpoint_request_parts(common):
+    """规范JSON在两个候选字段处分段；其余字段仍用原编码规则。"""
+    parts, buffer = [], b'{'
+    for index, name in enumerate(sorted([*common, 'program', 'behavior_identity'])):
+        if index:
+            buffer += b','
+        buffer += _json(name).encode('utf-8') + b':'
+        if name in ('program', 'behavior_identity'):
+            parts.append((buffer, name))
+            buffer = b''
+        else:
+            buffer += _json(common[name]).encode('utf-8')
+    return parts, buffer + b'}'
+
+
+def _checkpoint_request_digest(request, parts):
+    checksum = hashlib.sha256()
+    for prefix, name in parts[0]:
+        checksum.update(prefix)
+        checksum.update(_json(request[name]).encode('utf-8'))
+    checksum.update(parts[1])
+    return checksum.hexdigest()
+
+
+def _check_checkpoint_batch(key, row, *, request_digest=None):
     if row.get('status') != 'success':
         return
-    if (digest(row.get('request')) != key or row.get('data_key') != key
+    if ((digest(row.get('request')) if request_digest is None else request_digest) != key or row.get('data_key') != key
             or type(row.get('dps')) not in (int, float) or not math.isfinite(row['dps']) or row['dps'] < 0
             or type(row.get('samples')) is not int or row['samples'] < 1
             or type(row.get('variance')) not in (int, float)
@@ -996,6 +1050,43 @@ def _validate_saved_batch(saved, key, cached, character, index, scenario, simula
         raise ValueError('缓存摘要不符')
 
 
+def _load_checkpoint(database):
+    row = database.execute('SELECT value FROM state WHERE id=1').fetchone()
+    if not row:
+        return {}, {}
+    value = json.loads(row[0])
+    if value != {'storage_format': 2}:
+        return _restore_checkpoint_diagnostics(value), {}
+    state = {key: json.loads(payload) for key, payload in database.execute('SELECT key,value FROM state_fields')}
+    state['archive'] = [json.loads(payload) for (payload,) in
+                        database.execute('SELECT value FROM state_archive ORDER BY ordinal')]
+    receipt = state.get('memory_checkpoint')
+    decoded = {}
+    if not receipt and state.get('execution_storage_version') == 3:
+        raise ValueError('内存恢复点缺少校验标识，拒绝继续')
+    if receipt:
+        payload = dict(state)
+        payload.pop('memory_checkpoint')
+        from source_catalog import bounded_digest
+        checksum = (_checkpoint_seal(
+            database.execute("SELECT key,value FROM state_fields WHERE key!='memory_checkpoint' ORDER BY key"),
+            database.execute('SELECT key,ordinal,value FROM state_archive ORDER BY ordinal'),
+            database.execute('SELECT key,value FROM batches ORDER BY key'), ordered=True)
+            if receipt.get('version') == 2 else bounded_digest(dict(state=payload,
+                batches=iter(database.execute('SELECT key,value FROM batches ORDER BY key')))))
+        if (receipt.get('version') not in (1, 2)
+                or receipt != dict(version=receipt['version'], digest=checksum)):
+            raise ValueError('内存恢复点核验失败，拒绝使用不一致成绩')
+        for key, value in database.execute('SELECT key,value FROM batches ORDER BY key'):
+            row = _expand_checkpoint_request(json.loads(value), state.get('checkpoint_requests', {}))
+            _check_checkpoint_batch(key, row)
+            decoded[key] = row
+        if receipt['version'] == 2:
+            _restore_checkpoint_batches(state['archive'], decoded)
+            state.pop('checkpoint_requests', None)
+    return _restore_checkpoint_diagnostics(state), decoded
+
+
 class TaskStore:
     """任务检查点与成功批次；锁保护心跳与主线程共用的事务。"""
     def __init__(self, destination, *, lock=None, connection=None,
@@ -1021,7 +1112,7 @@ class TaskStore:
                         connection = sqlite3.connect(':memory:', check_same_thread=False)
                         previous = Path(destination) / 'task.sqlite3'
                         if previous.is_file():
-                            source = sqlite3.connect(previous.resolve().as_uri() + '?mode=ro&immutable=1', uri=True)
+                            source = sqlite3.connect(previous.resolve().as_uri() + '?mode=ro', uri=True)
                             try:
                                 source.backup(connection)
                             finally:
@@ -1060,15 +1151,20 @@ class TaskStore:
         self.db.execute('CREATE TABLE IF NOT EXISTS batches (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS report_intents (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS runtime_progress (id INTEGER PRIMARY KEY, elapsed REAL NOT NULL, status TEXT NOT NULL, inflight TEXT NOT NULL)')
-        self.state = self.load_state(self.db)
+        self.state, restored_batches = _load_checkpoint(self.db)
         if self.memory_execution and self.state and not self.state.get('memory_checkpoint'):
             raise ValueError('旧过程检查点不能按内存运行方式续接，请使用新任务；旧成果保留')
         row = self.db.execute('SELECT value FROM state WHERE id=1').fetchone()
         self.incremental_ready = bool(row and json.loads(row[0]) == {'storage_format': 2})
-        self.saved_fields = {key: (json.loads(value), len(value.encode('utf-8')))
-                             for key, value in self.db.execute('SELECT key,value FROM state_fields')} if self.incremental_ready else {}
-        self.saved_archive = {key: (ordinal, json.loads(value), len(value.encode('utf-8')))
-                              for key, ordinal, value in self.db.execute('SELECT key,ordinal,value FROM state_archive')} if self.incremental_ready else {}
+        if self.memory_execution:
+            # 内存运行不做逐字段落盘；仅复用已校验状态供初始化判断。
+            self.saved_fields = {key: (value, 0) for key, value in self.state.items() if key != 'archive'}
+            self.saved_archive = {}
+        else:
+            self.saved_fields = {key: (json.loads(value), len(value.encode('utf-8')))
+                                 for key, value in self.db.execute('SELECT key,value FROM state_fields')} if self.incremental_ready else {}
+            self.saved_archive = {key: (ordinal, json.loads(value), len(value.encode('utf-8')))
+                                  for key, ordinal, value in self.db.execute('SELECT key,ordinal,value FROM state_archive')} if self.incremental_ready else {}
         progress = self.db.execute('SELECT elapsed,status,inflight FROM runtime_progress WHERE id=1').fetchone()
         if progress and progress[0] >= self.state.get('elapsed_seconds', 0):
             self.state.update(elapsed_seconds=progress[0], status=progress[1], inflight=json.loads(progress[2]))
@@ -1090,14 +1186,10 @@ class TaskStore:
         self.db.commit()
         if self.memory_execution:
             self.db.execute('PRAGMA temp_store=MEMORY')
-            templates = self.db.execute("SELECT value FROM state_fields WHERE key='checkpoint_requests'").fetchone()
-            templates = json.loads(templates[0]) if templates else {}
-            restored = {key: _expand_checkpoint_request(json.loads(value), templates) for key, value in
-                        self.db.execute('SELECT key,value FROM batches')}
-            self.unsaved_batches.update(restored)
-            self.verified_batches.update({key: row for key, row in restored.items() if row.get('status') == 'success'})
+            self.unsaved_batches.update(restored_batches)
+            self.verified_batches.update({key: row for key, row in restored_batches.items() if row.get('status') == 'success'})
             self.persisted_batches = sum(row.get('status') == 'success'
-                and row.get('request', {}).get('purpose') != 'diagnostic' for row in restored.values())
+                and row.get('request', {}).get('purpose') != 'diagnostic' for row in restored_batches.values())
             _LIVE_TASKS[str(self.destination.resolve())] = self
 
     @property
@@ -1107,36 +1199,8 @@ class TaskStore:
 
     @staticmethod
     def load_state(database):
-        row = database.execute('SELECT value FROM state WHERE id=1').fetchone()
-        if not row:
-            return {}
-        value = json.loads(row[0])
-        if value != {'storage_format': 2}:
-            return _restore_checkpoint_diagnostics(value)
-        fields = list(database.execute('SELECT key,value FROM state_fields'))
-        archive = list(database.execute('SELECT key,ordinal,value FROM state_archive ORDER BY ordinal'))
-        state = {key: json.loads(payload) for key, payload in fields}
-        state['archive'] = [json.loads(payload) for _, _, payload in archive]
-        receipt = state.get('memory_checkpoint')
-        if receipt:
-            payload = dict(state)
-            payload.pop('memory_checkpoint')
-            rows = list(database.execute('SELECT key,value FROM batches ORDER BY key'))
-            checksum = (_checkpoint_seal([(key, value) for key, value in fields if key != 'memory_checkpoint'],
-                                        archive, rows) if receipt.get('version') == 2 else
-                        digest(dict(state=payload, batches=rows)))
-            if (receipt.get('version') not in (1, 2)
-                    or receipt != dict(version=receipt['version'], digest=checksum)):
-                raise ValueError('内存恢复点核验失败，拒绝使用不一致成绩')
-            decoded = {}
-            for key, value in rows:
-                row = _expand_checkpoint_request(json.loads(value), state.get('checkpoint_requests', {}))
-                _check_checkpoint_batch(key, row)
-                decoded[key] = row
-            if receipt['version'] == 2:
-                _restore_checkpoint_batches(state['archive'], decoded)
-                state.pop('checkpoint_requests', None)
-        return _restore_checkpoint_diagnostics(state)
+        return _load_checkpoint(database)[0]
+
 
     @contextmanager
     def _transaction(self):
@@ -1290,57 +1354,54 @@ class TaskStore:
                 snapshot['ga'] = ga
             if ga.get('phase') in ('retest', 'qualified', 'complete') and boundary != 'final':
                 ga.update(phase='retest', finals={})
-            all_rows = {key: json.loads(value) for key, value in self.db.execute('SELECT key,value FROM batches')}
+            all_rows = {key: None for (key,) in self.db.execute('SELECT key FROM batches ORDER BY key')}
             all_rows.update(self.verified_batches)
             all_rows.update(self.unsaved_batches)
+            for key, row in all_rows.items():
+                if row is None:
+                    all_rows[key] = checkpoint_batch(self.db, key)
             all_rows = {key: row for key, row in all_rows.items()
                         if row.get('request', {}).get('purpose') in ('search', 'feedback', 'diagnostic')
                         or row.get('storage_group_key')}
-            snapshot['archive'] = []
-            for record in self.state.get('archive', []):
-                saved = {key: value for key, value in record.items()
-                         if record['key'] in keep or key not in ('candidate', 'candidate_sha256')}
-                batches = []
-                for row in record.get('batches', []):
-                    key = row.get('data_key')
-                    if key not in all_rows:
-                        batches.append(row)
-                        continue
-                    original = all_rows[key]
-                    batches.append(dict(checkpoint_batch_key=key,
-                        overrides={name: value for name, value in row.items()
-                                   if name not in original or original[name] != value},
-                        omitted=[name for name in original if name not in row]))
-                saved['batches'] = batches
-                snapshot['archive'].append(saved)
-            for key, row in all_rows.items():
-                _check_checkpoint_batch(key, row)
-            templates, rows = {}, []
+            templates, template_keys, size = {}, {}, 0
+            request_parts, flat_kinds, shared_bytes = {}, {}, 0
             for key, row in all_rows.items():
                 request = row.get('request')
-                if not isinstance(request, dict):
-                    rows.append((key, _json(row)))
-                    continue
-                common = {name: value for name, value in request.items() if name not in ('program', 'behavior_identity')}
-                template_key = digest([request.get(name) for name in
-                    ('condition', 'purpose', 'seed', 'input_seed', 'iterations', 'trace')])
-                if template_key in templates and templates[template_key] != common:
-                    template_key = digest(common)
-                templates[template_key] = common
-                compact = dict(checkpoint_request_key=template_key, **{name: request[name] for name in
-                               ('program', 'behavior_identity') if name in request})
-                rows.append((key, _json(dict(row, request=compact))))
-            rows.sort()
+                request_digest = None
+                if isinstance(request, dict):
+                    common = {name: value for name, value in request.items()
+                              if name not in ('program', 'behavior_identity')}
+                    template_key = digest([request.get(name) for name in
+                        ('condition', 'purpose', 'seed', 'input_seed', 'iterations', 'trace')])
+                    if template_key in templates and not _same_checkpoint_input(templates[template_key], common, flat_kinds):
+                        template_key = digest(common)
+                    templates.setdefault(template_key, common)
+                    template_keys[key] = template_key
+                    if row.get('status') == 'success' and {'program', 'behavior_identity'} <= request.keys():
+                        if template_key not in request_parts:
+                            parts = _checkpoint_request_parts(common)
+                            part_bytes = sum(len(prefix) for prefix, _ in parts[0]) + len(parts[1])
+                            # 只在本次持锁保存内复用编码，额外常驻片段总计最多1 MiB。
+                            request_parts[template_key] = parts if shared_bytes + part_bytes <= 1024 * 1024 else None
+                            if request_parts[template_key] is not None:
+                                shared_bytes += part_bytes
+                            del parts
+                        if request_parts[template_key] is not None:
+                            request_digest = _checkpoint_request_digest(request, request_parts[template_key])
+                _check_checkpoint_batch(key, row, request_digest=request_digest)
             snapshot['checkpoint_requests'] = templates
-            fields = [(key, _json(value)) for key, value in snapshot.items() if key != 'archive']
-            archive = [(row['key'], index, _json(row)) for index, row in enumerate(snapshot.get('archive', []))]
-            seal = _checkpoint_seal(fields, archive, rows)
-            fields.append(('memory_checkpoint', _json(dict(version=2, digest=seal))))
-            size = sum(len(value.encode('utf-8')) for _, value in fields)
-            size += sum(len(value.encode('utf-8')) for _, _, value in archive)
-            size += sum(len(value.encode('utf-8')) for _, value in rows)
-            if size > 256 * 1024 * 1024:
-                raise MemoryError('恢复点超过256 MiB上限，已保留上一份恢复点')
+            def encode(value):
+                nonlocal size
+                payload = _json(value)
+                size += len(payload.encode('utf-8'))
+                if size > 256 * 1024 * 1024:
+                    raise MemoryError('恢复点超过256 MiB上限，已保留上一份恢复点')
+                return payload
+            def seal_database(database):
+                return _checkpoint_seal(
+                    database.execute("SELECT key,value FROM state_fields WHERE key!='memory_checkpoint' ORDER BY key"),
+                    database.execute('SELECT key,ordinal,value FROM state_archive ORDER BY ordinal'),
+                    database.execute('SELECT key,value FROM batches ORDER BY key'), ordered=True)
             self.destination.mkdir(parents=True, exist_ok=True)
             temporary = self.destination / ('checkpoint-' + uuid.uuid4().hex + '.sqlite3')
             try:
@@ -1351,18 +1412,48 @@ class TaskStore:
                             CREATE TABLE state (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
                             CREATE TABLE state_fields (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                             CREATE TABLE state_archive (key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, value TEXT NOT NULL);
+                            CREATE INDEX state_archive_order ON state_archive(ordinal);
                             CREATE TABLE batches (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                             CREATE TABLE report_intents (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                             CREATE TABLE runtime_progress (id INTEGER PRIMARY KEY, elapsed REAL NOT NULL, status TEXT NOT NULL, inflight TEXT NOT NULL);
                         ''')
                         target.execute('INSERT INTO state VALUES (1,?)', (_json({'storage_format': 2}),))
-                        target.executemany('INSERT INTO state_fields VALUES (?,?)', fields)
-                        target.executemany('INSERT INTO state_archive VALUES (?,?,?)', archive)
-                        target.executemany('INSERT INTO batches VALUES (?,?)', rows)
-                    checked = _checkpoint_seal(
-                        list(target.execute("SELECT key,value FROM state_fields WHERE key!='memory_checkpoint'")),
-                        list(target.execute('SELECT key,ordinal,value FROM state_archive')),
-                        list(target.execute('SELECT key,value FROM batches')))
+                        checksum = hashlib.sha256(b'sim2gse-memory-checkpoint-v2')
+                        target.executemany('INSERT INTO state_fields VALUES (?,?)', _checkpoint_rows(checksum,
+                            b'fields', ((key, encode(snapshot[key])) for key in sorted(snapshot))))
+                        def archive_rows():
+                            for index, record in enumerate(self.state.get('archive', [])):
+                                saved = {key: value for key, value in record.items()
+                                         if record['key'] in keep or key not in ('candidate', 'candidate_sha256')}
+                                batches = []
+                                for row in record.get('batches', []):
+                                    key = row.get('data_key')
+                                    if key not in all_rows:
+                                        batches.append(row)
+                                        continue
+                                    original = all_rows[key]
+                                    batches.append(dict(checkpoint_batch_key=key,
+                                        overrides={name: value for name, value in row.items()
+                                                   if name not in original or original[name] != value},
+                                        omitted=[name for name in original if name not in row]))
+                                saved['batches'] = batches
+                                yield record['key'], index, encode(saved)
+                        target.executemany('INSERT INTO state_archive VALUES (?,?,?)',
+                                           _checkpoint_rows(checksum, b'archive', archive_rows()))
+                        def batch_rows():
+                            for key in sorted(all_rows):
+                                row = all_rows[key]
+                                if key in template_keys:
+                                    request = row['request']
+                                    row = dict(row, request=dict(checkpoint_request_key=template_keys[key],
+                                        **{name: request[name] for name in ('program', 'behavior_identity') if name in request}))
+                                yield key, encode(row)
+                        target.executemany('INSERT INTO batches VALUES (?,?)',
+                                           _checkpoint_rows(checksum, b'batches', batch_rows()))
+                        seal = checksum.hexdigest()
+                        target.execute('INSERT INTO state_fields VALUES (?,?)',
+                                       ('memory_checkpoint', encode(dict(version=2, digest=seal))))
+                    checked = seal_database(target)
                     if checked != seal or target.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
                         raise ValueError('恢复文件读回核验失败，已保留上一份恢复点')
                     if target.execute('PRAGMA page_count').fetchone()[0] * target.execute(
@@ -1378,15 +1469,17 @@ class TaskStore:
                 temporary.unlink(missing_ok=True)
 
     def stage_report(self, key, row, stored, *, diagnostic_logging=False, replace_group=None, report_path=None,
-                     report_bytes=None):
+                     report_bytes=None, report_json=None):
         with self.lock:
             if self.memory_execution:
                 row.update(batch_index=stored['batch_index'], scenario=stored['scenario'])
                 self.unsaved_batches[key] = row
                 self.verified_batches[key] = row
                 if row['request']['purpose'] not in ('search', 'feedback', 'diagnostic'):
-                    self.memory_reports[key] = dict(stored, _wire_bytes=report_bytes or
-                        len(_json(stored['report']).encode('utf-8')))
+                    pending = (dict({name: value for name, value in stored.items() if name != 'report'},
+                                    _report_json=report_json) if report_json is not None else dict(stored))
+                    pending['_wire_bytes'] = report_bytes or len(_json(stored['report']).encode('utf-8'))
+                    self.memory_reports[key] = pending
                 if row['request']['purpose'] != 'diagnostic':
                     self.state['completed_batches'] += 1
                 return
@@ -1405,7 +1498,11 @@ class TaskStore:
 
     def staged_report(self, key):
         if self.memory_execution:
-            return self.memory_reports.get(key)
+            stored = self.memory_reports.get(key)
+            if stored is not None and '_report_json' in stored:
+                return dict({name: value for name, value in stored.items() if name != '_report_json'},
+                            report=json.loads(stored['_report_json']))
+            return stored
         for stored_key, _, metadata in self.report_buffer:
             if stored_key == key:
                 return dict({name: value for name, value in metadata.items()
@@ -1533,24 +1630,26 @@ class TaskStore:
         from concurrent.futures import ThreadPoolExecutor
         from result_store import iter_group, write, prepare_batch, DataReadError, _api
         with self.lock:
-            items = sorted(self.memory_reports.items())
+            items = sorted((key, stored['_wire_bytes']) for key, stored in self.memory_reports.items())
         # 复用活动任务登记：多组同时结束时共用转换内存预算，避免每组各占一整份。
         active_tasks = max(1, len(_LIVE_TASKS))
         memory_bytes = self.state.get('config', {}).get('memory_limit_mb', 8192) * 1024 * 1024
-        group_budget = max(1024 * 1024, min(64 * 1024 * 1024, memory_bytes // 64 // active_tasks))
+        # 紧急停止线不能放大日常转换工作量；两路转换仍共用整批目标预算。
+        conversion_bytes = min(memory_bytes, 2048 * 1024 * 1024)
+        group_budget = max(1024 * 1024, min(64 * 1024 * 1024, conversion_bytes // 64 // active_tasks))
         plans, plan, byte_count = [], [], 0
-        for item in items:
-            size = item[1]['_wire_bytes']
+        for key, size in items:
             if plan and (len(plan) == 64 or byte_count + size > group_budget):
                 plans.append(plan)
                 plan, byte_count = [], 0
-            plan.append(item)
+            plan.append(key)
             byte_count += size
         if plan:
             plans.append(plan)
         def publish_group(plan):
-            group = self.state['run_id'] + '_m' + digest([key for key, _ in plan])[:20]
-            expected = {key: stored for key, stored in plan}
+            group = self.state['run_id'] + '_m' + digest(plan)[:20]
+            with self.lock:
+                expected = {key: self.memory_reports[key] for key in plan}
             def validate():
                 found = set()
                 for row in iter_group('batches', group):
@@ -1571,13 +1670,28 @@ class TaskStore:
                 rows = [prepare_batch(dict({key: value for key, value in stored.items() if not key.startswith('_')},
                     storage_group_key=group),
                     diagnostic_logging=self.diagnostic_logging, runtime=getattr(self, 'runtime', None))
-                    for _, stored in plan]
+                    for stored in (self.staged_report(key) for key in plan)]
                 from runtime import check_memory_limit
                 check_memory_limit(self.state.get('config', {}).get('memory_limit_mb', 8192))
-                write('batches', group, rows)
-                del rows
-                validate()
-            return group, [key for key, _ in plan]
+                try:
+                    write('batches', group, rows)
+                except Exception as error:
+                    del rows
+                    try:
+                        validate()
+                    except Exception:
+                        raise error
+                else:
+                    del rows
+                    validate()
+            with self.lock:
+                for key in plan:
+                    row = self.verified_batches[key]
+                    row.update(storage_group_key=group, storage_version=3)
+                    self.unsaved_batches[key] = row
+                    self.published_report_receipts[key] = digest(row)
+                    self.memory_reports.pop(key, None)
+            return group, plan
         def publish(plan):
             # 所有活动任务共同最多两组转换，避免四组同时收尾产生八份大对象。
             with _MEMORY_REPORT_SLOTS:
@@ -1587,14 +1701,9 @@ class TaskStore:
             completed = list(pool.map(publish, plans))
         with self.lock:
             evidence = self.state.setdefault('evidence_storage', dict(version=3, report_groups={}))
-            for group, keys in completed:
-                for key in keys:
-                    row = self.verified_batches[key]
-                    row.update(storage_group_key=group, storage_version=3)
-                    self.unsaved_batches[key] = row
-                    self.published_report_receipts[key] = digest(row)
-                    evidence['report_groups'][key] = group
-                    self.memory_reports.pop(key, None)
+            evidence['report_groups'].update({key: row['storage_group_key']
+                for key, row in self.verified_batches.items()
+                if row.get('storage_version') == 3 and row.get('storage_group_key')})
         self._publish_memory_archive()
         return bool(completed)
 
@@ -1831,13 +1940,13 @@ class TaskStore:
             beat()
             self.defer_persistence = False
 
-    def close(self):
+    def close(self, *, write_diagnostics=True):
         if self.memory_execution:
             _LIVE_TASKS.pop(str(self.destination.resolve()), None)
             self.memory_reports.clear()
         self.db.close()
         self.verified_batches.clear()
-        if self.diagnostic_logging:
+        if write_diagnostics and self.diagnostic_logging:
             try:
                 diagnostics = dict(getattr(self, 'diagnostic_summary', {}),
                                    task_state_writes=self.state_write_count,
@@ -1939,13 +2048,23 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         store.checkpoint(**(dict(boundary='initial') if store.memory_execution else {}))
     candidates = {}
     burst_context = state.get('burst')
-    def planned_inputs(times):
-        if burst_context is None:
-            return times, {}
-        from burst import combined_inputs
-        times, sources = combined_inputs(times, burst_context, config['input_interval_ms'])
-        return times, dict(burst_candidate=burst_context['candidate'], input_sources=sources,
-                           burst_plan=burst_context['plan'])
+    input_plans = {}
+    def planned_inputs(scenario, input_seed):
+        # 本次optimize的角色、条件、间隔和爆发已经冻结；不跨任务共享。
+        with store.lock:
+            key = (scenario, input_seed)
+            if key not in input_plans:
+                times = input_times(scenario, input_seed, config['input_interval_ms'])
+                sources = None
+                if burst_context is not None:
+                    from burst import combined_inputs
+                    times, sources = combined_inputs(times, burst_context, config['input_interval_ms'])
+                input_plans[key] = (tuple(times), tuple(sources) if sources is not None else None)
+            times, sources = input_plans[key]
+        # 保持公开请求的列表类型，各请求修改列表时不会污染冻结底本。
+        options = (dict(burst_candidate=burst_context['candidate'], input_sources=list(sources),
+                        burst_plan=burst_context['plan']) if burst_context is not None else {})
+        return list(times), options
     prepared = {}
     compiling = {}
     candidate_compilations = 0
@@ -2082,8 +2201,7 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             raise ValueError('GA评分必须使用冻结阶段与样本数')
         seed = plan['seeds'][index]
         input_seed = seed + 500000
-        times = input_times(scenario, input_seed, config["input_interval_ms"])
-        times, burst_options = planned_inputs(times)
+        times, burst_options = planned_inputs(scenario, input_seed)
         compiled = prepared_candidate if prepared_candidate is not None else candidate(program)
         behavior_id = candidate_key(program)
         request = dict(condition=condition_key, program=compiled_identity(compiled), purpose=purpose,
@@ -2159,6 +2277,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
             kwargs['allow_zero'] = True
             if store.memory_execution:
                 kwargs['report_kind'] = 'summary' if purpose == 'search' else 'full'
+                if purpose not in ('search', 'feedback', 'diagnostic'):
+                    kwargs['retain_report_json'] = True
             def native_started():
                 with store.lock:
                     batch_counters['native_batch_starts'] = batch_counters.get('native_batch_starts', 0) + 1
@@ -2215,7 +2335,8 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                 state['inflight'].pop(key, None)
                 state['batch_estimate'] = max(0.1, 0.8 * state['batch_estimate'] + 0.2 * (time.monotonic()-started))
                 store.stage_report(key, row, stored, diagnostic_logging=config['diagnostic_logging'],
-                                   **(dict(report_bytes=result.get('report_bytes')) if store.memory_execution else {}),
+                                   **(dict(report_bytes=result.get('report_bytes'),
+                                           report_json=result.get('report_json')) if store.memory_execution else {}),
                                    replace_group=(cached.get('storage_group_key') or key)
                                    if cached and cached['status'] == 'success' else None)
                 center_stored = not any(k == key for k, _, _ in store.report_buffer)

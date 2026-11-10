@@ -10,7 +10,7 @@ def test_refresh_preflight_lists_four_scopes_without_native_or_publication(monke
     import seed_training as seeds
     monkeypatch.setattr(result_store, 'bind_project', lambda path: None)
     monkeypatch.setattr(result_store, 'ensure_available', lambda: None)
-    monkeypatch.setattr(seeds, 'registry_rows', lambda: [])
+    monkeypatch.setattr(seeds, 'registry_rows', lambda **kwargs: [])
     monkeypatch.setattr(seeds, 'check_training', lambda **kw: dict(status='ready', groups=[
         dict(configuration_key=dict(specialization_id=252, hero_talent=hero,
                                     target_type='single_target' if targets == 1 else 'aoe'))
@@ -97,6 +97,37 @@ def test_preparation_filters_new_sources_by_actual_group_before_dedup(prepared_i
     assert [row['source_id'] for row in ready['entries']] == ['legacy']
 
 
+@pytest.mark.real
+def test_reference_plan_freezes_small_sources_in_its_own_center(refresh_environment):
+    import seed_training as seeds
+    env = refresh_environment
+    assert seeds.main(env.arguments) == 0
+    saved = json.loads((env.root / 'sources.json').read_text(encoding='utf-8'))
+    assert all('original' not in row and row.get('original_ref') for row in saved)
+
+
+@pytest.mark.real
+@pytest.mark.parametrize('failure', ['missing_original', 'bad_json'])
+def test_reference_resume_reports_invalid_isolation_without_publishing_or_resetting_plan(
+        refresh_environment, monkeypatch, capsys, failure):
+    import result_store, seed_training as seeds
+    env = refresh_environment
+    assert seeds.main(env.arguments) == 0
+    capsys.readouterr()
+    path = env.root / 'plan.json'
+    if failure == 'bad_json':
+        path.write_text('{bad', encoding='utf-8')
+    else:
+        reader = result_store.read_records
+        monkeypatch.setattr(result_store, 'read_records', lambda table, key, **kw:
+            [] if table == 'seed_originals' else reader(table, key, **kw))
+    before = path.read_bytes()
+    assert seeds.main(env.arguments) == 2
+    assert capsys.readouterr().err
+    assert path.read_bytes() == before
+    assert 'seed_candidates' not in env.writes
+
+
 def test_prepared_cache_roundtrip_decodes_scope_without_rebuilding_reference(prepared_input, monkeypatch):
     from copy import deepcopy
     import result_store, seed_training as seeds
@@ -109,7 +140,8 @@ def test_prepared_cache_roundtrip_decodes_scope_without_rebuilding_reference(pre
         for key, kind in seeds.PREPARED_SCHEMA.items():
             if kind == 'JSON' and record[key] is not None:
                 record[key] = json.dumps(record[key])
-    monkeypatch.setattr(result_store, 'read_records', lambda *a, **kw: deepcopy(disk))
+    monkeypatch.setattr(result_store, 'read_records', lambda table, key, **kw:
+        deepcopy(disk) if table == 'seed_prepared' else prepared_input.read(table, key, **kw))
     ready = seeds.ensure_prepared('/profile', 1, '/memory', sources=[row], inputs=prepared_input.inputs)
     assert ready['preparation']['context_rebuilt'] is False
     assert ready['preparation']['sources_rebuilt'] == 0
@@ -144,13 +176,14 @@ def test_weighted_generator_matches_frozen_legacy_output_and_resumes():
 
 
 @pytest.mark.real
-def test_joint_apply_command_is_one_write_recovers_lost_receipt_and_refuses_conflicts(tmp_path, monkeypatch, capsys):
+def test_joint_apply_command_is_one_write_recovers_lost_receipt_and_refuses_conflicts(tmp_path, monkeypatch, capsys, prepared_input):
     import hashlib
     from pathlib import Path
     from copy import deepcopy
     from contextlib import nullcontext
     import burst, result_store, seed_training as seeds, simulation_config, task
     import reference_seeds as refresh
+    import source_catalog
     from search import digest
     config = tmp_path / 'config.toml'
     config.write_text('[training]\nreference_seed_mode="weighted-v1"\n', encoding='utf-8')
@@ -164,12 +197,22 @@ def test_joint_apply_command_is_one_write_recovers_lost_receipt_and_refuses_conf
     monkeypatch.setattr(result_store, 'ensure_available', lambda: None)
     monkeypatch.setattr(task, '_rule_hashes', lambda **kw: {})
     monkeypatch.setattr(burst, 'load', lambda spec: dict(spec_id=252))
-    old = [dict(source_id='unrelated', active=True, allowed_groups=None)]
-    final = [*old, dict(source_id='managed', active=True, allowed_groups=None)]
+    old = [prepared_input.source('unrelated', [['outbreak']])]
+    monkeypatch.setattr(source_catalog, 'CHUNK_CHARS', 37)
+    old[0]['original'] = '旧原文😀"\n\\' * 30
+    final = [*old, prepared_input.source('managed', [['death_coil']])]
     registry = deepcopy(old)
-    monkeypatch.setattr(seeds, 'registry_rows', lambda: deepcopy(registry))
+    records = {}
+    def read(table, key, **kwargs):
+        rows = deepcopy(registry if table == 'seed_candidates' else records.get((table, key), []))
+        return [row for row in rows if all(row.get(k) == v for k, v in kwargs.get('filters', {}).items())]
+    monkeypatch.setattr(result_store, 'read_records', read)
+    monkeypatch.setattr(result_store, 'iter_group', lambda table,key: iter(read(table,key)))
     writes = []
     def write(table, key, rows, **kw):
+        if table == 'seed_originals':
+            records[table, key] = deepcopy(rows)
+            return
         assert (table, key) == ('seed_candidates', 'registry')
         writes.append(deepcopy(rows))
         registry[:] = deepcopy(rows)
@@ -197,7 +240,7 @@ def test_joint_apply_command_is_one_write_recovers_lost_receipt_and_refuses_conf
         refresh.write_json(root / 'plan.json', state)
     restore_plan()
     args = ['--project', str(tmp_path), 'refresh-references', '--workspace', str(root), '--apply-plan']
-    registry.append(dict(source_id='concurrent', active=True))
+    registry.append(prepared_input.source('concurrent', [['outbreak']]))
     assert seeds.main(args) == 2
     assert '拒绝覆盖' in capsys.readouterr().err and not writes
     registry[:] = deepcopy(old)
@@ -259,7 +302,7 @@ def refresh_environment(tmp_path, monkeypatch, prepared_input):
     source = prepared_input.source('old', [['outbreak']])
     source['source_id'] = 'manual:simc-sanlayn-a1-20261012'
     sources = [source]
-    monkeypatch.setattr(seeds, 'registry_rows', lambda: sources)
+    monkeypatch.setattr(seeds, 'registry_rows', lambda **kwargs: sources)
     monkeypatch.setattr(seeds, 'check_training', lambda **kw: dict(
         templates=[dict(template=str(template), template_sha256=inputs['template_sha'])],
         engines=inputs['engines'], training_config=simulation_config.load_training_config(),
@@ -270,8 +313,10 @@ def refresh_environment(tmp_path, monkeypatch, prepared_input):
     monkeypatch.setattr(result_store, 'ensure_available', lambda: None)
     writes = []
     def store_write(table, key, rows, **kw):
+        from copy import deepcopy
         assert table != 'seed_candidates', 'preparation cannot publish the registry'
         assert json.loads((root / 'plan.json').read_text(encoding='utf-8'))['status'] == 'preparing'
+        prepared_input.records[table, key] = deepcopy(rows)
         writes.append(table)
     monkeypatch.setattr(result_store, 'write', store_write)
     arguments = ['--project', str(tmp_path), 'refresh-references', '--workspace', str(root), '--simc-only']
@@ -324,7 +369,8 @@ def test_joint_preparation_command_cleans_real_records_and_keeps_registry_on_fai
         return
     assert status == 0 and state['status'] == 'prepared'
     final = {r['source_id']: r for r in state['final_sources']}
-    assert all(final[r['source_id']] == r for r in protected)
+    from source_catalog import same_source
+    assert all(same_source(final[r['source_id']], r) for r in protected)
     assert all(final[r['source_id']]['active'] is False for r in legacy)
     new = [r for r in final.values() if r['family'] == 'gearinsight-library-v1']
     assert sum(r['active'] for r in new) == 1

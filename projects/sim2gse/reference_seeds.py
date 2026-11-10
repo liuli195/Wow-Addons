@@ -16,7 +16,15 @@ ADOPTION_PATH = Path(__file__).resolve().parents[2] / 'myspec/changes/sim2gse-ge
 
 
 def source_digest(rows):
-    return digest(sorted([dict(r, allowed_groups=r.get('allowed_groups')) for r in rows], key=lambda r: r['source_id']))
+    from source_catalog import digest_rows, original
+    def complete():
+        for row in sorted(rows, key=lambda r: r['source_id']):
+            value = dict(row, allowed_groups=row.get('allowed_groups'))
+            if 'original_ref' in value:
+                value['original'] = original(value)
+                value.pop('original_ref')
+            yield value
+    return digest_rows(complete())
 
 
 def simc_source(row):
@@ -31,11 +39,83 @@ def write_json(path, value):
     replace_file(pending, path)
 
 
+def _json_items(*args, **kwargs):
+    import ijson
+    try:
+        yield from ijson.items(*args, **kwargs)
+    except ijson.JSONError as error:
+        raise ValueError('准备计划格式损坏，不能恢复') from error
+
+
 def load_plan(root):
-    state = json.loads((Path(root) / 'plan.json').read_text(encoding='utf-8'))
-    if state.get('checksum') != digest({k: v for k, v in state.items() if k != 'checksum'}):
+    import ijson
+    from source_catalog import bounded_digest, freeze, original
+    root = Path(root)
+    # 跳过大数组；其余计划字段保持原样。第二遍逐行纳入旧摘要后再冻结原件。
+    with (root / 'plan.json').open('rb') as stream:
+        def metadata():
+            skipping = False
+            for prefix, event, value in ijson.parse(stream, use_float=True):
+                if prefix == 'final_sources' and event == 'start_array':
+                    skipping = True
+                    yield prefix, event, value
+                elif skipping:
+                    if prefix == 'final_sources' and event == 'end_array':
+                        skipping = False
+                        yield prefix, event, value
+                else:
+                    yield prefix, event, value
+        state = next(_json_items(metadata(), ''))
+    if (not isinstance(state, dict) or not isinstance(state.get('manifest'), dict)
+            or type(state.get('source_format', 1)) is not int or state.get('source_format', 1) not in (1, 2)):
+        raise ValueError('准备计划结构或版本无效')
+    frozen = []
+    def final_sources():
+        with (root / 'plan.json').open('rb') as stream:
+            for row in _json_items(stream, 'final_sources.item', use_float=True):
+                yield row
+                with isolated_center(root / 'data'):
+                    value = freeze(row)
+                    original(value)
+                    frozen.append(value)
+    checked = {k: v for k, v in state.items() if k != 'checksum'}
+    if 'final_sources' in checked:
+        checked['final_sources'] = final_sources()
+    if state.get('checksum') != bounded_digest(checked):
         raise ValueError('准备计划校验损坏，不能恢复')
+    if 'final_sources' in state:
+        state['final_sources'] = frozen
+    if state.get('source_format') == 2:
+        sources = load_sources(root)
+        with isolated_center(root / 'data'):
+            if source_digest(sources) != state['manifest']['sources']:
+                raise ValueError('隔离来源与冻结计划不符')
     return state
+
+
+def load_sources(root, runtime=None):
+    import ijson
+    from source_catalog import freeze
+    rows = []
+    with (Path(root) / 'sources.json').open('rb') as stream, isolated_center(Path(root) / 'data'):
+        for row in _json_items(stream, 'item', use_float=True):
+            if runtime is not None:
+                runtime.check()
+            rows.append(freeze(row))
+    return rows
+
+
+def freeze_sources(sources, root, runtime):
+    """正式资料逐条读，隔离根逐条存；计划不依赖正式根里的可变旧表。"""
+    from source_catalog import original, freeze
+    rows = []
+    for row in sources:
+        runtime.check()
+        text = original(row)
+        with isolated_center(Path(root) / 'data'):
+            rows.append(freeze(dict(row, original=text)))
+        runtime.check()
+    return rows
 
 
 def preparation_budget(state, root):
@@ -118,7 +198,8 @@ def joint_sources(sources, generated, plugin_sources, adoption):
         for expected in adoption['legacy_sources']:
             row = by_id.get(expected['source_id'])
             if (row is None or any(row.get(k) != expected[k] for k in ('candidate_id', 'source_revision'))
-                    or hashlib.sha256(row['original'].encode('utf-8')).hexdigest() != expected['original_sha256']
+                    or (row['original_ref']['sha256'] if 'original_ref' in row else
+                        hashlib.sha256(row['original'].encode('utf-8')).hexdigest()) != expected['original_sha256']
                     or digest(row['program']) != expected['program_sha256']):
                 raise ValueError('旧插件来源与精确接管清单不符')
             retiring.add(expected['source_id'])
@@ -165,6 +246,7 @@ def prepare_plugin(args, state, sources, document):
         if latest['manifest'] != state['manifest']:
             raise ValueError('阶段交接时冻结计划已变化')
         state = latest
+        sources = load_sources(root)
         if state['status'] in ('prepared', 'published'):
             plugin_unchanged(state['plugin'])
             return state
@@ -187,10 +269,12 @@ def prepare_plugin(args, state, sources, document):
             state['adoption'] = adoption
             groups = [row['group'] for row in state['groups']]
             candidates = clean_sources(plugin, state['manifest']['burst_definition'], groups)
-            final = joint_sources(sources, state['generated'], candidates, adoption)
             published_ids = {row['source_id'] for row in candidates}
             final_groups = []
             with isolated_center(root / 'data'):
+                from source_catalog import freeze
+                final = [freeze(row) for row in joint_sources(sources, state['generated'], candidates, adoption)]
+                final_digest = source_digest(final)
                 result_store.write('burst_definitions', 'current_252', [state['manifest']['burst_definition']])
                 for group_info in state['manifest']['setup']['groups']:
                     runtime.check()
@@ -214,7 +298,7 @@ def prepare_plugin(args, state, sources, document):
                     checkpoint()
             plugin_unchanged(plugin)
             runtime.check()
-            state.update(status='prepared', final_sources=final, final_digest=source_digest(final),
+            state.update(status='prepared', final_sources=final, final_digest=final_digest,
                          final_groups=final_groups)
             checkpoint()
             return state
@@ -244,33 +328,39 @@ def apply_plan(args, ready, policy, document):
                 or any(r['simc_behaviors'] < policy['reference_seed_target'] or r['plugin_sources'] < 1
                        for r in state['final_groups'])):
             raise ValueError('四组联合验真凭据不完整')
-        if state['final_digest'] != source_digest(state['final_sources']):
-            raise ValueError('联合计划最终来源摘要不符')
-        with seeds.writer_lock():
-            current = seeds.registry_rows()
-            actual = source_digest(current)
-            if actual == state['final_digest']:
-                return dict(status='published', published=True, already_published=True,
+        with isolated_center(root / 'data'):
+            if state['final_digest'] != source_digest(state['final_sources']):
+                raise ValueError('联合计划最终来源摘要不符')
+        current = seeds.registry_rows(originals=False)
+        actual = source_digest(current)
+        if actual == state['final_digest']:
+            return dict(status='published', published=True, already_published=True,
                             final_digest=actual, groups=state['final_groups'])
-            if actual != state['manifest']['sources']:
-                raise ValueError('正式来源在计划后已变化，拒绝覆盖')
-            expected = dict(state['manifest'], configuration=document, setup=ready, policy=policy,
-                burst_definition=load_burst(252), rules=_rule_hashes(relative_to=Path(__file__).resolve().parents[2]),
-                implementation={name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-                    for name in ('reference_seeds.py', 'weighted_seeds.py', 'gearinsight_reference.lua')})
-            if expected != state['manifest']:
-                raise ValueError('发布时配置、角色或实现已变化，请创建新计划')
-            if state['adoption'] != json.loads(ADOPTION_PATH.read_text(encoding='utf-8')):
-                raise ValueError('精确接管清单已变化')
-            plugin_unchanged(state['plugin'])
-            for row in state['final_sources']:
-                seeds.source_groups(row)
-            result_store.write('seed_candidates', 'registry', state['final_sources'], schema=seeds.CANDIDATE_SCHEMA)
-            if source_digest(seeds.registry_rows()) != state['final_digest']:
-                raise ValueError('来源发布后读取身份不符，保留计划等待核实')
-            state.update(status='published', published=True)
-            state['checksum'] = digest({k: v for k, v in state.items() if k != 'checksum'})
-            write_json(root / 'plan.json', state)
+        if actual != state['manifest']['sources']:
+            raise ValueError('正式来源在计划后已变化，拒绝覆盖')
+        expected = dict(state['manifest'], configuration=document, setup=ready, policy=policy,
+            burst_definition=load_burst(252), rules=_rule_hashes(relative_to=Path(__file__).resolve().parents[2]),
+            implementation={name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+                for name in ('reference_seeds.py', 'weighted_seeds.py', 'gearinsight_reference.lua')})
+        if expected != state['manifest']:
+            raise ValueError('发布时配置、角色或实现已变化，请创建新计划')
+        if state['adoption'] != json.loads(ADOPTION_PATH.read_text(encoding='utf-8')):
+            raise ValueError('精确接管清单已变化')
+        plugin_unchanged(state['plugin'])
+        for row in state['final_sources']:
+            seeds.source_groups(row)
+        from source_catalog import original, freeze, publish
+        final = []
+        for row in state['final_sources']:
+            with isolated_center(root / 'data'):
+                text = original(row)
+            final.append(freeze(dict(row, original=text)))
+        publish(final, expected_revision=current.revision)
+        if source_digest(seeds.registry_rows(originals=False)) != state['final_digest']:
+            raise ValueError('来源发布后读取身份不符，保留计划等待核实')
+        state.update(status='published', published=True)
+        state['checksum'] = digest({k: v for k, v in state.items() if k != 'checksum'})
+        write_json(root / 'plan.json', state)
         return dict(status='published', published=True, already_published=False,
                     final_digest=state['final_digest'], groups=state['final_groups'])
 
@@ -305,13 +395,20 @@ def prepare_simc(args, ready, policy, sources, document):
         else:
             state = dict(manifest=manifest, status='preparing', published=False, used_seconds=0.,
                          requested_iterations=0, native_attempts=0, groups=[], generated=[])
-            write_json(root / 'sources.json', sources)
         runtime, checkpoint = preparation_budget(state, root)
         state['status'] = 'preparing'
         checkpoint()
         try:
             runtime.check()
+            source_path = root / 'sources.json'
+            if not source_path.exists():
+                write_json(source_path, freeze_sources(sources, root, runtime))
+            state['source_format'] = 2
+            checkpoint()
+            sources = load_sources(root, runtime)
             with isolated_center(root / 'data'):
+                if source_digest(sources) != manifest['sources']:
+                    raise ValueError('隔离来源与冻结计划不符')
                 result_store.write('burst_definitions', 'current_252', [definition])
                 for index, group_info in enumerate(ready['groups']):
                     group = dict(group_info['configuration_key'])
@@ -408,6 +505,6 @@ def run(args):
         raise ValueError('请在原配置training区启用reference_seed_mode=weighted-v1')
     if args.apply_plan:
         return apply_plan(args, ready, policy, document)
-    sources = seeds.registry_rows()
+    sources = seeds.registry_rows(originals=False)
     state = prepare_simc(args, ready, policy, sources, document)
     return state if args.simc_only else prepare_plugin(args, state, sources, document)

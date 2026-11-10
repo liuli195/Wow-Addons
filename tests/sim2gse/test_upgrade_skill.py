@@ -188,6 +188,8 @@ def test_postcheck_verifies_current_ga_to_page_evidence_and_rejects_changed_plan
         page.store.checkpoint()
     original_connect = sqlite3.connect
     def connect(path, **kwargs):
+        if path == ':memory:':
+            return original_connect(path, **kwargs)
         assert path.endswith('?mode=ro') and kwargs == {'uri': True}
         connection = original_connect(':memory:')
         (trained if '/training/' in path else page).store.db.backup(connection)

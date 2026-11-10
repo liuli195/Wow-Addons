@@ -109,6 +109,7 @@ def memory_ga(monkeypatch):
                 raise result_store.DataReadError('指定记录组缺失') from MissingStoredKey(keys)
             return [deepcopy(row) for key in keys for row in records[table, key]]
         monkeypatch.setattr(result_store, 'read_many', read_many)
+        monkeypatch.setattr(result_store, 'iter_group', lambda table, key: (row for row in result_store.read_many(table, [key])))
         if memory_destination is not None:
             monkeypatch.setattr(result_store, '_api', lambda: dict(MissingKeyError=MissingStoredKey))
         monkeypatch.setattr(store, 'stage_report', stage_report)
@@ -142,6 +143,22 @@ def memory_ga(monkeypatch):
     for store in stores:
         store.diagnostic_logging_override = False
         store.close()
+
+
+@pytest.mark.real
+@pytest.mark.parametrize('formal', [False, True], ids=['training', 'formal'])
+def test_memory_search_requests_raw_text_only_for_reports_kept_until_publication(memory_ga, tmp_path, formal):
+    settings = dict(max_processes=1, top_k=4, stagnation_generations=1,
+        target_mutation_probability=0., random_mutation_probability=0., crossover_probability=0.)
+    case = memory_ga(programs=[[['outbreak']], [['death_coil']], [['scourge_strike']]], formal=formal,
+        settings=None if formal else settings, search_settings=settings if formal else dict(max_processes=1),
+        memory_destination=tmp_path)
+    case.run()
+    coarse = [options for _, _, options in case.calls if options.get('report_kind') == 'summary']
+    finals = [options for _, _, options in case.calls if options.get('report_kind') == 'full']
+    assert coarse and finals
+    assert not any(options.get('retain_report_json') for options in coarse)
+    assert all(options.get('retain_report_json') for options in finals)
 
 @pytest.mark.real
 @pytest.mark.parametrize('formal', [False, True], ids=['training', 'formal'])
@@ -426,6 +443,18 @@ def test_v3_selected_independently_reads_full_source_cohort(monkeypatch, memory_
     state['configuration_key'] = key
     training._publish_seed_evidence(ga, store, manifest, case.character, ready)
     selected = training._selected(ga, store, manifest, case.character, ready, key)
+    stored_read = result_store.read_many
+    monkeypatch.setattr(result_store, 'iter_group', lambda table, group: (row for row in stored_read(table, [group])))
+    def no_bulk_reports(table, keys, **kwargs):
+        assert table != 'batches', '独立验真不应一次装入整组报告'
+        return stored_read(table, keys, **kwargs)
+    monkeypatch.setattr(result_store, 'read_many', no_bulk_reports)
+    archive_reader = result_store.read_search_records
+    def compact_archive(*args, **kwargs):
+        values = archive_reader(*args, **kwargs)
+        assert all(set(row) == {'candidate_key', 'program'} for row in values), '来源验证只应保留必要历史字段'
+        return values
+    monkeypatch.setattr(result_store, 'read_search_records', compact_archive)
     training.verify_selected_evidence(selected)
     wrong_group = deepcopy(selected)
     for row in wrong_group:
@@ -1091,7 +1120,7 @@ def test_single_resume_missing_simulation_keeps_saved_and_explicit_difference_re
     case.store.checkpoint()
     connection = SimpleNamespace(execute=case.store.db.execute, close=lambda: None)
     monkeypatch.setattr(sqlite3, 'connect', lambda *a, **kw: connection)
-    monkeypatch.setattr(search, 'TaskStore', lambda *a: case.store)
+    monkeypatch.setattr(search, 'TaskStore', lambda *a, **kw: case.store)
     close_store = case.store.close
     monkeypatch.setattr(case.store, 'close', lambda: None)
     monkeypatch.setattr(result_store, 'ensure_available', lambda: None)

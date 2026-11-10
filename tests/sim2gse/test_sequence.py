@@ -17,6 +17,32 @@ from sequence import evaluate
 from test_character_export import sample_profile
 
 
+@pytest.mark.parametrize('retain', [False, True])
+def test_memory_evaluation_keeps_validated_report_text_only_when_requested(monkeypatch, retain):
+    import engine
+    from runtime import ProcessResult
+    from test_search import _fast_report
+    character = parse_character(sample_profile())
+    candidate = dict(blocks=[[dict(kind='spell', spell_id=77575, name='Outbreak', simc_action='outbreak')]],
+                     compiled_steps=[dict(type='spell', spell=77575)])
+    report = _fast_report(character, 100.0, 1)
+    report['sim']['players'][0]['sim2gse_action_summary']['scope'] = dict(
+        allowed={'spell:77575': True}, excluded={}, windows='', policy='spell:77575', controlled=True)
+    report['sim']['players'][0]['unknown'] = {'完整字段😀': [None, True, 1.25]}
+    body = json.dumps(report, ensure_ascii=False)
+    output = ('S2GBLOCK\t0\t0\toutbreak\nS2GJSON_BEGIN\n' + body + '\nS2GJSON_END\n').encode('utf-8')
+    source = Path('/memory/role.simc')
+    monkeypatch.setattr(Path, 'read_text', lambda path, **kwargs: sample_profile())
+    monkeypatch.setattr(engine, 'identity', lambda *args: (Path('simc-test'), {}))
+    monkeypatch.setattr(engine, 'run_command', lambda *args, **kwargs: ProcessResult(0, output, b'', 0))
+    result = evaluate(source, candidate, Path('/memory/unused'), character=character, iterations=2,
+                      input_times=[0], trace=False, memory_io=True, retain_report_json=retain)
+    assert result['report'] == report and result['summary']['dps'] == 100.0
+    assert ('report_json' in result) == retain
+    if retain:
+        assert result['report_json'] == body
+
+
 @pytest.mark.parametrize('enabled,outcome', [(False, 'without_trace'), (True, 'with_trace'), (True, 'invalid_trace'), (False, 'missing_positions'), (False, 'foreign_position')])
 def test_evaluation_timing_preserves_report_and_trace_contract(monkeypatch, enabled, outcome):
     import runtime
