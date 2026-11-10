@@ -90,6 +90,79 @@ def test_memory_restore_uses_the_complete_valid_wal_snapshot(tmp_path):
 
 
 @pytest.mark.real
+def test_checkpoint_bounds_repeated_input_encoding_and_rechecks_changed_requests(tmp_path, monkeypatch):
+    import json
+    import search
+    store = TaskStore(tmp_path, memory_execution=True)
+    archive = []
+    for index in range(200):
+        request = dict(condition='frozen', purpose='search', behavior_identity=str(index),
+                       program=[index], times=list(range(0, 180000, 200)), seed=42,
+                       burst=dict(sources=['loop'] * 900), detail={'quoted"key': '角色😀'})
+        request['typed_value'] = (True, 1, 1.0, -0.0, 0.0)[index - 195] if index >= 195 else True
+        if index == 50:
+            request['times'][0] = 1  # 相同种子不代表完整输入相同。
+        key = digest(request)
+        batch = dict(status='success', data_key=key, request=request, dps=42., samples=31, variance=0.)
+        archive.append(dict(key=str(index), program=[['outbreak']], score=42., batches=[batch]))
+        store.put_batch(key, batch, verified=True)
+    store.state.update(run_id='shared-input-encoding', archive=archive)
+    encoded_bytes = 0
+    serialize = json.dumps
+    def counted_json(*args, **kwargs):
+        nonlocal encoded_bytes
+        text = serialize(*args, **kwargs)
+        encoded_bytes += len(text.encode('utf-8'))
+        return text
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(json, 'dumps', counted_json)
+            store.checkpoint(boundary='pause')
+        assert encoded_bytes < 1024 * 1024, '相同长输入仍随每条成绩重复编码'
+        resumed = TaskStore(tmp_path, memory_execution=True)
+        try:
+            assert resumed.state['archive'] == archive
+        finally:
+            resumed.close()
+        previous = (tmp_path / 'task.sqlite3').read_bytes()
+        archive[0]['batches'][0]['request']['times'][0] = 2
+        with pytest.raises(ValueError, match='请求身份或数值无效'):
+            store.checkpoint(boundary='pause')
+        assert (tmp_path / 'task.sqlite3').read_bytes() == previous
+    finally:
+        store.close()
+
+
+@pytest.mark.real
+def test_checkpoint_full_hash_fallback_keeps_large_and_legacy_requests(tmp_path):
+    store = TaskStore(tmp_path, memory_execution=True)
+    archive = []
+    for index in range(3):
+        request = dict(condition='frozen', purpose='search', seed=42, times=[0, 200])
+        if index:
+            request.update(program=[index], behavior_identity=str(index), extra='x' * (1024 * 1024 + 1))
+        key = digest(request)
+        batch = dict(status='success', data_key=key, request=request, dps=42., samples=31, variance=0.)
+        archive.append(dict(key=str(index), program=[['outbreak']], score=42., batches=[batch]))
+        store.put_batch(key, batch, verified=True)
+    store.state.update(run_id='request-hash-fallback', archive=archive)
+    try:
+        store.checkpoint(boundary='pause')
+        resumed = TaskStore(tmp_path, memory_execution=True)
+        try:
+            assert resumed.state['archive'] == archive
+        finally:
+            resumed.close()
+        previous = (tmp_path / 'task.sqlite3').read_bytes()
+        archive[-1]['batches'][0]['request']['extra'] += '!'
+        with pytest.raises(ValueError, match='请求身份或数值无效'):
+            store.checkpoint(boundary='pause')
+        assert (tmp_path / 'task.sqlite3').read_bytes() == previous
+    finally:
+        store.close()
+
+
+@pytest.mark.real
 def test_recovery_save_streams_history_without_accumulating_all_serialized_rows(tmp_path):
     import tracemalloc
     store = TaskStore(tmp_path, memory_execution=True)

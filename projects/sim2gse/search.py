@@ -881,10 +881,57 @@ def _checkpoint_rows(checksum, kind, rows):
         yield row
 
 
-def _check_checkpoint_batch(key, row):
+def _same_checkpoint_input(left, right, flat_kinds):
+    """只复用编码相同的JSON输入；Python的True==1不能作为编码依据。"""
+    if left is right:
+        return True
+    kind = type(left)
+    if kind is not type(right):
+        return False
+    if kind is dict:
+        return left.keys() == right.keys() and all(
+            type(key) is str and _same_checkpoint_input(left[key], right[key], flat_kinds) for key in left)
+    if kind in (list, tuple):
+        if left == right:
+            kinds = flat_kinds.get(id(left))
+            if kinds is None:
+                kinds = flat_kinds[id(left)] = set(map(type, left))
+            if len(kinds) == 1 and kinds <= {str, int, bool, type(None)} and kinds == set(map(type, right)):
+                return True
+        return len(left) == len(right) and all(_same_checkpoint_input(a, b, flat_kinds) for a, b in zip(left, right))
+    if kind is float:
+        return left == right and (left != 0 or math.copysign(1, left) == math.copysign(1, right))
+    return kind in (str, int, bool, type(None)) and left == right
+
+
+def _checkpoint_request_parts(common):
+    """规范JSON在两个候选字段处分段；其余字段仍用原编码规则。"""
+    parts, buffer = [], b'{'
+    for index, name in enumerate(sorted([*common, 'program', 'behavior_identity'])):
+        if index:
+            buffer += b','
+        buffer += _json(name).encode('utf-8') + b':'
+        if name in ('program', 'behavior_identity'):
+            parts.append((buffer, name))
+            buffer = b''
+        else:
+            buffer += _json(common[name]).encode('utf-8')
+    return parts, buffer + b'}'
+
+
+def _checkpoint_request_digest(request, parts):
+    checksum = hashlib.sha256()
+    for prefix, name in parts[0]:
+        checksum.update(prefix)
+        checksum.update(_json(request[name]).encode('utf-8'))
+    checksum.update(parts[1])
+    return checksum.hexdigest()
+
+
+def _check_checkpoint_batch(key, row, *, request_digest=None):
     if row.get('status') != 'success':
         return
-    if (digest(row.get('request')) != key or row.get('data_key') != key
+    if ((digest(row.get('request')) if request_digest is None else request_digest) != key or row.get('data_key') != key
             or type(row.get('dps')) not in (int, float) or not math.isfinite(row['dps']) or row['dps'] < 0
             or type(row.get('samples')) is not int or row['samples'] < 1
             or type(row.get('variance')) not in (int, float)
@@ -1317,18 +1364,31 @@ class TaskStore:
                         if row.get('request', {}).get('purpose') in ('search', 'feedback', 'diagnostic')
                         or row.get('storage_group_key')}
             templates, template_keys, size = {}, {}, 0
+            request_parts, flat_kinds, shared_bytes = {}, {}, 0
             for key, row in all_rows.items():
-                _check_checkpoint_batch(key, row)
                 request = row.get('request')
+                request_digest = None
                 if isinstance(request, dict):
                     common = {name: value for name, value in request.items()
                               if name not in ('program', 'behavior_identity')}
                     template_key = digest([request.get(name) for name in
                         ('condition', 'purpose', 'seed', 'input_seed', 'iterations', 'trace')])
-                    if template_key in templates and templates[template_key] != common:
+                    if template_key in templates and not _same_checkpoint_input(templates[template_key], common, flat_kinds):
                         template_key = digest(common)
-                    templates[template_key] = common
+                    templates.setdefault(template_key, common)
                     template_keys[key] = template_key
+                    if row.get('status') == 'success' and {'program', 'behavior_identity'} <= request.keys():
+                        if template_key not in request_parts:
+                            parts = _checkpoint_request_parts(common)
+                            part_bytes = sum(len(prefix) for prefix, _ in parts[0]) + len(parts[1])
+                            # 只在本次持锁保存内复用编码，额外常驻片段总计最多1 MiB。
+                            request_parts[template_key] = parts if shared_bytes + part_bytes <= 1024 * 1024 else None
+                            if request_parts[template_key] is not None:
+                                shared_bytes += part_bytes
+                            del parts
+                        if request_parts[template_key] is not None:
+                            request_digest = _checkpoint_request_digest(request, request_parts[template_key])
+                _check_checkpoint_batch(key, row, request_digest=request_digest)
             snapshot['checkpoint_requests'] = templates
             def encode(value):
                 nonlocal size
@@ -1352,6 +1412,7 @@ class TaskStore:
                             CREATE TABLE state (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
                             CREATE TABLE state_fields (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                             CREATE TABLE state_archive (key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, value TEXT NOT NULL);
+                            CREATE INDEX state_archive_order ON state_archive(ordinal);
                             CREATE TABLE batches (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                             CREATE TABLE report_intents (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                             CREATE TABLE runtime_progress (id INTEGER PRIMARY KEY, elapsed REAL NOT NULL, status TEXT NOT NULL, inflight TEXT NOT NULL);
