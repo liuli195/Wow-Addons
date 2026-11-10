@@ -1871,13 +1871,13 @@ class TaskStore:
             beat()
             self.defer_persistence = False
 
-    def close(self):
+    def close(self, *, write_diagnostics=True):
         if self.memory_execution:
             _LIVE_TASKS.pop(str(self.destination.resolve()), None)
             self.memory_reports.clear()
         self.db.close()
         self.verified_batches.clear()
-        if self.diagnostic_logging:
+        if write_diagnostics and self.diagnostic_logging:
             try:
                 diagnostics = dict(getattr(self, 'diagnostic_summary', {}),
                                    task_state_writes=self.state_write_count,

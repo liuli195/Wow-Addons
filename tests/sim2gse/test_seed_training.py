@@ -629,6 +629,22 @@ def public_training_memory(monkeypatch, training_cli, prepared_input, memory_ga)
     monkeypatch.setattr(Path, 'mkdir', lambda *args, **kwargs: None)
     monkeypatch.setattr(Path, 'write_text', lambda path, text, **kwargs: files.__setitem__(path, text))
     monkeypatch.setattr(Path, 'read_text', lambda path, **kwargs: files.get(path, sample_profile()))
+    # 公开恢复入口也能流式读取同一个文件边界，不把文件检查替换为内部状态检查。
+    import io
+    binary_view = {}
+    real_open, real_is_file = Path.open, Path.is_file
+    def open_input(path, *args, **kwargs):
+        if path.name == 'task.sqlite3':
+            revision = case.store.db.total_changes
+            if binary_view.get('revision') != revision:
+                binary_view.update(revision=revision, data=case.store.db.serialize())
+            return io.BytesIO(binary_view['data'])
+        if path in files:
+            return io.BytesIO(files[path].encode('utf-8'))
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'open', open_input)
+    monkeypatch.setattr(Path, 'is_file', lambda path:
+                        False if path.name.endswith(('-wal', '-journal')) else real_is_file(path))
     for module in (task, search):
         monkeypatch.setattr(module, 'replace_file', lambda source, target: files.__setitem__(target, files.pop(source)))
     monkeypatch.setattr(Path, 'exists', lambda path: path in files)
@@ -640,12 +656,18 @@ def public_training_memory(monkeypatch, training_cli, prepared_input, memory_ga)
     monkeypatch.setattr(population_training, 'TaskStore', open_store)
     import sqlite3
     connect = sqlite3.connect
+    class Reader:
+        # 输入数据库由夹具持有；每次点读得到独立、可关闭的读取租借。
+        def execute(self, *args, **kwargs):
+            return case.store.db.execute(*args, **kwargs)
+        def close(self):
+            pass
     monkeypatch.setattr(sqlite3, 'connect', lambda database, **kwargs:
-        case.store.db if database in {
+        Reader() if database in {
             'file:' + path.with_name('task.sqlite3').as_posix() + '?mode=ro'
             for path in files if path.name == 'identity.json'} else connect(database, **kwargs))
     close = case.store.close
-    monkeypatch.setattr(case.store, 'close', lambda: None)
+    monkeypatch.setattr(case.store, 'close', lambda **kwargs: None)
     case.store.state.clear()
     header = deepcopy(prepared_input.header)
     native = header['context']['native']
@@ -862,7 +884,150 @@ def test_training_memory_io_recognizes_windows_paths(public_training_memory):
     assert Path.read_text(manifest) == '{}' and Path.exists(manifest)
     assert manifest in Path.glob(manifest.parents[2], '*/*/identity.json')
     uri = 'file:' + manifest.with_name('task.sqlite3').as_posix() + '?mode=ro'
-    assert sqlite3.connect(uri, uri=True) is public_training_memory.store.db
+    assert sqlite3.connect(uri, uri=True).execute('SELECT 1').fetchone() == (1,)
+
+
+def test_public_training_resume_does_not_retain_another_complete_precheck_history(
+        monkeypatch, public_training_memory):
+    import io
+    import tracemalloc
+    import search, seed_training, sequence
+    from runtime import TaskCancelled
+    case = public_training_memory
+    def pause(*args, **kwargs):
+        raise TaskCancelled('pause before native scoring')
+    monkeypatch.setattr(sequence, 'evaluate', pause)
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work')
+    history = [dict(kind='native', reason=str(index) + ':' + 'x' * 1800) for index in range(10000)]
+    case.store.state['errors'] = history
+    case.store.checkpoint()
+    checkpoint = case.store.db.serialize()
+    real_open = Path.open
+    def open_input(path, *args, **kwargs):
+        if path.name == 'task.sqlite3':
+            return io.BytesIO(checkpoint)
+        if path in case.files:
+            return io.BytesIO(case.files[path].encode('utf-8'))
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'open', open_input)
+    # The filesystem boundary has no WAL or rollback journal in this fixture.
+    real_is_file = Path.is_file
+    monkeypatch.setattr(Path, 'is_file', lambda path:
+                        False if path.name.endswith(('-wal', '-journal')) else real_is_file(path))
+    observed = []
+    def inspect_scoring(*args, **kwargs):
+        current, _ = tracemalloc.get_traced_memory()
+        observed.append(current)
+        assert current < 8 * 1024 * 1024, f'评分时仍留着完整预检历史副本：{current}字节'
+        raise TaskCancelled('resume reached native scoring')
+    monkeypatch.setattr(sequence, 'evaluate', inspect_scoring)
+    tracemalloc.start()
+    try:
+        with pytest.raises(TaskCancelled, match='resume reached native scoring'):
+            seed_training.run_training(case.template, 1, '/memory/work')
+    finally:
+        tracemalloc.stop()
+    assert observed
+    assert search.TaskStore.load_state(case.store.db)['errors'] == history
+
+
+@pytest.mark.parametrize('change', ['manifest', 'checkpoint', 'wal', 'delete-manifest', 'delete-checkpoint'])
+def test_public_training_resume_rejects_changed_preparation_files_and_closes_snapshot(
+        monkeypatch, public_training_memory, change):
+    import io
+    import sqlite3
+    import result_store, search, seed_training, sequence
+    from runtime import TaskCancelled
+    case = public_training_memory
+    def pause(*args, **kwargs):
+        raise TaskCancelled('pause before native scoring')
+    monkeypatch.setattr(sequence, 'evaluate', pause)
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work')
+    manifest = next(path for path in case.files if path.name == 'identity.json')
+    diagnostic = manifest.with_name('diagnostics.json')
+    case.files[diagnostic] = 'previous diagnostic evidence'
+    case.store.state['config']['diagnostic_logging'] = True
+    case.store.checkpoint()
+    changed = [False]
+    read, open_file, is_file = result_store.read_records, Path.open, Path.is_file
+    def preparation(table, key, **kwargs):
+        rows = read(table, key, **kwargs)
+        if table == 'seed_prepared':
+            changed[0] = True
+            if change == 'manifest':
+                value = json.loads(case.files[manifest])
+                value['changed_during_preparation'] = True
+                case.files[manifest] = json.dumps(value)
+            elif change == 'delete-manifest':
+                case.files.pop(manifest)
+        return rows
+    def open_input(path, *args, **kwargs):
+        if changed[0] and change == 'wal' and path.name == 'task.sqlite3-wal':
+            return io.BytesIO(b'new WAL appeared')
+        source = open_file(path, *args, **kwargs)
+        if changed[0] and change == 'checkpoint' and path.name == 'task.sqlite3':
+            with source:
+                return io.BytesIO(source.read() + b'changed tail')
+        return source
+    monkeypatch.setattr(result_store, 'read_records', preparation)
+    monkeypatch.setattr(Path, 'open', open_input)
+    def file_exists(path):
+        if changed[0]:
+            if change == 'delete-manifest' and path == manifest:
+                return False
+            if change == 'delete-checkpoint' and path.name == 'task.sqlite3':
+                return False
+            if change == 'wal' and path.name == 'task.sqlite3-wal':
+                return True
+        return is_file(path)
+    monkeypatch.setattr(Path, 'is_file', file_exists)
+    monkeypatch.setattr(case.store, 'close', lambda **kwargs: search.TaskStore.close(case.store, **kwargs))
+    monkeypatch.setattr(sequence, 'evaluate', lambda *args, **kwargs: pytest.fail('changed recovery must not score'))
+    with pytest.raises(ValueError, match='准备期间已变化'):
+        seed_training.run_training(case.template, 1, '/memory/work')
+    assert case.files[diagnostic] == 'previous diagnostic evidence'
+    with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+        case.store.db.execute('SELECT 1')
+
+
+@pytest.mark.parametrize('entry', ['prepare', 'unreadable'])
+def test_public_training_preparation_closes_recovery_without_replacing_diagnostics(
+        monkeypatch, public_training_memory, capsys, entry):
+    import sqlite3
+    import result_store, search, seed_training, sequence
+    from runtime import TaskCancelled
+    case = public_training_memory
+    def pause(*args, **kwargs):
+        raise TaskCancelled('pause before native scoring')
+    monkeypatch.setattr(sequence, 'evaluate', pause)
+    with pytest.raises(TaskCancelled):
+        seed_training.run_training(case.template, 1, '/memory/work')
+    manifest = next(path for path in case.files if path.name == 'identity.json')
+    diagnostic = manifest.with_name('diagnostics.json')
+    case.files[diagnostic] = 'previous diagnostic evidence'
+    case.store.state['config']['diagnostic_logging'] = True
+    case.store.checkpoint()
+    monkeypatch.setattr(case.store, 'close', lambda **kwargs: search.TaskStore.close(case.store, **kwargs))
+    monkeypatch.setattr(sequence, 'evaluate', lambda *args, **kwargs: pytest.fail('preparation must not score'))
+    if entry == 'unreadable':
+        read = result_store.read_records
+        def unavailable(table, key, **kwargs):
+            if table == 'seed_prepared':
+                raise PermissionError('constructed preparation read failure')
+            return read(table, key, **kwargs)
+        monkeypatch.setattr(result_store, 'read_records', unavailable)
+    rc = seed_training.main(['--project', '/memory', 'run' if entry == 'unreadable' else 'prepare', '--template', str(case.template),
+                            '--targets', '1', '--workspace', '/memory/work', '--legacy'])
+    assert rc == (2 if entry == 'unreadable' else 0)
+    assert case.files[diagnostic] == 'previous diagnostic evidence'
+    if entry == 'unreadable':
+        with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+            case.store.db.execute('SELECT 1')
+    else:
+        assert case.store.db.execute('SELECT 1').fetchone() == (1,)
+    capsys.readouterr()
 
 
 

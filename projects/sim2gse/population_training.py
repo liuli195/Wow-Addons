@@ -1,5 +1,7 @@
 """A代际预训练。复用现有评价/报告/TaskStore，不创建第二套模拟后端。"""
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import ExitStack, closing
+import hashlib
 from copy import deepcopy
 from dataclasses import replace
 import hashlib
@@ -445,9 +447,28 @@ def _evolution(store, capabilities, runtime, config, *, scenarios=SCENARIOS):
     return execute
 
 
-def _unfinished(workspace, *, template=None, targets=None, scope=None, include_state=False):
+def _recovery_version(folder):
+    values = []
+    for name in ('identity.json', 'task.sqlite3', 'task.sqlite3-wal', 'task.sqlite3-journal'):
+        path = folder / name
+        if not path.is_file():
+            values.append(None)
+            continue
+        try:
+            with path.open('rb') as source:
+                values.append(hashlib.file_digest(source, 'sha256').hexdigest())
+        except FileNotFoundError:
+            values.append(None)
+    return tuple(values)
+
+
+def _unfinished(workspace, *, template=None, targets=None, scope=None, include_state=False,
+                recovery=None, _owners=None):
     """Startup-only scan of known task manifests, never a per-score fallback."""
     import sqlite3
+    for folder, (_, _, version) in (recovery or {}).items():
+        if _recovery_version(folder) != version:
+            raise ValueError('GA恢复清单或检查点在准备期间已变化，请重新开始恢复')
     for path in (Path(workspace).resolve() / 'ga').glob('*/*/identity.json'):
         manifest = json.loads(path.read_text(encoding='utf-8'))
         if (template is not None and manifest.get('template_path') != str(Path(template).resolve())
@@ -457,13 +478,52 @@ def _unfinished(workspace, *, template=None, targets=None, scope=None, include_s
         database = path.with_name('task.sqlite3')
         if not database.is_file():
             continue
-        with sqlite3.connect('file:' + database.as_posix() + '?mode=ro', uri=True) as db:
-            try:
-                state = TaskStore.load_state(db)
-            except sqlite3.OperationalError as error:
-                raise ValueError('GA任务检查点不完整: ' + str(path.parent)) from error
+        borrowed = (recovery or {}).get(path.parent)
+        store, version = None, None
+        if borrowed is not None:
+            saved_manifest, store, version = borrowed
+            if manifest != saved_manifest:
+                raise ValueError('GA恢复清单或检查点在准备期间已变化，请重新开始恢复')
+            state = store.state
+        else:
+            with closing(sqlite3.connect('file:' + database.as_posix() + '?mode=ro', uri=True)) as db:
+                try:
+                    # 只用小字段决定从哪个入口完整验真；已完成旧格式仍沿原读取。
+                    open_snapshot = False
+                    if (include_state and _owners is not None
+                            and manifest.get('search_config', {}).get('memory_execution')):
+                        try:
+                            row = db.execute("SELECT value FROM state_fields WHERE key='ga'").fetchone()
+                        except sqlite3.OperationalError:
+                            row = None  # 无逐字段表的旧格式仍由原加载器完整验真。
+                        if row:
+                            try:
+                                published = json.loads(row[0]).get('phase') == 'published'
+                            except (ValueError, TypeError, AttributeError):
+                                published = False
+                            open_snapshot = not published
+                    if not open_snapshot:
+                        state = TaskStore.load_state(db)
+                except sqlite3.OperationalError as error:
+                    raise ValueError('GA任务检查点不完整: ' + str(path.parent)) from error
+            if open_snapshot:
+                version = _recovery_version(path.parent)
+                store = TaskStore(path.parent, memory_execution=True,
+                    checkpoint_interval_seconds=manifest['search_config'].get('checkpoint_interval_seconds', 600))
+                try:
+                    if _recovery_version(path.parent) != version:
+                        raise ValueError('GA恢复清单或检查点在准备期间已变化，请重新开始恢复')
+                    state = store.state
+                    if state.get('ga', {}).get('phase') == 'published':
+                        store.close(write_diagnostics=False)
+                        continue
+                except BaseException:
+                    store.close(write_diagnostics=False)
+                    raise
+                _owners.callback(store.close, write_diagnostics=False)
         if state.get('ga', {}).get('phase') != 'published':
-            yield (path.parent, manifest, state) if include_state else (path.parent, manifest)
+            yield ((path.parent, manifest, state, store, version) if store is not None else
+                   (path.parent, manifest, state)) if include_state else (path.parent, manifest)
 
 
 def group_configs(workspace, templates, config, targets=(1, 5)):
@@ -499,202 +559,210 @@ def run_group(template, targets, workspace, *, cancel_event, use_burst, sources,
               prepare_only=False, materials=None, diagnostic_logging=None, search_config=None,
               expected_key=None, timeline_origin=None, burst_identity=None, training_overrides=None,
               new_search_config=None):
-    import seed_training as seeds
-    from task import _write_json, _rule_hashes
-    from engine import ROOT
-    if any((Path(workspace) / str(targets)).glob('*/identity.json')):
-        raise ValueError('旧逐材料训练目录不能作为GA任务恢复；请使用新工作目录，原完整成果仍可读取')
-    frozen = list(_unfinished(workspace, template=template, targets=targets, include_state=True))
-    if len(frozen) > 1:
-        raise ValueError('同模板/目标存在多个未完成GA任务')
-    options = seeds._training_options(search_config, diagnostic_logging)
-    inputs = None
-    if frozen:
-        from simulation_config import reject_removed_search_settings
-        from search import config_for
-        saved = frozen[0][1]['search_config']
-        from simulation_config import verify_syntax_receipt
-        verify_syntax_receipt(frozen[0][1].get('syntax'), saved.get('syntax'))
-        if 'syntax' not in saved:
-            raise ValueError('旧训练任务缺少冻结语法范围，请创建新任务')
-        reject_removed_search_settings(saved)
-        seeds._check_pretraining_observations(saved)
-        observation = {'diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline'}
-        explicit = {key: value for key, value in options.items() if value is not None}
-        if 'syntax' in explicit:
-            explicit['syntax'] = dict(saved['syntax'], **explicit['syntax'])
-        frozen_runtime = config_for(saved, training=True)
-        checkpoint = frozen[0][2].get('config') or {}
-        # 计算仍取不可变清单；省略观测取最近可靠检查点，不跳回初次选择。
-        latest = dict(saved, **{key: checkpoint[key] for key in observation if key in checkpoint})
-        seeds._check_pretraining_observations(latest)
-        resumed = config_for(dict(latest, **explicit), training=True)
-        if (any(resumed[key] != frozen_runtime[key]
-                for key in explicit if key not in observation)
-                or any(value != frozen[0][1]['training_config'][key]
-                       for key, value in (training_overrides or {}).items())):
-            raise ValueError('恢复训练配置发生变化，请创建新任务')
-        config = frozen[0][1]['training_config']
-        sources = [source for row in frozen[0][1]['sources'] for source in row['sources']]
-        materials = None  # Resume the original material manifest, not today's registry/subset.
-        inputs = seeds._training_inputs(template, targets, cancel_event=cancel_event,
-            use_burst=use_burst, max_processes=config['max_processes'],
-            burst_identity=burst_identity, _frozen_config=resumed)
-    elif new_search_config is not None:
-        inputs = seeds._training_inputs(template, targets, cancel_event=cancel_event,
-            use_burst=use_burst, max_processes=config['max_processes'],
-            burst_identity=burst_identity, _frozen_config=new_search_config)
-    from simulation_config import load_training_config
-    config = load_training_config(_document={'training': config})
-    ready = seeds.ensure_prepared(template, targets, workspace, cancel_event=cancel_event,
-        use_burst=use_burst, sources=sources, materials=materials, inputs=inputs,
-        max_processes=config['max_processes'], search_config=options,
-        burst_identity=burst_identity)
-    if 'mutation_probability' in config or not all(k in config for k in
-            ('target_mutation_probability', 'random_mutation_probability')):
-        raise ValueError('旧训练总变异参数已退役，未完成任务不能换策略续跑')
-    context = ready['context']
-    if not context or not ready['queue']:
-        raise ValueError('本组没有有效训练材料')
-    configuration_key = context['configuration_key']
-    if expected_key is not None and configuration_key != expected_key:
-        raise ValueError('受检标准模板实际英雄/目标与冻结训练分组不符')
-    from simulation_config import describe_syntax
-    syntax_result = dict(syntax=ready['config']['syntax'], syntax_summary=describe_syntax(ready['config']['syntax']),
-        source_rejections=[dict(source_id=row['source_id'], reason=row['reason'])
-                           for row in ready.get('entries', []) if row['status'] == 'rejected'])
-    if prepare_only:
-        return dict(status='prepared', algorithm=ALGORITHM, configuration_key=configuration_key,
-                    population_size=len(ready['queue']), config_key=ready['config_key'],
-                    preparation=ready['preparation'], **syntax_result)
-    scope = seeds.shared_scope(configuration_key, ready['config']['syntax'])
-    root = Path(workspace).resolve() / 'ga' / scope
-    environment = dict(template=ready['template_sha'], engines=ready['engines'],
-        simulation=ready['simulation_config'], burst=context['burst'],
-        rules=_rule_hashes(relative_to=ROOT))
-    active = list(_unfinished(workspace, scope=scope))
-    if len(active) > 1:
-        raise ValueError('本组三元范围存在多个未完成GA任务')
-    if active:
-        folder, manifest = active[0]
-        if not frozen or folder != frozen[0][0]:
-            raise ValueError('跨模板路径不能恢复未完成GA任务；请使用原模板路径恢复，或使用新工作目录开始新任务')
-        if manifest['environment'] != environment:
-            raise ValueError('GA恢复的角色/引擎/规则身份变化，拒绝混接')
-        config = manifest['training_config']
-    else:
-        from simulation_config import syntax_receipt
+    with ExitStack() as recovery_owners:
+        import seed_training as seeds
+        from task import _write_json, _rule_hashes
+        from engine import ROOT
+        if any((Path(workspace) / str(targets)).glob('*/identity.json')):
+            raise ValueError('旧逐材料训练目录不能作为GA任务恢复；请使用新工作目录，原完整成果仍可读取')
+        frozen = list(_unfinished(workspace, template=template, targets=targets, include_state=True,
+                                  _owners=None if prepare_only else recovery_owners))
+        if len(frozen) > 1:
+            raise ValueError('同模板/目标存在多个未完成GA任务')
+        options = seeds._training_options(search_config, diagnostic_logging)
+        inputs = None
+        if frozen:
+            from simulation_config import reject_removed_search_settings
+            from search import config_for
+            saved = frozen[0][1]['search_config']
+            from simulation_config import verify_syntax_receipt
+            verify_syntax_receipt(frozen[0][1].get('syntax'), saved.get('syntax'))
+            if 'syntax' not in saved:
+                raise ValueError('旧训练任务缺少冻结语法范围，请创建新任务')
+            reject_removed_search_settings(saved)
+            seeds._check_pretraining_observations(saved)
+            observation = {'diagnostic_logging', 'diagnostics', 'search_observability', 'search_timeline'}
+            explicit = {key: value for key, value in options.items() if value is not None}
+            if 'syntax' in explicit:
+                explicit['syntax'] = dict(saved['syntax'], **explicit['syntax'])
+            frozen_runtime = config_for(saved, training=True)
+            checkpoint = frozen[0][2].get('config') or {}
+            # 计算仍取不可变清单；省略观测取最近可靠检查点，不跳回初次选择。
+            latest = dict(saved, **{key: checkpoint[key] for key in observation if key in checkpoint})
+            seeds._check_pretraining_observations(latest)
+            resumed = config_for(dict(latest, **explicit), training=True)
+            if (any(resumed[key] != frozen_runtime[key]
+                    for key in explicit if key not in observation)
+                    or any(value != frozen[0][1]['training_config'][key]
+                           for key, value in (training_overrides or {}).items())):
+                raise ValueError('恢复训练配置发生变化，请创建新任务')
+            config = frozen[0][1]['training_config']
+            sources = [source for row in frozen[0][1]['sources'] for source in row['sources']]
+            materials = None  # Resume the original material manifest, not today's registry/subset.
+            inputs = seeds._training_inputs(template, targets, cancel_event=cancel_event,
+                use_burst=use_burst, max_processes=config['max_processes'],
+                burst_identity=burst_identity, _frozen_config=resumed)
+        elif new_search_config is not None:
+            inputs = seeds._training_inputs(template, targets, cancel_event=cancel_event,
+                use_burst=use_burst, max_processes=config['max_processes'],
+                burst_identity=burst_identity, _frozen_config=new_search_config)
+        from simulation_config import load_training_config
+        config = load_training_config(_document={'training': config})
+        ready = seeds.ensure_prepared(template, targets, workspace, cancel_event=cancel_event,
+            use_burst=use_burst, sources=sources, materials=materials, inputs=inputs,
+            max_processes=config['max_processes'], search_config=options,
+            burst_identity=burst_identity)
+        if 'mutation_probability' in config or not all(k in config for k in
+                ('target_mutation_probability', 'random_mutation_probability')):
+            raise ValueError('旧训练总变异参数已退役，未完成任务不能换策略续跑')
+        context = ready['context']
+        if not context or not ready['queue']:
+            raise ValueError('本组没有有效训练材料')
+        configuration_key = context['configuration_key']
+        if expected_key is not None and configuration_key != expected_key:
+            raise ValueError('受检标准模板实际英雄/目标与冻结训练分组不符')
+        from simulation_config import describe_syntax
+        syntax_result = dict(syntax=ready['config']['syntax'], syntax_summary=describe_syntax(ready['config']['syntax']),
+            source_rejections=[dict(source_id=row['source_id'], reason=row['reason'])
+                               for row in ready.get('entries', []) if row['status'] == 'rejected'])
+        if prepare_only:
+            return dict(status='prepared', algorithm=ALGORITHM, configuration_key=configuration_key,
+                        population_size=len(ready['queue']), config_key=ready['config_key'],
+                        preparation=ready['preparation'], **syntax_result)
+        scope = seeds.shared_scope(configuration_key, ready['config']['syntax'])
+        root = Path(workspace).resolve() / 'ga' / scope
+        environment = dict(template=ready['template_sha'], engines=ready['engines'],
+            simulation=ready['simulation_config'], burst=context['burst'],
+            rules=_rule_hashes(relative_to=ROOT))
+        retained = {row[0]: (row[1], row[3], row[4]) for row in frozen if len(row) > 3 and row[3] is not None}
+        active = list(_unfinished(workspace, scope=scope, recovery=retained))
+        if len(active) > 1:
+            raise ValueError('本组三元范围存在多个未完成GA任务')
+        if active:
+            folder, manifest = active[0]
+            if not frozen or folder != frozen[0][0]:
+                raise ValueError('跨模板路径不能恢复未完成GA任务；请使用原模板路径恢复，或使用新工作目录开始新任务')
+            if manifest['environment'] != environment:
+                raise ValueError('GA恢复的角色/引擎/规则身份变化，拒绝混接')
+            config = manifest['training_config']
+        else:
+            from simulation_config import syntax_receipt
+            from breeding import VERSION, ORDER
+            manifest = dict(breeding=dict(version=VERSION, order=list(ORDER)),
+                environment=environment, training_config=config, template_path=str(Path(template).resolve()),
+                starts=[row['program'] for row in ready['queue']], sources=ready['queue'],
+                breeding_reference=context['native'].get('action_summary'),
+                search_config=ready['config'], syntax=syntax_receipt(ready['config']['syntax']),
+                seed=uuid.uuid4().int % 1000000000)
+            manifest['stage_plan'] = _stage_plan(config, manifest['seed'])
+            folder = root / uuid.uuid4().hex
+            folder.mkdir(parents=True)
+            _write_json(folder / 'identity.json', manifest, atomic=True)
         from breeding import VERSION, ORDER
-        manifest = dict(breeding=dict(version=VERSION, order=list(ORDER)),
-            environment=environment, training_config=config, template_path=str(Path(template).resolve()),
-            starts=[row['program'] for row in ready['queue']], sources=ready['queue'],
-            breeding_reference=context['native'].get('action_summary'),
-            search_config=ready['config'], syntax=syntax_receipt(ready['config']['syntax']),
-            seed=uuid.uuid4().int % 1000000000)
-        manifest['stage_plan'] = _stage_plan(config, manifest['seed'])
-        folder = root / uuid.uuid4().hex
-        folder.mkdir(parents=True)
-        _write_json(folder / 'identity.json', manifest, atomic=True)
-    from breeding import VERSION, ORDER
-    if manifest.get('breeding') != dict(version=VERSION, order=list(ORDER)):
-        raise ValueError('训练繁殖版本或顺序缺失/不兼容，请新建任务')
-    profile = folder / 'standard.simc'
-    if not profile.exists():
-        profile.write_text(ready['text'], encoding='utf-8')
-    elif profile.read_text(encoding='utf-8') != ready['text']:
-        raise ValueError('GA冻结标准角色副本已变化')
-    store = TaskStore(folder, **(dict(memory_execution=True,
-        checkpoint_interval_seconds=ready['config']['checkpoint_interval_seconds'])
-        if ready['config'].get('memory_execution') else {}))
-    character = replace(ready['character'], spec_id=context['native']['identity']['spec_id'],
-                        race=context['native']['identity']['race'])
-    execution_config = ready['config']
-    runtime = TaskRuntime(float('inf'), cancel_event=cancel_event,
-                          diagnostic_logging=execution_config['diagnostic_logging'])
-    runtime.profile_texts = {str(profile.resolve()): ready['text']}
-    timeline = None
-    if execution_config['search_timeline']:
-        from search_timeline import Timeline
-        timeline = Timeline(origin=timeline_origin, context=dict(configuration_key=configuration_key,
-            simulation_config=ready['simulation_config']), resumed=bool(active))
-        timeline.configure(profile_sha=ready['template_sha'], engines=ready['engines'],
-            simulation_config=ready['simulation_config'], config=manifest['search_config'], burst=context['burst'])
-        timeline.context['algorithm'].update(training=ALGORITHM, random_seed=manifest['seed'], training_config=config)
-        runtime.search_timeline = timeline
-    try:
-        if not store.state:
-            rng = random.Random(manifest['seed'])
-            store.state.update(run_id=uuid.uuid4().hex, starts=manifest['starts'], config=execution_config,
-                capabilities=context['capabilities'], configuration_key=configuration_key, burst=context['burst'],
-                breeding_reference=manifest.get('breeding_reference'),
-                ga=dict(algorithm=ALGORITHM, phase='initial', generation=0, stagnant=0,
-                        population=[], pending=None, rng=rng.getstate(), finals={}))
-            if store.memory_execution:
-                from result_store import seed_selected_revision
-                store.state['seed_selection_base'] = seed_selected_revision(scope)
-        if store.state.get('breeding_reference') != manifest.get('breeding_reference'):
-            raise ValueError('训练参考摘要与冻结任务不符')
-        if (store.state.get('ga', {}).get('algorithm') != ALGORITHM
-                or store.state.get('starts') != manifest['starts']):
-            raise ValueError('GA检查点算法或冻结初始种群身份不符')
-        if (store.state.get('config', {}).get('syntax') != manifest['search_config']['syntax']
-                or store.state.get('capabilities', {}).get('search_syntax') != manifest['search_config']['syntax']):
-            raise ValueError('GA检查点冻结语法范围不符')
-        store.character, store.simulation_config = character, ready['simulation_config']
-        store.recover_reports(character, ready['simulation_config'])
-        store.state['error'] = ''
-        # 日志采集跟随本次调用，算法与评分身份仍使用原冻结manifest。
-        store.state['config'] = execution_config
-        with store.active(runtime):
-            if timeline is not None:
-                timeline.start()
-            ga = optimize(profile=profile, character=character, capabilities=context['capabilities'],
-                reference=context['native'], destination=folder, runtime=runtime,
-                config=execution_config, condition_key=digest(manifest), store=store,
-                simulation_config=ready['simulation_config'], training=True,
-                training_stage_plan=manifest['stage_plan'],
-                training_runner=_evolution(store, context['capabilities'], runtime, config))
-            if timeline is not None:
-                timeline.stop('stagnation')
-            if store.memory_execution:
-                store.flush_reports(final=True)
-                _publish_seed_evidence(ga, store, manifest, character, ready)
-            selected = _selected(ga, store, manifest, character, ready, configuration_key)
-            runtime.check()
-            # Evidence verification precedes the only current-snapshot replacement.
-            result_store = __import__('result_store')
-            if store.memory_execution:
-                result_store.publish_seed_selected(scope, selected, store.state['seed_selection_base'],
-                    schema=seeds.SELECTED_V2_SCHEMA)
-            else:
-                result_store.write('seed_selected', scope, selected, schema=seeds.SELECTED_V2_SCHEMA)
-            ga['phase'] = 'published'
-            store.state['status'] = 'completed'
-            if not store.memory_execution:
-                store.checkpoint()
-            if timeline is not None:
-                timeline.saved('completed')
-        return dict(status='completed', algorithm=ALGORITHM, breeding=ga.get('breeding'),
-            breeding_statistics=(dict(status='collected', counts=ga.get('breeding_counts', {}))
-                if execution_config['diagnostic_logging'] else dict(status='not_collected')),
-            population_size=len(manifest['starts']),
-            complete_generations=ga['generation'], configuration_key=configuration_key,
-            selected=len(selected), task_path=str(folder), training_config=config,
-            ineligible=ga.get('ineligible', {}), **syntax_result)
-    except BaseException as error:
-        store.state.update(status='paused', error=str(error))
-        store.checkpoint(**(dict(boundary='pause') if store.memory_execution else {}))
-        if timeline is not None:
-            status = 'cancelled' if isinstance(error, (TaskCancelled, KeyboardInterrupt)) else 'failed'
-            timeline.stop(status)
-            timeline.saved(status)
-        raise
-    finally:
+        if manifest.get('breeding') != dict(version=VERSION, order=list(ORDER)):
+            raise ValueError('训练繁殖版本或顺序缺失/不兼容，请新建任务')
+        profile = folder / 'standard.simc'
+        if not profile.exists():
+            profile.write_text(ready['text'], encoding='utf-8')
+        elif profile.read_text(encoding='utf-8') != ready['text']:
+            raise ValueError('GA冻结标准角色副本已变化')
+        store = frozen[0][3] if frozen and len(frozen[0]) > 3 else None
+        if store is None:
+            store = TaskStore(folder, **(dict(memory_execution=True,
+                checkpoint_interval_seconds=ready['config']['checkpoint_interval_seconds'])
+                if ready['config'].get('memory_execution') else {}))
+            recovery_owners.callback(store.close, write_diagnostics=False)
+        character = replace(ready['character'], spec_id=context['native']['identity']['spec_id'],
+                            race=context['native']['identity']['race'])
+        execution_config = ready['config']
+        runtime = TaskRuntime(float('inf'), cancel_event=cancel_event,
+                              diagnostic_logging=execution_config['diagnostic_logging'])
+        runtime.profile_texts = {str(profile.resolve()): ready['text']}
+        timeline = None
+        if execution_config['search_timeline']:
+            from search_timeline import Timeline
+            timeline = Timeline(origin=timeline_origin, context=dict(configuration_key=configuration_key,
+                simulation_config=ready['simulation_config']), resumed=bool(active))
+            timeline.configure(profile_sha=ready['template_sha'], engines=ready['engines'],
+                simulation_config=ready['simulation_config'], config=manifest['search_config'], burst=context['burst'])
+            timeline.context['algorithm'].update(training=ALGORITHM, random_seed=manifest['seed'], training_config=config)
+            runtime.search_timeline = timeline
+        # 前置检查全部通过，移交给原执行路径唯一的最终关闭。
+        recovery_owners.pop_all()
         try:
-            store.close()
-        finally:
+            if not store.state:
+                rng = random.Random(manifest['seed'])
+                store.state.update(run_id=uuid.uuid4().hex, starts=manifest['starts'], config=execution_config,
+                    capabilities=context['capabilities'], configuration_key=configuration_key, burst=context['burst'],
+                    breeding_reference=manifest.get('breeding_reference'),
+                    ga=dict(algorithm=ALGORITHM, phase='initial', generation=0, stagnant=0,
+                            population=[], pending=None, rng=rng.getstate(), finals={}))
+                if store.memory_execution:
+                    from result_store import seed_selected_revision
+                    store.state['seed_selection_base'] = seed_selected_revision(scope)
+            if store.state.get('breeding_reference') != manifest.get('breeding_reference'):
+                raise ValueError('训练参考摘要与冻结任务不符')
+            if (store.state.get('ga', {}).get('algorithm') != ALGORITHM
+                    or store.state.get('starts') != manifest['starts']):
+                raise ValueError('GA检查点算法或冻结初始种群身份不符')
+            if (store.state.get('config', {}).get('syntax') != manifest['search_config']['syntax']
+                    or store.state.get('capabilities', {}).get('search_syntax') != manifest['search_config']['syntax']):
+                raise ValueError('GA检查点冻结语法范围不符')
+            store.character, store.simulation_config = character, ready['simulation_config']
+            store.recover_reports(character, ready['simulation_config'])
+            store.state['error'] = ''
+            # 日志采集跟随本次调用，算法与评分身份仍使用原冻结manifest。
+            store.state['config'] = execution_config
+            with store.active(runtime):
+                if timeline is not None:
+                    timeline.start()
+                ga = optimize(profile=profile, character=character, capabilities=context['capabilities'],
+                    reference=context['native'], destination=folder, runtime=runtime,
+                    config=execution_config, condition_key=digest(manifest), store=store,
+                    simulation_config=ready['simulation_config'], training=True,
+                    training_stage_plan=manifest['stage_plan'],
+                    training_runner=_evolution(store, context['capabilities'], runtime, config))
+                if timeline is not None:
+                    timeline.stop('stagnation')
+                if store.memory_execution:
+                    store.flush_reports(final=True)
+                    _publish_seed_evidence(ga, store, manifest, character, ready)
+                selected = _selected(ga, store, manifest, character, ready, configuration_key)
+                runtime.check()
+                # Evidence verification precedes the only current-snapshot replacement.
+                result_store = __import__('result_store')
+                if store.memory_execution:
+                    result_store.publish_seed_selected(scope, selected, store.state['seed_selection_base'],
+                        schema=seeds.SELECTED_V2_SCHEMA)
+                else:
+                    result_store.write('seed_selected', scope, selected, schema=seeds.SELECTED_V2_SCHEMA)
+                ga['phase'] = 'published'
+                store.state['status'] = 'completed'
+                if not store.memory_execution:
+                    store.checkpoint()
+                if timeline is not None:
+                    timeline.saved('completed')
+            return dict(status='completed', algorithm=ALGORITHM, breeding=ga.get('breeding'),
+                breeding_statistics=(dict(status='collected', counts=ga.get('breeding_counts', {}))
+                    if execution_config['diagnostic_logging'] else dict(status='not_collected')),
+                population_size=len(manifest['starts']),
+                complete_generations=ga['generation'], configuration_key=configuration_key,
+                selected=len(selected), task_path=str(folder), training_config=config,
+                ineligible=ga.get('ineligible', {}), **syntax_result)
+        except BaseException as error:
+            store.state.update(status='paused', error=str(error))
+            store.checkpoint(**(dict(boundary='pause') if store.memory_execution else {}))
             if timeline is not None:
-                timeline.finish(folder)
+                status = 'cancelled' if isinstance(error, (TaskCancelled, KeyboardInterrupt)) else 'failed'
+                timeline.stop(status)
+                timeline.saved(status)
+            raise
+        finally:
+            try:
+                store.close()
+            finally:
+                if timeline is not None:
+                    timeline.finish(folder)
 
 
 def _retest_scores(ga, store, *, condition, stage_plan, config, character, simulation_config,
