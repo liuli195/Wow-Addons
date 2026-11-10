@@ -145,6 +145,128 @@ def memory_ga(monkeypatch):
 
 @pytest.mark.real
 @pytest.mark.parametrize('formal', [False, True], ids=['training', 'formal'])
+def test_memory_compile_allows_another_candidate_and_live_progress(memory_ga, tmp_path, monkeypatch, formal):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, Lock
+    import program
+    from runtime import TaskRuntime
+    from task import read_task
+    settings = dict(max_processes=2, top_k=4, stagnation_generations=2,
+        target_mutation_probability=0., random_mutation_probability=0., crossover_probability=0.)
+    case = memory_ga(programs=[[['outbreak']], [['death_coil']], [['scourge_strike']]],
+        formal=formal, settings=None if formal else settings,
+        search_settings=settings if formal else dict(max_processes=2), memory_destination=tmp_path)
+    compile_response = program.compile_program
+    first, second, release = Event(), Event(), Event()
+    guard = Lock()
+    calls = 0
+    def controlled_compile(*args, **kwargs):
+        nonlocal calls
+        with guard:
+            calls += 1
+            position = calls
+        if position == 1:
+            first.set()
+            assert release.wait(10), '受控编译未得到收尾信号'
+        else:
+            second.set()
+        return compile_response(*args, **kwargs)
+    monkeypatch.setattr(program, 'compile_program', controlled_compile)
+    runtime = TaskRuntime(float('inf'))
+    def run():
+        with case.store.active(runtime):
+            return case.run(runtime=runtime)
+    with ThreadPoolExecutor(max_workers=2) as clients:
+        computation = clients.submit(run)
+        try:
+            assert first.wait(2)
+            progress = clients.submit(read_task, tmp_path)
+            assert second.wait(2), '其他候选不应等待第一条完整编译'
+            assert progress.result(timeout=2)['status'] == 'running'
+        finally:
+            release.set()
+        computation.result(timeout=10)
+    assert calls == 3
+
+
+@pytest.mark.real
+@pytest.mark.parametrize('failure', [None, 'reject', 'cancel', 'budget', 'mismatch'])
+def test_memory_shared_compile_notifies_waiters_and_preserves_failure_accounting(
+        memory_ga, tmp_path, monkeypatch, failure):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, get_ident
+    import program
+    from engine import CandidateError
+    from runtime import BudgetExceeded, TaskCancelled, TaskRuntime
+    entered, waiting, release = Event(), Event(), Event()
+    owner = None
+    attempts = 0
+    class ObservedRuntime(TaskRuntime):
+        def check(self):
+            super().check()
+            if entered.is_set() and get_ident() != owner:
+                waiting.set()
+    runtime = ObservedRuntime(float('inf'), diagnostic_logging=True)
+    runtime.memory_execution = True
+    case = memory_ga(programs=[[['outbreak']]], settings=dict(max_processes=2),
+        search_settings=dict(max_processes=2, diagnostic_logging=True, diagnostics='summary'),
+        memory_destination=tmp_path)
+    compile_response = program.compile_program
+    def controlled_compile(*args, **kwargs):
+        nonlocal owner, attempts
+        attempts += 1
+        owner = get_ident()
+        entered.set()
+        assert release.wait(10)
+        kwargs['on_lua_start']()
+        if failure == 'reject':
+            raise ValueError('编译拒绝样例')
+        if failure == 'cancel':
+            runtime.cancel()
+            runtime.check()
+        if failure == 'budget':
+            runtime.phase_limit = 0
+            runtime.check()
+        result = compile_response(*args, **kwargs)
+        if failure == 'mismatch':
+            result['compiled_program']['clicks'][0]['commands'] = ['death_coil']
+        return result
+    monkeypatch.setattr(program, 'compile_program', controlled_compile)
+    def simultaneous(*, evaluate, feedback):
+        def request(stage):
+            try:
+                return evaluate(case.starts[0], stage, 0)
+            except (CandidateError, TaskCancelled, BudgetExceeded) as error:
+                return error
+        with ThreadPoolExecutor(max_workers=2) as callers:
+            rows = [callers.submit(request, stage) for stage in ('search', 'nominal')]
+            return [row.result(timeout=10) for row in rows]
+    with ThreadPoolExecutor(max_workers=1) as client:
+        result = client.submit(case.run, simultaneous, runtime=runtime)
+        try:
+            assert entered.wait(2)
+            assert waiting.wait(2), '重复候选必须在共用锁之外等待编译'
+        finally:
+            release.set()
+        rows = result.result(timeout=10)
+    assert attempts == 1 and case.store.lua_compiler_starts == 1
+    assert case.store.diagnostic_summary['candidate_compilations'] == (0 if failure in ('reject', 'cancel', 'budget') else 1)
+    assert not case.store.state.get('training_failures')
+    if failure is None:
+        assert all(isinstance(row, dict) for row in rows) and len(case.calls) == 2
+        assert rows[0]['candidate_key'] == rows[1]['candidate_key']
+    else:
+        expected = {'cancel': TaskCancelled, 'budget': BudgetExceeded}.get(failure, CandidateError)
+        assert all(isinstance(row, expected) for row in rows) and not case.calls
+        failure = None
+        runtime = ObservedRuntime(float('inf'), diagnostic_logging=True)
+        runtime.memory_execution = True
+        case.run(runtime=runtime)
+        assert case.store.state['ga']['phase'] == 'qualified'
+
+
+@pytest.mark.real
+@pytest.mark.parametrize('formal', [False, True], ids=['training', 'formal'])
 def test_memory_coarse_scoring_fills_free_slots_before_slow_first_request_finishes(memory_ga, tmp_path, formal):
     from itertools import permutations
     from threading import Event, Lock
