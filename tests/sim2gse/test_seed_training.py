@@ -29,6 +29,7 @@ def training_cli(monkeypatch):
     from test_character_export import sample_profile
     monkeypatch.setattr(result_store,'bind_project',lambda project:None)
     monkeypatch.setattr(result_store,'ensure_available',lambda:None)
+    monkeypatch.setattr(result_store,'iter_group',lambda table,key:iter(()))
     monkeypatch.setattr(seed_training,'writer_lock',nullcontext)
     monkeypatch.setattr(seed_activity,'training_activity',lambda:nullcontext(threading.Event()))
     monkeypatch.setattr(seed_training,'registry_rows',lambda **kwargs:[])
@@ -76,7 +77,10 @@ def prepared_input(monkeypatch):
         records[args[0], args[1]] = deepcopy(args[2])
         writes.append(deepcopy(args))
     monkeypatch.setattr(result_store,'read_records',read)
+    monkeypatch.setattr(result_store,'iter_group',lambda table,key:iter(read(table,key)))
     monkeypatch.setattr(result_store,'write',write)
+    # Only the external missing-key exception is needed; all storage IO is supplied above.
+    monkeypatch.setattr(result_store,'_SKILL_API',{'MissingKeyError':KeyError})
     monkeypatch.setattr(codec,'load_targeting',lambda **kwargs:dict(target_masks={}))
     monkeypatch.setattr(program,'compile_program',lambda *args,**kwargs:{})
     monkeypatch.setattr(task,'_rule_hashes',lambda **kwargs:{})
