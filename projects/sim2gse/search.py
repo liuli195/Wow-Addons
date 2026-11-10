@@ -1947,32 +1947,34 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
         return times, dict(burst_candidate=burst_context['candidate'], input_sources=sources,
                            burst_plan=burst_context['plan'])
     prepared = {}
+    compiling = {}
     candidate_compilations = 0
     diagnostic_events = []
     from result_store import CANDIDATE_SCHEMA, write as write_records, write_batch, write_traces
 
     def prepare(program):
         source_key = program_key(program)
-        if source_key in prepared:
-            return prepared[source_key]
         from program import canonicalize_search_program
-        try:
-            prepared[source_key] = canonicalize_search_program(program, capabilities)
-        except ValueError as error:
-            raise CandidateError(str(error)) from error
-        return prepared[source_key]
+        with store.lock:
+            if source_key not in prepared:
+                try:
+                    prepared[source_key] = canonicalize_search_program(program, capabilities)
+                except ValueError as error:
+                    raise CandidateError(str(error)) from error
+            return prepared[source_key]
 
-    def candidate(program):
+    def compile_candidate(canonical):
         nonlocal candidate_compilations
         from program import compile_program
         try:
-            canonical = prepare(program)
             key = canonical['identity']
-            compiled = candidates.get(key)
+            with store.lock:
+                compiled = candidates.get(key)
+                saved = (next((r for r in state['archive'] if r['key'] == key and r.get('candidate')), None)
+                         if compiled is None else None)
             if compiled is not None:
                 return compiled
             if compiled is None:
-                saved = next((r for r in state['archive'] if r['key'] == key and r.get('candidate')), None)
                 if (saved and digest(saved['candidate']) == saved['candidate_sha256']
                         and canonical['form'] == compiled_identity(saved['candidate'])):
                     compiled = saved['candidate']
@@ -1988,10 +1990,12 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                         if config['diagnostic_logging']:
                             diagnostic_finish(runtime, 'candidate.compile', started)
                     if config['diagnostic_logging']:
-                        candidate_compilations += 1
+                        with store.lock:
+                            candidate_compilations += 1
                     if canonical['form'] != compiled_identity(compiled):
                         raise CandidateError('候选标准形式与编译计划不一致')
-                candidates[key] = compiled
+                if not store.memory_execution:
+                    candidates[key] = compiled
                 candidate_data_key = digest(dict(run_id=state['run_id'], candidate_key=key))
                 search_order = next((index for index, row in enumerate(state['archive'])
                                      if row.get('key') == key), len(state['archive']))
@@ -2014,13 +2018,50 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     if config['diagnostic_logging']:
                         diagnostic_finish(runtime, 'candidate.write', started)
             if config['diagnostic_logging'] and config['diagnostics'] == 'full':
-                diagnostic_events.append(dict(event='candidate_prepared', behavior_identity=key,
-                                              candidate_compilations_so_far=candidate_compilations))
+                with store.lock:
+                    diagnostic_events.append(dict(event='candidate_prepared', behavior_identity=key,
+                                                  candidate_compilations_so_far=candidate_compilations))
         except CandidateError:
             raise
         except ValueError as error:
             raise CandidateError(str(error)) from error
-        return candidates[key]
+        return compiled
+
+    def candidate(program):
+        from concurrent.futures import Future, wait
+        canonical = prepare(program)
+        if not store.memory_execution:
+            return compile_candidate(canonical)
+        key = canonical['identity']
+        with store.lock:
+            pending = compiling.get(key)
+            if pending is None:
+                if key in candidates:
+                    return candidates[key]
+                pending = compiling[key] = Future()
+                owner = True
+            else:
+                owner = False
+        if not owner:
+            while not pending.done():
+                runtime.check()
+                wait((pending,), timeout=0.05)
+            runtime.check()
+            return pending.result()
+        try:
+            compiled = compile_candidate(canonical)
+            with store.lock:
+                candidates[key] = compiled
+                pending.set_result(compiled)
+                compiling.pop(key, None)
+            return compiled
+        except BaseException as error:
+            with store.lock:
+                if not pending.done():
+                    candidates.pop(key, None)
+                    pending.set_exception(error)
+                compiling.pop(key, None)
+            raise
 
     def candidate_key(program):
         return prepare(program)['identity']
@@ -2197,8 +2238,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
                     store.save()
 
     def record(program, rows):
-        compiled = candidate(program)  # 编译合法性必须先于任何原生计算。
         key = candidate_key(program)
+        # Archive only the result already checked before native scoring; never wait under its outer lock.
+        compiled = candidates[key] if store.memory_execution else candidate(program)
         return dict(key=key, program=program, batches=rows, score=_score(rows),
                     candidate=compiled,candidate_sha256=digest(compiled))
 
@@ -2206,6 +2248,9 @@ def optimize(*, profile, character, capabilities, reference, destination, runtim
     def training_batch(program, stage, index=0, *, trace=False):
         with store.lock:
             canonical = prepare(program)
+            if not store.memory_execution:
+                compiled = candidate(program)
+        if store.memory_execution:
             compiled = candidate(program)
         scenario = stage if stage not in ('search', 'feedback') else 'nominal'
         attempt_key = digest(dict(candidate=canonical['identity'], stage=stage, index=index))
