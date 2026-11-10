@@ -73,6 +73,20 @@ def test_memory_report_refuses_bad_encoding_or_duplicate_after_valid_report(monk
         engine.run(None, Path('/memory/unused'), profile_text='role=invalid')
 
 
+def test_memory_failure_keeps_exact_normalized_unicode_tail(monkeypatch):
+    import engine
+    from runtime import ProcessResult
+    text = '开始\r\n' + '中文😀\r\n英文\n' * 1500 + '最后😀'
+    output = text.encode('utf-8')
+    cut = output.index('😀'.encode('utf-8')) + 1
+    monkeypatch.setattr(engine, 'identity', lambda *args: (Path('simc-test'), {}))
+    monkeypatch.setattr(engine, 'run_command', lambda *args, **kwargs:
+        ProcessResult(1, output[:cut], output[cut:], 0))
+    with pytest.raises(engine.NativeEvaluationError) as caught:
+        engine.run(None, Path('/memory/unused'), profile_text='role=invalid')
+    assert str(caught.value) == '原生引擎失败: ' + text.replace('\r\n', '\n')[-2000:]
+
+
 @pytest.mark.parametrize('enabled,outcome', [(False, 'success'), (True, 'success'), (True, 'timeout')])
 def test_native_execution_timing_preserves_process_outcome(monkeypatch, enabled, outcome):
     import os
