@@ -10,6 +10,127 @@ from search import TaskStore, digest
 
 
 @pytest.mark.real
+def test_recovery_save_streams_history_without_accumulating_all_serialized_rows(tmp_path):
+    import tracemalloc
+    store = TaskStore(tmp_path, memory_execution=True)
+    archive = []
+    for index in range(5000):
+        request = dict(condition='frozen', purpose='search', behavior_identity=str(index),
+                       program=[index], times=list(range(30)), seed=42)
+        key = digest(request)
+        batch = dict(status='success', data_key=key, request=request, dps=42., samples=31, variance=0.)
+        archive.append(dict(key=str(index), program=[['outbreak']], score=42., batches=[batch]))
+        store.put_batch(key, batch, verified=True)
+    store.state.update(run_id='bounded-save', archive=archive, training_failures={'failed-before-pause': 1})
+    tracemalloc.start()
+    try:
+        store.checkpoint(boundary='pause')
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+        store.close()
+    assert peak < 3 * 1024 * 1024, f'保存仍积攒整批临时副本：{peak}字节'
+    tracemalloc.start()
+    try:
+        resumed = TaskStore(tmp_path, memory_execution=True)
+        _, restored_peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    try:
+        assert resumed.state['archive'] == archive
+        assert resumed.state['training_failures'] == {'failed-before-pause': 1}
+        assert restored_peak < 16 * 1024 * 1024, f'恢复仍重复解码整批历史：{restored_peak}字节'
+    finally:
+        resumed.close()
+
+
+@pytest.mark.real
+@pytest.mark.parametrize('targets', [1, 5])
+def test_public_formal_resume_uses_one_verified_memory_store(tmp_path, monkeypatch, installed_result_center, targets):
+    import engine, search, task
+    from runtime import TaskCancelled
+    from test_character_export import sample_profile
+    from test_search import _fast_identity
+    profile = tmp_path / 'role.simc'
+    profile.write_text(sample_profile(), encoding='utf-8')
+    folder = tmp_path / 'formal'
+    opened = []
+    actual = search.TaskStore
+    def open_store(destination, **kwargs):
+        store = actual(destination, **kwargs)
+        opened.append(store)
+        return store
+    open_store.load_state = actual.load_state
+    monkeypatch.setattr(search, 'TaskStore', open_store)
+    monkeypatch.setattr(engine, 'identity', _fast_identity)
+    def cancelled(*args, **kwargs): raise TaskCancelled('pause before native reference')
+    monkeypatch.setattr(engine, 'reference', cancelled)
+    scene = dict(target_count=targets, scene='single_target' if targets == 1 else 'aoe')
+    first = task.run_task(profile, folder, simulation_config=scene,
+        search_config=dict(memory_execution=True, diagnostic_logging=False, search_timeline=False))
+    assert first['status'] == 'cancelled'
+    opened.clear()
+    resumed = task.resume_task(folder)
+    assert resumed['status'] == 'cancelled'
+    assert len(opened) == 1 and opened[0].memory_execution
+
+
+@pytest.mark.real
+@pytest.mark.parametrize('damaged', [False, True])
+def test_version_one_recovery_keeps_old_digest_and_original_file(tmp_path, damaged):
+    import json
+    request = dict(purpose='search', program=['旧'], times=[0, 300])
+    key = digest(request)
+    batch = dict(status='success', data_key=key, request=request, dps=42., samples=31, variance=0.)
+    encoded = json.dumps(batch, ensure_ascii=False)
+    state = dict(run_id='旧恢复', archive=[dict(key='original', batches=[batch])], training_failures={'attempt': 1})
+    receipt = dict(version=1, digest=digest(dict(state=state, batches=[(key, encoded)])))
+    path = tmp_path / 'task.sqlite3'
+    with sqlite3.connect(path) as database:
+        database.executescript('CREATE TABLE state(id INTEGER PRIMARY KEY,value TEXT);'
+            'CREATE TABLE state_fields(key TEXT PRIMARY KEY,value TEXT);'
+            'CREATE TABLE state_archive(key TEXT PRIMARY KEY,ordinal INTEGER,value TEXT);'
+            'CREATE TABLE batches(key TEXT PRIMARY KEY,value TEXT);')
+        database.execute('INSERT INTO state VALUES(1,?)', (json.dumps(dict(storage_format=2)),))
+        database.executemany('INSERT INTO state_fields VALUES(?,?)', [
+            (name, json.dumps(value, ensure_ascii=False)) for name, value in dict(state, memory_checkpoint=receipt).items()
+            if name != 'archive'])
+        database.execute('INSERT INTO state_archive VALUES(?,?,?)', ('original', 0, json.dumps(state['archive'][0], ensure_ascii=False)))
+        database.execute('INSERT INTO batches VALUES(?,?)', (key, encoded.replace('42.0', '43.0') if damaged else encoded))
+    before = path.read_bytes()
+    if damaged:
+        with pytest.raises(ValueError, match='恢复点核验失败'):
+            TaskStore(tmp_path, memory_execution=True)
+    else:
+        resumed = TaskStore(tmp_path, memory_execution=True)
+        try:
+            assert resumed.state['archive'] == state['archive'] and resumed.batch(key) == batch
+        finally:
+            resumed.close()
+    assert path.read_bytes() == before
+
+
+@pytest.mark.real
+def test_recovery_replace_failure_keeps_previous_verified_file(tmp_path, monkeypatch):
+    import search
+    store = TaskStore(tmp_path, memory_execution=True)
+    try:
+        store.state.update(run_id='retain-previous', archive=[], counter=1)
+        store.checkpoint(boundary='initial')
+        previous = (tmp_path / 'task.sqlite3').read_bytes()
+        paths = set(tmp_path.iterdir())
+        store.state['counter'] = 2
+        def fail(*args): raise OSError('替换失败')
+        monkeypatch.setattr(search, 'replace_file', fail)
+        with pytest.raises(OSError, match='替换失败'):
+            store.checkpoint(boundary='pause')
+        assert (tmp_path / 'task.sqlite3').read_bytes() == previous
+        assert set(tmp_path.iterdir()) == paths
+    finally:
+        store.close()
+
+
+@pytest.mark.real
 def test_recovery_archive_reuses_one_copy_of_each_scoring_receipt(tmp_path):
     import json
     store = TaskStore(tmp_path, memory_execution=True)

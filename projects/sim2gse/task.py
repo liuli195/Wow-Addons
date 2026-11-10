@@ -1359,20 +1359,31 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
                   burst_identity=None, formal_source_run_ids=None):
     from engine import identity, prepare_loop, reference, damage_statistics, COMMON
     from search import TaskStore, _export_search_observability, digest, initial_programs
-    store = TaskStore(destination, **(dict(memory_execution=True,
-        checkpoint_interval_seconds=config['checkpoint_interval_seconds'])
-        if config.get('memory_execution') else {}))
+    store = getattr(runtime, '_resume_store', None)
+    owns_store = store is None
+    if store is None:
+        store = TaskStore(destination, **(dict(memory_execution=True,
+            checkpoint_interval_seconds=config['checkpoint_interval_seconds'])
+            if config.get('memory_execution') else {}))
+    elif store.destination.resolve() != Path(destination).resolve():
+        raise TaskError('恢复资料不属于当前任务')
     state = store.state
+    if not state:
+        from program import BEHAVIOR_IDENTITY_VERSION
+        state['behavior_identity_version'] = BEHAVIOR_IDENTITY_VERSION
     try:
         run_id = json.loads((destination / 'profile.json').read_text(encoding='utf-8')).get('run_id')
     except BaseException:
-        store.close()
+        if owns_store:
+            store.close()
         raise
     if not isinstance(run_id, str) or not run_id:
-        store.close()
+        if owns_store:
+            store.close()
         raise TaskError('任务缺少结果中心身份，请创建新任务')
     if state.get('run_id') not in (None, run_id):
-        store.close()
+        if owns_store:
+            store.close()
         raise TaskError('任务结果中心身份与检查点不符，请创建新任务')
     state['run_id'] = run_id
     state.setdefault('formal_search_version', 1)
@@ -1660,7 +1671,8 @@ def _run_optimize(destination, character, *, config, runtime, simulation_config,
         try:
             store.publish()
         finally:
-            store.close()
+            if owns_store:
+                store.close()
 
 
 @contextmanager
@@ -1955,7 +1967,7 @@ def _read_resume_checkpoint(output_root):
         state = json.loads(row[0])
         if state == {'storage_format': 2}:
             names = ('formal_search_version', 'formal_search', 'config', 'syntax', 'capabilities', 'burst', 'rule_snapshot',
-                     'rule_context', 'formal_champion_publication_intent')
+                     'rule_context', 'formal_champion_publication_intent', 'memory_checkpoint')
             rows = connection.execute('SELECT key,value FROM state_fields WHERE key IN (' +
                 ','.join('?' for _ in names) + ')', names)
             state = {key: json.loads(value) for key, value in rows}
@@ -2028,6 +2040,7 @@ def _resume_task(output_root, **kwargs):
         store = TaskStore(destination, **(dict(memory_execution=True,
             checkpoint_interval_seconds=policy.get('checkpoint_interval_seconds', 600))
             if checkpoint.get('memory_checkpoint') else {}))
+        resumed_runtime = None
         try:
             state = store.state
             _require_current_formal_resume(state)
@@ -2123,33 +2136,24 @@ def _resume_task(output_root, **kwargs):
                         store.save()
                     store.publish()
                     return read_task(destination)
+            runtime = kwargs.pop('_runtime', None)
+            if runtime is None:
+                runtime = formal_runtime(config, cancel_event=kwargs.pop('cancel_event', None))
+            kwargs.pop('cancel_event',None)
+            runtime.identities.update(verified)
+            runtime.used_seconds=used
+            runtime.budget_seconds=float('inf')
+            runtime.phase_limit=runtime.budget_seconds
+            if timeline is not None:
+                runtime.search_timeline = timeline
+            runtime._resume_store = store
+            resumed_runtime = runtime
+            return run_task(destination/'input.simc', destination, resume=True, _runtime=runtime, _lease=True,
+                            search_config=config, simulation_config=simulation_config, **kwargs)
         finally:
+            if resumed_runtime is not None:
+                resumed_runtime._resume_store = None
             store.close()
-        runtime = kwargs.pop('_runtime', None)
-        if runtime is None:
-            runtime = formal_runtime(config, cancel_event=kwargs.pop('cancel_event', None))
-        if config['diagnostic_logging']:
-            # 同一次恢复先补反馈再重开任务；只转交内存中的本次统计，不读取旧日志。
-            try:
-                owners = (runtime, store, *getattr(store, 'diagnostic_runtimes', ()))
-                stages = diagnostic_summary(*owners)['stages']
-                intervals = {}
-                for owner in owners:
-                    for name, spans in getattr(owner, 'performance_intervals', {}).items():
-                        intervals.setdefault(name, []).extend(spans)
-                runtime.performance_stages = stages
-                runtime.performance_intervals = intervals
-            except Exception:
-                pass
-        kwargs.pop('cancel_event',None)
-        runtime.identities.update(verified)
-        runtime.used_seconds=used
-        runtime.budget_seconds=float('inf')
-        runtime.phase_limit=runtime.budget_seconds
-        if timeline is not None:
-            runtime.search_timeline = timeline
-        return run_task(destination/'input.simc', destination, resume=True, _runtime=runtime, _lease=True,
-                        search_config=config, simulation_config=simulation_config, **kwargs)
 
 
 def resume_task(output_root, **kwargs):

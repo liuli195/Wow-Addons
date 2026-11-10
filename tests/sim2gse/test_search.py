@@ -34,6 +34,7 @@ def public_formal_memory(monkeypatch, memory_ga):
     from test_search_syntax import SIMPLE
     case=memory_ga(formal=True,search_settings={'syntax':SIMPLE})
     case.store.state.clear()
+    case.store.destination = Path('/memory/formal').resolve()
     files={Path('/memory/role.simc').resolve():sample_profile().encode()}
     records={}
     def path(p): return Path(p).resolve()

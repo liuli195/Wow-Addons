@@ -860,18 +860,25 @@ def _checkpoint_copy(value):
     return value
 
 
-def _checkpoint_seal(fields, archive, batches):
+def _checkpoint_seal(fields, archive, batches, *, ordered=False):
     """直接校验已序列化的行，不再把全部历史包进另一层JSON。"""
     checksum = hashlib.sha256(b'sim2gse-memory-checkpoint-v2')
-    for kind, rows in ((b'fields', sorted(fields)), (b'archive', sorted(archive, key=lambda row: row[1])),
-                       (b'batches', sorted(batches))):
-        checksum.update(kind)
-        for row in rows:
-            for value in row:
-                encoded = (value if isinstance(value, str) else str(value)).encode('utf-8')
-                checksum.update(len(encoded).to_bytes(8, 'big'))
-                checksum.update(encoded)
+    if not ordered:
+        fields, archive, batches = sorted(fields), sorted(archive, key=lambda row: row[1]), sorted(batches)
+    for kind, rows in ((b'fields', fields), (b'archive', archive), (b'batches', batches)):
+        for _ in _checkpoint_rows(checksum, kind, rows):
+            pass
     return checksum.hexdigest()
+
+
+def _checkpoint_rows(checksum, kind, rows):
+    checksum.update(kind)
+    for row in rows:
+        for value in row:
+            encoded = (value if isinstance(value, str) else str(value)).encode('utf-8')
+            checksum.update(len(encoded).to_bytes(8, 'big'))
+            checksum.update(encoded)
+        yield row
 
 
 def _check_checkpoint_batch(key, row):
@@ -996,6 +1003,41 @@ def _validate_saved_batch(saved, key, cached, character, index, scenario, simula
         raise ValueError('缓存摘要不符')
 
 
+def _load_checkpoint(database):
+    row = database.execute('SELECT value FROM state WHERE id=1').fetchone()
+    if not row:
+        return {}, {}
+    value = json.loads(row[0])
+    if value != {'storage_format': 2}:
+        return _restore_checkpoint_diagnostics(value), {}
+    state = {key: json.loads(payload) for key, payload in database.execute('SELECT key,value FROM state_fields')}
+    state['archive'] = [json.loads(payload) for (payload,) in
+                        database.execute('SELECT value FROM state_archive ORDER BY ordinal')]
+    receipt = state.get('memory_checkpoint')
+    decoded = {}
+    if receipt:
+        payload = dict(state)
+        payload.pop('memory_checkpoint')
+        from source_catalog import bounded_digest
+        checksum = (_checkpoint_seal(
+            database.execute("SELECT key,value FROM state_fields WHERE key!='memory_checkpoint' ORDER BY key"),
+            database.execute('SELECT key,ordinal,value FROM state_archive ORDER BY ordinal'),
+            database.execute('SELECT key,value FROM batches ORDER BY key'), ordered=True)
+            if receipt.get('version') == 2 else bounded_digest(dict(state=payload,
+                batches=iter(database.execute('SELECT key,value FROM batches ORDER BY key')))))
+        if (receipt.get('version') not in (1, 2)
+                or receipt != dict(version=receipt['version'], digest=checksum)):
+            raise ValueError('内存恢复点核验失败，拒绝使用不一致成绩')
+        for key, value in database.execute('SELECT key,value FROM batches ORDER BY key'):
+            row = _expand_checkpoint_request(json.loads(value), state.get('checkpoint_requests', {}))
+            _check_checkpoint_batch(key, row)
+            decoded[key] = row
+        if receipt['version'] == 2:
+            _restore_checkpoint_batches(state['archive'], decoded)
+            state.pop('checkpoint_requests', None)
+    return _restore_checkpoint_diagnostics(state), decoded
+
+
 class TaskStore:
     """任务检查点与成功批次；锁保护心跳与主线程共用的事务。"""
     def __init__(self, destination, *, lock=None, connection=None,
@@ -1060,15 +1102,20 @@ class TaskStore:
         self.db.execute('CREATE TABLE IF NOT EXISTS batches (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS report_intents (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS runtime_progress (id INTEGER PRIMARY KEY, elapsed REAL NOT NULL, status TEXT NOT NULL, inflight TEXT NOT NULL)')
-        self.state = self.load_state(self.db)
+        self.state, restored_batches = _load_checkpoint(self.db)
         if self.memory_execution and self.state and not self.state.get('memory_checkpoint'):
             raise ValueError('旧过程检查点不能按内存运行方式续接，请使用新任务；旧成果保留')
         row = self.db.execute('SELECT value FROM state WHERE id=1').fetchone()
         self.incremental_ready = bool(row and json.loads(row[0]) == {'storage_format': 2})
-        self.saved_fields = {key: (json.loads(value), len(value.encode('utf-8')))
-                             for key, value in self.db.execute('SELECT key,value FROM state_fields')} if self.incremental_ready else {}
-        self.saved_archive = {key: (ordinal, json.loads(value), len(value.encode('utf-8')))
-                              for key, ordinal, value in self.db.execute('SELECT key,ordinal,value FROM state_archive')} if self.incremental_ready else {}
+        if self.memory_execution:
+            # 内存运行不做逐字段落盘；仅复用已校验状态供初始化判断。
+            self.saved_fields = {key: (value, 0) for key, value in self.state.items() if key != 'archive'}
+            self.saved_archive = {}
+        else:
+            self.saved_fields = {key: (json.loads(value), len(value.encode('utf-8')))
+                                 for key, value in self.db.execute('SELECT key,value FROM state_fields')} if self.incremental_ready else {}
+            self.saved_archive = {key: (ordinal, json.loads(value), len(value.encode('utf-8')))
+                                  for key, ordinal, value in self.db.execute('SELECT key,ordinal,value FROM state_archive')} if self.incremental_ready else {}
         progress = self.db.execute('SELECT elapsed,status,inflight FROM runtime_progress WHERE id=1').fetchone()
         if progress and progress[0] >= self.state.get('elapsed_seconds', 0):
             self.state.update(elapsed_seconds=progress[0], status=progress[1], inflight=json.loads(progress[2]))
@@ -1090,14 +1137,10 @@ class TaskStore:
         self.db.commit()
         if self.memory_execution:
             self.db.execute('PRAGMA temp_store=MEMORY')
-            templates = self.db.execute("SELECT value FROM state_fields WHERE key='checkpoint_requests'").fetchone()
-            templates = json.loads(templates[0]) if templates else {}
-            restored = {key: _expand_checkpoint_request(json.loads(value), templates) for key, value in
-                        self.db.execute('SELECT key,value FROM batches')}
-            self.unsaved_batches.update(restored)
-            self.verified_batches.update({key: row for key, row in restored.items() if row.get('status') == 'success'})
+            self.unsaved_batches.update(restored_batches)
+            self.verified_batches.update({key: row for key, row in restored_batches.items() if row.get('status') == 'success'})
             self.persisted_batches = sum(row.get('status') == 'success'
-                and row.get('request', {}).get('purpose') != 'diagnostic' for row in restored.values())
+                and row.get('request', {}).get('purpose') != 'diagnostic' for row in restored_batches.values())
             _LIVE_TASKS[str(self.destination.resolve())] = self
 
     @property
@@ -1107,36 +1150,8 @@ class TaskStore:
 
     @staticmethod
     def load_state(database):
-        row = database.execute('SELECT value FROM state WHERE id=1').fetchone()
-        if not row:
-            return {}
-        value = json.loads(row[0])
-        if value != {'storage_format': 2}:
-            return _restore_checkpoint_diagnostics(value)
-        fields = list(database.execute('SELECT key,value FROM state_fields'))
-        archive = list(database.execute('SELECT key,ordinal,value FROM state_archive ORDER BY ordinal'))
-        state = {key: json.loads(payload) for key, payload in fields}
-        state['archive'] = [json.loads(payload) for _, _, payload in archive]
-        receipt = state.get('memory_checkpoint')
-        if receipt:
-            payload = dict(state)
-            payload.pop('memory_checkpoint')
-            rows = list(database.execute('SELECT key,value FROM batches ORDER BY key'))
-            checksum = (_checkpoint_seal([(key, value) for key, value in fields if key != 'memory_checkpoint'],
-                                        archive, rows) if receipt.get('version') == 2 else
-                        digest(dict(state=payload, batches=rows)))
-            if (receipt.get('version') not in (1, 2)
-                    or receipt != dict(version=receipt['version'], digest=checksum)):
-                raise ValueError('内存恢复点核验失败，拒绝使用不一致成绩')
-            decoded = {}
-            for key, value in rows:
-                row = _expand_checkpoint_request(json.loads(value), state.get('checkpoint_requests', {}))
-                _check_checkpoint_batch(key, row)
-                decoded[key] = row
-            if receipt['version'] == 2:
-                _restore_checkpoint_batches(state['archive'], decoded)
-                state.pop('checkpoint_requests', None)
-        return _restore_checkpoint_diagnostics(state)
+        return _load_checkpoint(database)[0]
+
 
     @contextmanager
     def _transaction(self):
@@ -1290,57 +1305,41 @@ class TaskStore:
                 snapshot['ga'] = ga
             if ga.get('phase') in ('retest', 'qualified', 'complete') and boundary != 'final':
                 ga.update(phase='retest', finals={})
-            all_rows = {key: json.loads(value) for key, value in self.db.execute('SELECT key,value FROM batches')}
+            all_rows = {key: None for (key,) in self.db.execute('SELECT key FROM batches ORDER BY key')}
             all_rows.update(self.verified_batches)
             all_rows.update(self.unsaved_batches)
+            for key, row in all_rows.items():
+                if row is None:
+                    all_rows[key] = checkpoint_batch(self.db, key)
             all_rows = {key: row for key, row in all_rows.items()
                         if row.get('request', {}).get('purpose') in ('search', 'feedback', 'diagnostic')
                         or row.get('storage_group_key')}
-            snapshot['archive'] = []
-            for record in self.state.get('archive', []):
-                saved = {key: value for key, value in record.items()
-                         if record['key'] in keep or key not in ('candidate', 'candidate_sha256')}
-                batches = []
-                for row in record.get('batches', []):
-                    key = row.get('data_key')
-                    if key not in all_rows:
-                        batches.append(row)
-                        continue
-                    original = all_rows[key]
-                    batches.append(dict(checkpoint_batch_key=key,
-                        overrides={name: value for name, value in row.items()
-                                   if name not in original or original[name] != value},
-                        omitted=[name for name in original if name not in row]))
-                saved['batches'] = batches
-                snapshot['archive'].append(saved)
+            templates, template_keys, size = {}, {}, 0
             for key, row in all_rows.items():
                 _check_checkpoint_batch(key, row)
-            templates, rows = {}, []
-            for key, row in all_rows.items():
                 request = row.get('request')
-                if not isinstance(request, dict):
-                    rows.append((key, _json(row)))
-                    continue
-                common = {name: value for name, value in request.items() if name not in ('program', 'behavior_identity')}
-                template_key = digest([request.get(name) for name in
-                    ('condition', 'purpose', 'seed', 'input_seed', 'iterations', 'trace')])
-                if template_key in templates and templates[template_key] != common:
-                    template_key = digest(common)
-                templates[template_key] = common
-                compact = dict(checkpoint_request_key=template_key, **{name: request[name] for name in
-                               ('program', 'behavior_identity') if name in request})
-                rows.append((key, _json(dict(row, request=compact))))
-            rows.sort()
+                if isinstance(request, dict):
+                    common = {name: value for name, value in request.items()
+                              if name not in ('program', 'behavior_identity')}
+                    template_key = digest([request.get(name) for name in
+                        ('condition', 'purpose', 'seed', 'input_seed', 'iterations', 'trace')])
+                    if template_key in templates and templates[template_key] != common:
+                        template_key = digest(common)
+                    templates[template_key] = common
+                    template_keys[key] = template_key
             snapshot['checkpoint_requests'] = templates
-            fields = [(key, _json(value)) for key, value in snapshot.items() if key != 'archive']
-            archive = [(row['key'], index, _json(row)) for index, row in enumerate(snapshot.get('archive', []))]
-            seal = _checkpoint_seal(fields, archive, rows)
-            fields.append(('memory_checkpoint', _json(dict(version=2, digest=seal))))
-            size = sum(len(value.encode('utf-8')) for _, value in fields)
-            size += sum(len(value.encode('utf-8')) for _, _, value in archive)
-            size += sum(len(value.encode('utf-8')) for _, value in rows)
-            if size > 256 * 1024 * 1024:
-                raise MemoryError('恢复点超过256 MiB上限，已保留上一份恢复点')
+            def encode(value):
+                nonlocal size
+                payload = _json(value)
+                size += len(payload.encode('utf-8'))
+                if size > 256 * 1024 * 1024:
+                    raise MemoryError('恢复点超过256 MiB上限，已保留上一份恢复点')
+                return payload
+            def seal_database(database):
+                return _checkpoint_seal(
+                    database.execute("SELECT key,value FROM state_fields WHERE key!='memory_checkpoint' ORDER BY key"),
+                    database.execute('SELECT key,ordinal,value FROM state_archive ORDER BY ordinal'),
+                    database.execute('SELECT key,value FROM batches ORDER BY key'), ordered=True)
             self.destination.mkdir(parents=True, exist_ok=True)
             temporary = self.destination / ('checkpoint-' + uuid.uuid4().hex + '.sqlite3')
             try:
@@ -1356,13 +1355,42 @@ class TaskStore:
                             CREATE TABLE runtime_progress (id INTEGER PRIMARY KEY, elapsed REAL NOT NULL, status TEXT NOT NULL, inflight TEXT NOT NULL);
                         ''')
                         target.execute('INSERT INTO state VALUES (1,?)', (_json({'storage_format': 2}),))
-                        target.executemany('INSERT INTO state_fields VALUES (?,?)', fields)
-                        target.executemany('INSERT INTO state_archive VALUES (?,?,?)', archive)
-                        target.executemany('INSERT INTO batches VALUES (?,?)', rows)
-                    checked = _checkpoint_seal(
-                        list(target.execute("SELECT key,value FROM state_fields WHERE key!='memory_checkpoint'")),
-                        list(target.execute('SELECT key,ordinal,value FROM state_archive')),
-                        list(target.execute('SELECT key,value FROM batches')))
+                        checksum = hashlib.sha256(b'sim2gse-memory-checkpoint-v2')
+                        target.executemany('INSERT INTO state_fields VALUES (?,?)', _checkpoint_rows(checksum,
+                            b'fields', ((key, encode(snapshot[key])) for key in sorted(snapshot))))
+                        def archive_rows():
+                            for index, record in enumerate(self.state.get('archive', [])):
+                                saved = {key: value for key, value in record.items()
+                                         if record['key'] in keep or key not in ('candidate', 'candidate_sha256')}
+                                batches = []
+                                for row in record.get('batches', []):
+                                    key = row.get('data_key')
+                                    if key not in all_rows:
+                                        batches.append(row)
+                                        continue
+                                    original = all_rows[key]
+                                    batches.append(dict(checkpoint_batch_key=key,
+                                        overrides={name: value for name, value in row.items()
+                                                   if name not in original or original[name] != value},
+                                        omitted=[name for name in original if name not in row]))
+                                saved['batches'] = batches
+                                yield record['key'], index, encode(saved)
+                        target.executemany('INSERT INTO state_archive VALUES (?,?,?)',
+                                           _checkpoint_rows(checksum, b'archive', archive_rows()))
+                        def batch_rows():
+                            for key in sorted(all_rows):
+                                row = all_rows[key]
+                                if key in template_keys:
+                                    request = row['request']
+                                    row = dict(row, request=dict(checkpoint_request_key=template_keys[key],
+                                        **{name: request[name] for name in ('program', 'behavior_identity') if name in request}))
+                                yield key, encode(row)
+                        target.executemany('INSERT INTO batches VALUES (?,?)',
+                                           _checkpoint_rows(checksum, b'batches', batch_rows()))
+                        seal = checksum.hexdigest()
+                        target.execute('INSERT INTO state_fields VALUES (?,?)',
+                                       ('memory_checkpoint', encode(dict(version=2, digest=seal))))
+                    checked = seal_database(target)
                     if checked != seal or target.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
                         raise ValueError('恢复文件读回核验失败，已保留上一份恢复点')
                     if target.execute('PRAGMA page_count').fetchone()[0] * target.execute(
